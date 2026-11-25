@@ -1,0 +1,49 @@
+schema: spec-driven
+
+context: |
+  Target: Windows 10/11, .NET 8 (net8.0-windows), one Restricted User (a child) without admin rights.
+  Hard rule: a limit, a break or a schedule end never closes or kills a program of the child.
+  It locks the session or suspends the processes of a category, and resumes them later.
+  Only a blocked program (browser, block list) is closed, and only at its start.
+  Use the terms of GLOSSARY.md and CONTEXT.md. Write all artifacts in English.
+  Tests that call WinAPI run on Windows only (test VM 102). Put pure logic in classes without WinAPI.
+  Data from an exe (names, window titles, paths) is untrusted input.
+
+rules:
+  proposal:
+    - State what is out of scope.
+  design:
+    - Name each WinAPI call and each new table or column.
+  tasks:
+    - Each Windows-only behaviour gets a manual check step on the test VM, with the expected result.
+
+# Project context (optional)
+# Add only constraints that should guide OpenSpec artifacts and workflows.
+# Include constraints an agent cannot infer by reading the code.
+# Keep general project documentation and discoverable codebase facts out.
+# Example:
+#   context: |
+#     Designs and tasks must cover Windows, macOS, and Linux
+#     Write all artifacts in Spanish
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always state what is out of scope
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing
