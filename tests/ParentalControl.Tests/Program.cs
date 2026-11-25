@@ -339,7 +339,8 @@ Console.WriteLine("✅ Schedule Exception Precedence & Extended Grace Requests V
 // 15. Test AppVersion & UpdateService SemVer Logic
 Debug.Assert(AppVersion.Current == "1.5.0", "Current version should be 1.5.0");
 Debug.Assert(AppVersion.DisplayName == "v1.5.0", "Display name should be v1.5.0");
-Debug.Assert(AppVersion.GitHubRepo == "DarkTama/WindowsParentalControl", "GitHub repo match");
+// The fork must never offer the upstream installer as an update.
+Debug.Assert(AppVersion.GitHubRepo == "nick-beee/WindowsParentalControl", "Updates must come from the fork");
 
 Debug.Assert(UpdateService.IsNewerVersion("1.5.1", "1.5.0") == true, "1.5.1 is newer than 1.5.0");
 Debug.Assert(UpdateService.IsNewerVersion("2.0.0", "1.5.0") == true, "2.0.0 is newer than 1.5.0");
@@ -351,16 +352,26 @@ Debug.Assert(UpdateService.IsNewerVersion("1.3.0", "1.5.0") == false, "1.3.0 is 
 Debug.Assert(UpdateService.IsNewerVersion("1.2.1", "1.4.1") == false, "1.2.1 is not newer than 1.4.1");
 Console.WriteLine("✅ AppVersion & UpdateService SemVer Comparison Verification Passed.");
 
-var updateCheck = UpdateService.CheckForUpdatesAsync().GetAwaiter().GetResult();
-Debug.Assert(updateCheck.Error == null, $"Error should be null on update check: {updateCheck.Error}");
-Console.WriteLine($"✅ UpdateService CheckForUpdatesAsync Passed (Latest: {updateCheck.LatestVersion}, HasUpdate: {updateCheck.HasUpdate}).");
+// Live call to the GitHub API. Skipped on GitHub Actions: shared runner IPs often hit the
+// unauthenticated rate limit (403), which would make CI fail for no code reason.
+var isGitHubActions = Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true";
+var updateCheck = isGitHubActions ? null : UpdateService.CheckForUpdatesAsync().GetAwaiter().GetResult();
+if (updateCheck is null)
+{
+    Console.WriteLine("ℹ️ UpdateService CheckForUpdatesAsync live check skipped on GitHub Actions.");
+}
+else
+{
+    Debug.Assert(updateCheck.Error == null, $"Error should be null on update check: {updateCheck.Error}");
+    Console.WriteLine($"✅ UpdateService CheckForUpdatesAsync Passed (Latest: {updateCheck.LatestVersion}, HasUpdate: {updateCheck.HasUpdate}).");
+}
 
 var shouldTestLiveDownload = Environment.GetEnvironmentVariable("TEST_LIVE_DOWNLOAD") == "1";
-if (shouldTestLiveDownload && !string.IsNullOrWhiteSpace(updateCheck.DownloadUrl))
+if (shouldTestLiveDownload && !string.IsNullOrWhiteSpace(updateCheck?.DownloadUrl))
 {
     int lastPct = -1;
     var progress = new Progress<int>(pct => { lastPct = pct; });
-    var (downloadSuccess, downloadedPath, downloadMsg) = UpdateService.DownloadUpdateAsync(updateCheck.DownloadUrl, progress).GetAwaiter().GetResult();
+    var (downloadSuccess, downloadedPath, downloadMsg) = UpdateService.DownloadUpdateAsync(updateCheck!.DownloadUrl!, progress).GetAwaiter().GetResult();
     Debug.Assert(downloadSuccess, $"Download should succeed: {downloadMsg}");
     Debug.Assert(File.Exists(downloadedPath), "Downloaded installer should exist");
     Debug.Assert(new FileInfo(downloadedPath!).Length > 1_000_000, "Downloaded installer should be > 1MB");
