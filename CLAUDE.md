@@ -29,7 +29,7 @@ The `openspec` command on this Mac is a wrapper in `~/.local/bin` pinned to 1.14
 - The tests (`tests/ParentalControl.Tests`) are a console program with `Debug.Assert`, not xUnit. They call WinAPI (`kernel32.dll`, WTS), so they run on Windows only. Run them from the Mac with `scripts/vm-test.sh`: it copies the working tree to the test VM and runs them in Debug. The run is green when it prints `ALL ASSERTIONS PASSED`; a failed `Debug.Assert` stops the process with an error.
 - Put new pure logic (categories, limits, rules, break timers) in classes without WinAPI calls. Then a test for it can run on the Mac too.
 - CI: `.github/workflows/ci.yml` builds each project and runs the tests on `windows-latest` for each push to `main` and each PR.
-- The installer: `build.ps1` (Inno Setup, Windows only). `.github/workflows/release.yml` builds it on a `v*` tag. The update button reads the releases of the fork (`AppVersion.GitHubRepo`); a release of the fork needs a version above 1.5.0 in `AppVersion.Current`.
+- The installer: `build.ps1` (Inno Setup, Windows only). `.github/workflows/release.yml` builds it on a `v*` tag. The update button reads the releases of the fork (`AppVersion.GitHubRepo`); a release of the fork needs a version above 1.5.0. Change it in all places at once: `AppVersion.Current` and `DisplayName`, `MyAppVersion` in `installer/ParentalControl.iss`, and the version asserts in the tests. The tag must equal that version: if the tag is higher, each client sees an update on every check.
 
 ## Test VM
 

@@ -371,7 +371,7 @@ if (shouldTestLiveDownload && !string.IsNullOrWhiteSpace(updateCheck?.DownloadUr
 {
     int lastPct = -1;
     var progress = new Progress<int>(pct => { lastPct = pct; });
-    var (downloadSuccess, downloadedPath, downloadMsg) = UpdateService.DownloadUpdateAsync(updateCheck!.DownloadUrl!, progress).GetAwaiter().GetResult();
+    var (downloadSuccess, downloadedPath, downloadMsg) = UpdateService.DownloadUpdateAsync(updateCheck.DownloadUrl, progress).GetAwaiter().GetResult();
     Debug.Assert(downloadSuccess, $"Download should succeed: {downloadMsg}");
     Debug.Assert(File.Exists(downloadedPath), "Downloaded installer should exist");
     Debug.Assert(new FileInfo(downloadedPath!).Length > 1_000_000, "Downloaded installer should be > 1MB");
