@@ -32,14 +32,14 @@
 |---|---|---|
 | Код, сборка, агенты | Mac, `~/projects/parental-control` | готово |
 | Тесты и проверка службы | Windows VM 102 на pve2 | готово, тесты проходят |
-| Вторая проверка сборки | GitHub Actions `windows-latest` | нет workflow для push/PR, есть только `release.yml` |
+| Вторая проверка сборки | GitHub Actions `windows-latest` | `ci.yml`: сборка и тесты на каждый push в `main` и PR |
 | Сервер ИИ и статистики (этап 4) | отдельный LXC на pve2, приложение в `ansible-proxmox` | позже |
 
 Решение 2026-11-25: начать на Mac. Dev-LXC с T3 Code на pve2 отложен. Он нужен, если агенты должны долго работать без пользователя.
 
 **Репозиторий:**
 - `origin` = `https://github.com/nick-beee/WindowsParentalControl` (публичный форк), `upstream` = DarkTama.
-- Ветка `chore/dev-setup`: `CLAUDE.md`, этот файл, OpenSpec (`openspec/`, `.claude/skills/openspec-*`, `.claude/commands/opsx/`). Не закоммичено.
+- PR #1 (слит): `CLAUDE.md`, этот файл, OpenSpec (`openspec/`, `.claude/skills/openspec-*`, `.claude/commands/opsx/`), `scripts/vm-test.sh`.
 
 **Сборка на Mac:** `dotnet build -p:EnableWindowsTargeting=true` проходит (SDK .NET 11, 0 ошибок).
 
@@ -80,17 +80,18 @@
 3. **Веб-панель открыта всем.** `ListenAnyIP(5050)` по HTTP (`WebServerHost.cs:41`).
 4. **Повторный вход после блокировки — скорее всего уже решено.** `ParentalControlServiceLifetime.OnSessionChange` ловит `SessionUnlock`/`ConsoleConnect`, а `SessionTracker.cs:280–337` сразу блокирует снова. Старый handoff говорил «до 60 с». Проверить на VM 102.
 5. **Расхождение в документах.** README говорит «forced logoff» и «lock»; `CONTEXT.md` описывает `LockWorkStation`, а код вызывает `WTSDisconnectSession`.
-6. **Обновления идут из upstream.** `Core/AppVersion.cs:7` — `GitHubRepo = "DarkTama/WindowsParentalControl"`. Кнопка обновления в Admin и веб-панели поставит сборку upstream поверх нашей. Поменять на форк или выключить.
+6. **Обновления шли из upstream — исправлено частично.** На этапе 0 `AppVersion.GitHubRepo` = форк: кнопка обновления больше не предлагает сборку upstream. У форка пока нет релизов, проверка отвечает «нет обновлений». Первый релиз форка — версия выше 1.5.0.
+   Осталась дыра: `POST /api/admin/update/apply` (`WebServerHost.cs:1526-1539`) берёт `downloadUrl` из тела запроса и запускает этот exe с `/VERYSILENT` от имени администратора. URL не проверяется. Вместе с проблемой 3 (панель по HTTP на всех IP) это значит: кто прошёл вход в панель, может поставить любой exe. Закрыть на этапе 3: служба сама берёт URL из релиза форка, а не из запроса.
 7. **`.claude/settings.local.json` в git** — мусор автора upstream (пути `C:/Users/Robert/...`).
 
 ## План работ
 
 Каждый этап — одно или несколько изменений OpenSpec (`/opsx:propose` → одобрение → `/opsx:apply` → проверка на VM → `/opsx:archive`).
 
-### Этап 0. Подготовка
-- `AppVersion.GitHubRepo` → форк (проблема 6).
-- Workflow GitHub Actions для push/PR: сборка + тесты на `windows-latest`.
-- Вынести чистую логику из тестов, чтобы её можно было запускать на Mac.
+### Этап 0. Подготовка (сделано, кроме последнего пункта)
+- `AppVersion.GitHubRepo` → форк (проблема 6). Готово, но см. остаток проблемы 6.
+- `ci.yml`: сборка + тесты на `windows-latest`. Живой запрос к GitHub API в тестах пропускается на Actions (лимит запросов на общих IP). Готово.
+- Вынести чистую логику из тестов, чтобы её можно было запускать на Mac. Сделать вместе с этапом 1: новая логика категорий сразу без WinAPI.
 
 ### Этап 1. Категории
 - Таблицы `categories (id, name, daily_minutes, ...)` и `app_rules (match по пути / имени / издателю из подписи / SHA256 → category_id, blocked)`.
@@ -110,6 +111,7 @@
 - Браузеры: chrome, firefox, msedge, opera, yandex (browser.exe) и другие. **Не трогать `msedgewebview2.exe`.**
 
 ### Этап 3. Надёжность
+- `/api/admin/update/apply`: не брать URL из запроса (остаток проблемы 6).
 - Служба сама перечисляет процессы в сеансе ребёнка (`Process.SessionId`). Данные агента — только подсказка.
 - Защищённый канал агент → служба: named pipe с проверкой SID и пути к exe, или токен.
 - Веб-панель: только локальная сеть или вынести на сервер, HTTPS.
@@ -132,6 +134,5 @@
 
 ## Следующий шаг
 
-1. Закоммитить ветку `chore/dev-setup`, открыть PR в форк.
-2. Этап 0: проблема 6, workflow CI.
-3. Ответы на открытые вопросы, затем `/opsx:propose` для этапа 1 (категории).
+1. Ответы на открытые вопросы.
+2. `/opsx:propose` для этапа 1 (категории).
