@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Microsoft.Extensions.Hosting.WindowsServices;
 using ParentalControl.Core.Platform;
 using ParentalControl.Domain.DataFolder;
+using ParentalControl.Domain.Sessions;
 
 namespace ParentalControl.Service;
 
@@ -36,7 +37,11 @@ public static class DataFolderLockdown
     public static IReadOnlyList<int> LockSessions()
     {
         var sessions = SessionManager.GetLoggedOnSessions()
-            .Select(s => new LockdownSession(s.SessionId, !s.IsLocked, SessionAdminCheck.ForSession(s.SessionId)));
+            .Select(s => new LockdownSession(
+                s.SessionId,
+                // A disconnected session or a Win+L lock is not active. An unknown flag counts as active (fail closed).
+                !s.IsDisconnected && SessionManager.QueryLockFlag(s.SessionId).Flag != WtsLockFlag.Locked,
+                SessionAdminCheck.ForSession(s.SessionId)));
         var toLock = LockdownPolicy.SessionsToLock(sessions);
         foreach (var id in toLock)
             SessionManager.LockSession(id);
