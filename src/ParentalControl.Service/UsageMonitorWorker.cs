@@ -8,16 +8,33 @@ namespace ParentalControl.Service;
 public sealed class UsageMonitorWorker : BackgroundService
 {
     private readonly SessionTracker _sessionTracker;
+    private readonly CategoryEnforcer _categoryEnforcer;
     private readonly Serilog.ILogger _logger;
     private static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(60);
     private DateOnly _lastCleanupDate = DateOnly.MinValue;
     private readonly ConcurrentDictionary<int, HashSet<int>> _sentAlerts = new();
     private long _lastMonotonicTick = Environment.TickCount64;
     private DateTime _lastWallTime = DateTime.UtcNow;
-    public UsageMonitorWorker(SessionTracker sessionTracker, Serilog.ILogger logger)
+    public UsageMonitorWorker(SessionTracker sessionTracker, CategoryEnforcer categoryEnforcer, Serilog.ILogger logger)
     {
         _sessionTracker = sessionTracker;
+        _categoryEnforcer = categoryEnforcer;
         _logger = logger;
+    }
+
+    /// <summary>On a service stop, resume every process that the Category enforcer suspended.</summary>
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            _categoryEnforcer.ResumeAll();
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error while resuming suspended processes on stop");
+        }
+
+        await base.StopAsync(cancellationToken);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -198,6 +215,16 @@ public sealed class UsageMonitorWorker : BackgroundService
                 }
             }
         }
+
+        // 3. App Categories: warnings, suspension and resume. An error here must not stop the session checks.
+        try
+        {
+            _categoryEnforcer.Tick();
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error during the category check");
+        }
     }
 
     private void RunCleanupIfNeeded()
@@ -213,12 +240,13 @@ public sealed class UsageMonitorWorker : BackgroundService
         var eventsDeleted = EventRepository.DeleteOlderThan(eventsCutoff);
         var usageDeleted = UsageRepository.DeleteOlderThan(usageCutoff);
         var appUsageDeleted = AppUsageRepository.DeleteOlderThan(usageCutoff);
+        var categoryUsageDeleted = CategoryUsageRepository.DeleteOlderThan(usageCutoff);
         var capturesDeleted = ScreenCaptureRepository.PruneOldCaptures(DatabaseManager.CapturesRetentionDays, DatabaseManager.MaxCapturesStorageBytes);
         var exceptionsDeleted = ScheduleExceptionRepository.DeleteOlderThan(today);
-        if (eventsDeleted > 0 || usageDeleted > 0 || appUsageDeleted > 0)
+        if (eventsDeleted > 0 || usageDeleted > 0 || appUsageDeleted > 0 || categoryUsageDeleted > 0)
         {
-            _logger.Information("Database cleanup: deleted {EventsDeleted} events, {UsageDeleted} usage records, {AppUsageDeleted} app records, {CapturesDeleted} captures",
-                eventsDeleted, usageDeleted, appUsageDeleted, capturesDeleted);
+            _logger.Information("Database cleanup: deleted {EventsDeleted} events, {UsageDeleted} usage records, {AppUsageDeleted} app records, {CategoryUsageDeleted} category usage records, {CapturesDeleted} captures",
+                eventsDeleted, usageDeleted, appUsageDeleted, categoryUsageDeleted, capturesDeleted);
         }
     }
 }

@@ -9,6 +9,8 @@ namespace ParentalControl.Agent;
 
 public static class ActivityTracker
 {
+    private sealed record ActivityResponse(bool Success, int[]? SuspendedPids);
+
     private static readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(3) };
 
     [DllImport("user32.dll")]
@@ -31,17 +33,18 @@ public static class ActivityTracker
 
     private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 
-    public static (string ProcessName, string Title) SampleForegroundWindow()
+    public static (string ProcessName, string Title, string ExePath) SampleForegroundWindow()
     {
         try
         {
             var hwnd = GetForegroundWindow();
-            if (hwnd == IntPtr.Zero) return ("Unknown", "");
+            if (hwnd == IntPtr.Zero) return ("Unknown", "", "");
 
             GetWindowThreadProcessId(hwnd, out var pid);
-            if (pid == 0) return ("Unknown", "");
+            if (pid == 0) return ("Unknown", "", "");
 
             string processName = "Unknown";
+            string exePath = "";
             var hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
             if (hProcess != IntPtr.Zero)
             {
@@ -51,7 +54,8 @@ public static class ActivityTracker
                     int size = sbExe.Capacity;
                     if (QueryFullProcessImageNameW(hProcess, 0, sbExe, ref size))
                     {
-                        processName = Path.GetFileNameWithoutExtension(sbExe.ToString());
+                        exePath = sbExe.ToString(0, size);
+                        processName = Path.GetFileNameWithoutExtension(exePath);
                     }
                 }
                 finally
@@ -74,11 +78,11 @@ public static class ActivityTracker
             GetWindowTextW(hwnd, sb, sb.Capacity);
             var title = sb.ToString();
 
-            return (processName, title);
+            return (processName, title, exePath);
         }
         catch
         {
-            return ("Unknown", "");
+            return ("Unknown", "", "");
         }
     }
 
@@ -86,7 +90,7 @@ public static class ActivityTracker
     {
         try
         {
-            var (process, title) = SampleForegroundWindow();
+            var (process, title, exePath) = SampleForegroundWindow();
             if (process == "Unknown" || string.IsNullOrWhiteSpace(process)) return;
 
             // Skip bare explorer / shell desktop clicks or lock screens
@@ -100,11 +104,19 @@ public static class ActivityTracker
             {
                 username,
                 processName = process,
+                exePath, // full path; the service resolves the App Category from it
                 windowTitle = title,
                 durationSeconds = 20
             };
 
-            await _httpClient.PostAsJsonAsync("http://127.0.0.1:5050/api/agent/activity", payload);
+            using var response = await _httpClient.PostAsJsonAsync("http://127.0.0.1:5050/api/agent/activity", payload);
+            if (response.IsSuccessStatusCode)
+            {
+                // The service answers with the pids of this user's Suspended Apps. Mute them.
+                var body = await response.Content.ReadFromJsonAsync<ActivityResponse>();
+                var pids = body?.SuspendedPids ?? [];
+                await Task.Run(() => SuspendedAppMuter.Apply(pids));
+            }
         }
         catch
         {

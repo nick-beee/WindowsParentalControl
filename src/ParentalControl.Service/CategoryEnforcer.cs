@@ -1,0 +1,318 @@
+using ParentalControl.Core.Data;
+using ParentalControl.Core.Models;
+using ParentalControl.Core.Platform;
+using ParentalControl.Core.Services;
+using ParentalControl.Domain.Categories;
+
+namespace ParentalControl.Service;
+
+/// <summary>
+/// Enforces the Category Limits and App Limits. It sends the warnings, suspends the processes of an exe
+/// that has no time left, keeps them suspended and resumes them when time is available again.
+/// It never closes or kills a process. If Windows refuses a suspension, it locks the session (fallback).
+/// <see cref="UsageMonitorWorker"/> calls <see cref="Tick"/> every 60 seconds. A bonus approval, an admin
+/// change and an unlock call <see cref="RequestTick"/>.
+/// </summary>
+public sealed class CategoryEnforcer : IDisposable
+{
+    /// <summary>
+    /// Test hook for the VM: an exe file name. A suspension of this exe fails as "access denied".
+    /// Set it in the service environment only on a test machine.
+    /// </summary>
+    public const string TestSuspendFailEnv = "PARENTAL_CONTROL_TEST_SUSPEND_FAIL";
+
+    private const string MessageTitle = "Parental Control";
+
+    private readonly SessionTracker _sessionTracker;
+    private readonly ForegroundHistory _foregroundHistory;
+    private readonly TelegramBotService _telegram;
+    private readonly Serilog.ILogger _logger;
+    private readonly string? _testSuspendFailExe;
+
+    private readonly object _gate = new();
+    private bool _stopped;
+    private DateOnly _sentDate;
+    private readonly HashSet<string> _sentToday = new(StringComparer.OrdinalIgnoreCase);
+    private int _tickRequested;
+
+    public CategoryEnforcer(SessionTracker sessionTracker, ForegroundHistory foregroundHistory, TelegramBotService telegram, Serilog.ILogger logger)
+    {
+        _sessionTracker = sessionTracker;
+        _foregroundHistory = foregroundHistory;
+        _telegram = telegram;
+        _logger = logger;
+        _testSuspendFailExe = Environment.GetEnvironmentVariable(TestSuspendFailEnv);
+        if (!string.IsNullOrWhiteSpace(_testSuspendFailExe))
+            _logger.Warning("Category test hook active: a suspension of {Exe} fails", _testSuspendFailExe);
+
+        UsageRepository.BonusMinutesAdded += RequestTick;
+        CategoryConfigCache.Changed += RequestTick;
+        _sessionTracker.SessionUnlocked += OnSessionUnlocked;
+    }
+
+    public void Dispose()
+    {
+        UsageRepository.BonusMinutesAdded -= RequestTick;
+        CategoryConfigCache.Changed -= RequestTick;
+        _sessionTracker.SessionUnlocked -= OnSessionUnlocked;
+    }
+
+    private void OnSessionUnlocked(int sessionId) => RequestTick();
+
+    /// <summary>Runs <see cref="Tick"/> soon on a pool thread. Calls while one waits to start are merged.</summary>
+    public void RequestTick()
+    {
+        if (Interlocked.Exchange(ref _tickRequested, 1) == 1)
+            return;
+
+        _ = Task.Run(() =>
+        {
+            Interlocked.Exchange(ref _tickRequested, 0);
+            try
+            {
+                Tick();
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Error during the requested category check");
+            }
+        });
+    }
+
+    public void Tick()
+    {
+        lock (_gate)
+        {
+            if (_stopped)
+                return;
+
+            var today = DateOnly.FromDateTime(DateTime.Now);
+            if (_sentDate != today)
+            {
+                _sentToday.Clear();
+                _sentDate = today;
+            }
+
+            var config = CategoryConfigCache.Current;
+
+            // The sessions of Restricted Users, locked or not.
+            var restrictedSessions = new Dictionary<int, int>();
+            var users = new Dictionary<int, User>();
+            foreach (var (sessionId, session) in _sessionTracker.ActiveSessions)
+            {
+                var user = UserRepository.GetBySid(session.UserSid);
+                if (user is null || !user.IsRestricted)
+                    continue;
+                restrictedSessions[sessionId] = user.Id;
+                users[user.Id] = user;
+            }
+
+            var dayLimits = users.Keys.ToDictionary(
+                id => id,
+                id => config.Calculator.Evaluate(
+                    today,
+                    CategoryUsageRepository.GetForUserAndDate(id, today),
+                    UsageRepository.GetUsage(id, today)?.BonusMinutes ?? 0));
+
+            SendWarnings(users, dayLimits);
+
+            var records = SuspensionRepository.GetAll();
+            if (restrictedSessions.Count == 0 && records.Count == 0)
+                return;
+
+            var sessionIds = restrictedSessions.Keys.Concat(records.Select(r => r.SessionId)).ToHashSet();
+            var processes = ProcessControl.ListProcesses(sessionIds);
+
+            var plan = SuspensionPlanner.Plan(new PlannerInput(
+                processes,
+                restrictedSessions,
+                (userId, path) =>
+                {
+                    var resolution = config.Resolver.Resolve(path);
+                    var exhausted = dayLimits.TryGetValue(userId, out var day) && day.IsExhausted(resolution);
+                    return new ExeVerdict(resolution.Category, exhausted);
+                },
+                (userId, path) => _foregroundHistory.WasForeground(userId, today, path),
+                records,
+                SessionTracker.GetAgentExecutablePath()));
+
+            foreach (var record in plan.ToDrop)
+            {
+                SuspensionRepository.Delete(record.Pid, record.StartTimeUtc);
+                _logger.Information("Dropped stale suspension record {Pid} ({Exe})", record.Pid, record.ExePath);
+            }
+
+            foreach (var record in plan.ToResume)
+                ResumeRecord(record, "time available again");
+
+            foreach (var action in plan.ToSuspend)
+                Suspend(action, users);
+        }
+    }
+
+    /// <summary>Resumes every recorded process and stops further suspensions. The service calls it when it stops.</summary>
+    public void ResumeAll()
+    {
+        lock (_gate)
+        {
+            _stopped = true;
+            foreach (var record in SuspensionRepository.GetAll())
+                ResumeRecord(record, "service stop");
+        }
+    }
+
+    private void ResumeRecord(SuspensionRecord record, string reason)
+    {
+        var result = ProcessControl.Resume(record.Pid, record.StartTimeUtc, out var detail);
+        if (result is ProcessOpResult.Ok or ProcessOpResult.NotFound)
+        {
+            SuspensionRepository.Delete(record.Pid, record.StartTimeUtc);
+            _logger.Information("Resumed {Exe} (pid {Pid}, {Category}): {Reason} ({Result})",
+                record.ExePath, record.Pid, record.Category, reason, result);
+        }
+        else
+        {
+            // Keep the record: the next tick tries again.
+            _logger.Warning("Could not resume {Exe} (pid {Pid}): {Result} {Detail}", record.ExePath, record.Pid, result, detail);
+        }
+    }
+
+    private void Suspend(SuspendAction action, IReadOnlyDictionary<int, User> users)
+    {
+        var p = action.Process;
+        var record = new SuspensionRecord(p.Pid, p.StartTimeUtc, p.SessionId, action.UserId, action.Category, action.ExePath);
+
+        // Record before the suspension: a crash between the two then leaves no suspended process without a record.
+        if (!action.IsRecorded)
+            SuspensionRepository.Insert(record);
+
+        ProcessOpResult result;
+        string detail;
+        if (!string.IsNullOrWhiteSpace(_testSuspendFailExe) &&
+            string.Equals(WindowsPath.GetFileName(action.ExePath), _testSuspendFailExe.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            result = ProcessOpResult.AccessDenied;
+            detail = $"forced by {TestSuspendFailEnv}";
+        }
+        else
+        {
+            result = ProcessControl.Suspend(p.Pid, p.StartTimeUtc, out detail);
+        }
+
+        var username = users.TryGetValue(action.UserId, out var user) ? user.Username : action.UserId.ToString();
+        switch (result)
+        {
+            case ProcessOpResult.Ok:
+                _logger.Information("Suspended {Exe} (pid {Pid}, {Category}) of {Username}{Again}",
+                    action.ExePath, p.Pid, action.Category, username, action.IsRecorded ? " again" : "");
+                if (!action.IsRecorded && user is not null && _sentToday.Add($"suspended:{action.UserId}:{action.Category}"))
+                {
+                    EventRepository.LogEvent(user.Sid, EventType.LIMIT_REACHED, $"{action.Category} limit reached: programs paused");
+                    SendToUser(action.UserId, SettingsRepository.GetMessage(SettingsRepository.KeyMsgCategorySuspended,
+                        new Dictionary<string, string> { ["name"] = action.Category.ToString(), ["category"] = action.Category.ToString() }));
+                }
+                break;
+
+            case ProcessOpResult.NotFound:
+                if (!action.IsRecorded)
+                    SuspensionRepository.Delete(record.Pid, record.StartTimeUtc);
+                break;
+
+            default:
+                if (!action.IsRecorded)
+                    SuspensionRepository.Delete(record.Pid, record.StartTimeUtc);
+                Fallback(action, user, username, $"{result} {detail}");
+                break;
+        }
+    }
+
+    /// <summary>The suspension failed: lock the session and tell the parent (one alert per exe and day).</summary>
+    private void Fallback(SuspendAction action, User? user, string username, string reason)
+    {
+        var sessionId = action.Process.SessionId;
+        _logger.Warning("Could not suspend {Exe} (pid {Pid}) of {Username}: {Reason}. Locking session {SessionId}",
+            action.ExePath, action.Process.Pid, username, reason, sessionId);
+
+        if (_sentToday.Add($"alert:{action.UserId}:{action.ExePath}"))
+        {
+            if (user is not null)
+                EventRepository.LogEvent(user.Sid, EventType.SECURITY_ALERT, $"Cannot pause {WindowsPath.GetFileName(action.ExePath)} ({action.Category}): session locked");
+            SendParentAlert($"Parental Control: cannot pause {WindowsPath.GetFileName(action.ExePath)} ({action.Category}) " +
+                            $"of {username} on {Environment.MachineName}. The session is locked.\nPath: {action.ExePath}\nReason: {reason}");
+        }
+
+        if (_sessionTracker.ActiveSessions.TryGetValue(sessionId, out var session) && session.IsLocked)
+            return;
+
+        SessionManager.LockSession(sessionId);
+        _sessionTracker.OnSessionLock(sessionId, $"{action.Category} program cannot be paused - workstation locked");
+    }
+
+    private void SendWarnings(IReadOnlyDictionary<int, User> users, IReadOnlyDictionary<int, DayLimits> dayLimits)
+    {
+        foreach (var (userId, day) in dayLimits)
+        {
+            foreach (var status in day.All)
+            {
+                if (status.DueWarning == LimitWarning.None)
+                    continue;
+                if (!_sentToday.Add($"warn:{userId}:{status.Key}:{status.DueWarning}"))
+                    continue;
+
+                var name = status.Rule is null ? status.Category.ToString() : AppName(status.Rule);
+                var message = SettingsRepository.GetMessage(SettingsRepository.KeyMsgCategoryWarn, new Dictionary<string, string>
+                {
+                    ["name"] = name,
+                    ["category"] = status.Category.ToString(),
+                    ["minutes"] = status.RemainingMinutes.ToString(),
+                });
+                var sent = SendToUser(userId, message);
+                _logger.Information("Category warning {Key} ({Remaining} min left) to {Username}: sent to {Sessions} session(s)",
+                    status.Key, status.RemainingMinutes, users[userId].Username, sent);
+            }
+        }
+    }
+
+    /// <summary>Sends a session message to each unlocked session of the user. Returns the number of sessions.</summary>
+    private int SendToUser(int userId, string message)
+    {
+        var count = 0;
+        foreach (var (sessionId, session) in _sessionTracker.ActiveSessions)
+        {
+            if (session.IsLocked)
+                continue;
+            var user = UserRepository.GetBySid(session.UserSid);
+            if (user?.Id != userId)
+                continue;
+            NotificationManager.SendMessage(sessionId, MessageTitle, message, isWarning: true, timeoutSeconds: 30);
+            count++;
+        }
+        return count;
+    }
+
+    private void SendParentAlert(string text)
+    {
+        var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
+        if (string.IsNullOrWhiteSpace(chatId))
+        {
+            _logger.Warning("No Telegram chat configured; alert not sent: {Text}", text);
+            return;
+        }
+
+        // The alert is sent as Telegram Markdown. Exe names and paths are untrusted text: escape the markup characters.
+        var escaped = text.Replace("_", "\\_").Replace("*", "\\*").Replace("`", "\\`").Replace("[", "\\[");
+        _ = Task.Run(async () =>
+        {
+            var ok = await _telegram.SendTextMessageAsync(chatId, escaped);
+            _logger.Information("Category alert to Telegram: {Result}", ok ? "sent" : "failed");
+        });
+    }
+
+    /// <summary>The display name of the app of an App Limit: the file name without ".exe", or the last folder name.</summary>
+    private static string AppName(AppRule rule)
+    {
+        var text = rule.Pattern.TrimEnd('\\');
+        var name = WindowsPath.GetFileName(text);
+        return name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? name[..^4] : name;
+    }
+}

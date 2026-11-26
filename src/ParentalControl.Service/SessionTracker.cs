@@ -25,6 +25,9 @@ public sealed class SessionTracker
 
     public bool IsAwake => _isAwake;
 
+    /// <summary>Raised after an unlock that the service accepts. The Category enforcer checks the session again.</summary>
+    public event Action<int>? SessionUnlocked;
+
     public IReadOnlyDictionary<int, ActiveSession> ActiveSessions => _activeSessions;
     public ActiveSession? GetConsoleSession()
     {
@@ -345,6 +348,7 @@ public sealed class SessionTracker
         _activeSessions[sessionId] = session with { IsLocked = false, LastTick = DateTime.Now };
         EventRepository.LogEvent(session.UserSid, EventType.SESSION_UNLOCKED, "Session unlocked");
         _logger.Information("Session {SessionId} ({Username}) unlocked", sessionId, session.Username);
+        SessionUnlocked?.Invoke(sessionId);
     }
 
     public void EnsureAgentRunning(int sessionId)
@@ -379,7 +383,7 @@ public sealed class SessionTracker
         }
     }
 
-    private static string? GetAgentExecutablePath()
+    internal static string? GetAgentExecutablePath()
     {
         var baseDir = AppContext.BaseDirectory;
         // 1. Production layout: service is in {app}\service, agent is in {app}\agent
