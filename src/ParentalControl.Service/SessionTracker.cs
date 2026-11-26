@@ -29,6 +29,9 @@ public sealed class SessionTracker
     /// <summary>Raised after an unlock that the service accepts. The Category enforcer checks the session again.</summary>
     public event Action<int>? SessionUnlocked;
 
+    /// <summary>A session ended (a sign-out event or a stale session). The argument is the session id.</summary>
+    public event Action<int>? SessionEnded;
+
     public IReadOnlyDictionary<int, ActiveSession> ActiveSessions => _activeSessions;
     public ActiveSession? GetConsoleSession()
     {
@@ -123,6 +126,7 @@ public sealed class SessionTracker
                     {
                         FlushSessionTime(removed);
                         _logger.Information("Removed stale session for {Username} (Session {SessionId})", removed.Username, sessionId);
+                        SessionEnded?.Invoke(sessionId);
                     }
                 }
             }
@@ -239,6 +243,9 @@ public sealed class SessionTracker
                 _ = Task.Run(() => _telegramBotService.SendUserSignOutNotificationAsync(session.Username, Environment.MachineName, eventTime, used));
             }
         }
+
+        // Also if the session is not tracked any more: Forced Logoff removes it before Windows ends it.
+        SessionEnded?.Invoke(sessionId);
     }
 
     public void OnSleep()

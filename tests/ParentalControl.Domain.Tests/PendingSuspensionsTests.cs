@@ -18,6 +18,7 @@ public class PendingSuspensionsTests
         var step = pending.Step([Action(10)], T0);
         Assert.Empty(step.Ready);
         Assert.Equal([10], step.Pending.Select(a => a.Process.Pid));
+        Assert.Equal([10], step.Started.Select(a => a.Process.Pid));
         Assert.Equal([10], pending.Pending.Select(a => a.Process.Pid));
         Assert.Equal(T0.AddSeconds(10), pending.NextDueUtc);
     }
@@ -88,6 +89,7 @@ public class PendingSuspensionsTests
         var step = pending.Step([Action(10), Action(11)], T0.AddSeconds(10));
         Assert.Equal([10], step.Ready.Select(a => a.Process.Pid));
         Assert.Equal([11], step.Pending.Select(a => a.Process.Pid));
+        Assert.Empty(step.Started);
         Assert.Equal(T0.AddSeconds(14), pending.NextDueUtc);
     }
 

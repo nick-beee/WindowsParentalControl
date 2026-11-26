@@ -1,7 +1,7 @@
 namespace ParentalControl.Domain.Categories;
 
-/// <summary>The result of one step: the actions to suspend now, and the actions that still wait.</summary>
-public sealed record PendingStep(IReadOnlyList<SuspendAction> Ready, IReadOnlyList<SuspendAction> Pending);
+/// <summary>The result of one step: the actions to suspend now, the actions that still wait, and the ones of them that started to wait in this step.</summary>
+public sealed record PendingStep(IReadOnlyList<SuspendAction> Ready, IReadOnlyList<SuspendAction> Pending, IReadOnlyList<SuspendAction> Started);
 
 /// <summary>
 /// The Pending Suspensions of the service. A process that becomes due for suspension first waits <see cref="Delay"/>.
@@ -31,6 +31,7 @@ public sealed class PendingSuspensions
     {
         var ready = new List<SuspendAction>();
         var pending = new List<SuspendAction>();
+        var started = new List<SuspendAction>();
         var keys = new HashSet<(int, DateTime)>();
 
         foreach (var action in due)
@@ -43,6 +44,7 @@ public sealed class PendingSuspensions
             {
                 _since[key] = nowUtc;
                 pending.Add(action);
+                started.Add(action);
             }
             else if (nowUtc - since >= Delay)
             {
@@ -59,7 +61,7 @@ public sealed class PendingSuspensions
             _since.Remove(key);
 
         _pending = pending;
-        return new PendingStep(ready, pending);
+        return new PendingStep(ready, pending, started);
     }
 
     /// <summary>Forgets all pending processes, for example when the service stops.</summary>
