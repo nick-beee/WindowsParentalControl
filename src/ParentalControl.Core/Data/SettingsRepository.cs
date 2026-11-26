@@ -39,6 +39,10 @@ public static class SettingsRepository
     // App Categories. Placeholders: {name} (category or app), {category}, {minutes}.
     public const string KeyMsgCategoryWarn = ChildMessageKeys.CategoryWarn;
     public const string KeyMsgCategorySuspended = ChildMessageKeys.CategorySuspended;
+    // Breaks. Placeholders: {minutes}, {break_end}.
+    public const string KeyMsgBreakWarn = ChildMessageKeys.BreakWarn;
+    public const string KeyMsgBreakStart = ChildMessageKeys.BreakStart;
+    public const string KeyMsgBreakRunning = ChildMessageKeys.BreakRunning;
 
     public static string Get(string key, string defaultValue = "")
     {

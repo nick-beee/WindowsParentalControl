@@ -23,6 +23,7 @@ public static class SessionTexts
         ("duration_minutes", "{minutes} {minutes|Minute|Minuten}", "{minutes} {minutes|minute|minutes}", "{minutes} menit"),
         ("warn_title", "Parental Control — Bildschirmzeit", "Parental Control — Screen Time Warning", "Parental Control — Screen Time Warning"),
         ("curfew_warn_title", "Parental Control — Computerzeit", "Parental Control — Curfew Warning", "Parental Control — Curfew Warning"),
+        ("break_title", "Parental Control — Pause", "Parental Control — Break", "Parental Control — Istirahat"),
         ("lock_title", "Parental Control — Computer wird gesperrt", "Parental Control — Screen Lock", "Parental Control — Layar Dikunci"),
         ("lock_countdown",
             "(Der Computer wird in {seconds} {seconds|Sekunde|Sekunden} gesperrt.)",

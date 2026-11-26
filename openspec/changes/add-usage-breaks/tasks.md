@@ -42,15 +42,15 @@ For each VM step: check that the snapshot `test-base` exists before you install 
 
 ## 6. Child texts
 
-- [ ] 6.1 Add `msg_break_warn`, `msg_break_start` and `msg_break_running` to `ChildMessageKeys` (also to `All`) and to `MessageCatalog` with the "de", "en" and "id" texts of design D15, and `break_title` to `SessionTexts`. Verify: the existing catalog tests (same placeholders in each preset) pass for the new keys with `dotnet test`.
-- [ ] 6.2 Add xUnit tests for the three German scenario strings of the spec, with `{break_end}` as `HH:mm` and the remaining minutes rounded up. Verify: the tests pass.
+- [x] 6.1 Add `msg_break_warn`, `msg_break_start` and `msg_break_running` to `ChildMessageKeys` (also to `All`) and to `MessageCatalog` with the "de", "en" and "id" texts of design D15, and `break_title` to `SessionTexts`. Verify: the existing catalog tests (same placeholders in each preset) pass for the new keys with `dotnet test`.
+- [x] 6.2 Add xUnit tests for the three German scenario strings of the spec, with `{break_end}` as `HH:mm` and the remaining minutes rounded up. Verify: the tests pass.
 - [ ] 6.3 Use the catalog texts in `BreakEnforcer` and `SessionTracker`. Verify on the VM with the preset "de": the warning, the start and the unlock message show the German texts with the correct word form for 1 minute.
 
 ## 7. Admin API (after PR #21)
 
 - [ ] 7.1 Add `GET /api/admin/breaks`, `PUT /api/admin/breaks/{userId}` and `POST /api/admin/breaks/{userId}/end` with the shapes and status codes of design D14. Verify: an xUnit test of `AdminRoutePolicy` classifies the three paths as admin routes, and the build passes.
 - [ ] 7.2 Put the range check of `BreakRule` in the PUT route and the rule change of design D11 in `BreakEnforcer`. Verify: xUnit tests from group 1 cover the logic; on the VM, `PUT` with `useMinutes` 5 gives 400 and no change, and a change of N from 60 to 30 with 40 counted minutes gives 25.
-- [ ] 7.3 Add `telegram_notify_break` to `GET` and `POST /api/admin/settings`. Verify on the VM: the key changes through the API with an Admin Session.
+- [ ] 7.3 Add `telegram_notify_break` and the three break texts (`msg_break_warn`, `msg_break_start`, `msg_break_running`) to `GET` and `POST /api/admin/settings`, as for the category texts. Verify on the VM: the key changes through the API with an Admin Session.
 - [ ] 7.4 Verify the gate on the VM: as `Kid`, `curl -X POST http://127.0.0.1:5050/api/admin/breaks/{userId}/end` without a cookie gives 401 and the Break continues; with an Admin Session it gives 200 and the Break ends; a second call gives 409.
 
 ## 8. Telegram

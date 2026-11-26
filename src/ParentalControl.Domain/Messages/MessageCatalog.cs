@@ -14,13 +14,18 @@ public static class ChildMessageKeys
     // App Categories. Placeholders: {name} (category or app), {category}, {minutes}.
     public const string CategoryWarn = "msg_category_warn";
     public const string CategorySuspended = "msg_category_suspended";
+    // Breaks. Placeholders: {minutes}; {break_end} (local time HH:mm) in the start and running texts.
+    public const string BreakWarn = "msg_break_warn";
+    public const string BreakStart = "msg_break_start";
+    public const string BreakRunning = "msg_break_running";
     /// <summary>The reasons that the child can pick to decline a parent prompt, one per line.</summary>
     public const string PromptResponsePresets = "prompt_response_presets";
 
     public static IReadOnlyList<string> All { get; } = new[]
     {
         LimitWarn, CurfewWarn, LimitReached, CurfewReached, LoginDeniedLimit, LoginDeniedCurfew,
-        RemoteLock, BonusGranted, CategoryWarn, CategorySuspended, PromptResponsePresets,
+        RemoteLock, BonusGranted, CategoryWarn, CategorySuspended, BreakWarn, BreakStart, BreakRunning,
+        PromptResponsePresets,
     };
 }
 
@@ -69,6 +74,18 @@ public static class MessageCatalog
             "Deine Zeit für {name} ist für heute um. Der Computer hat {name} pausiert, nicht geschlossen. Morgen oder mit Extra-Minuten geht es weiter.",
             "{name} time is over for today. The {name} programs are paused, not closed. They continue tomorrow or after bonus minutes.",
             "Waktu {name} untuk hari ini sudah habis. Program {name} dijeda, tidak ditutup. Program berlanjut besok atau setelah menit bonus."),
+        (ChildMessageKeys.BreakWarn,
+            "In {minutes} {minutes|Minute|Minuten} ist Pause. Speichere jetzt, was du gerade machst. Deine Programme bleiben offen.",
+            "Break in {minutes} {minutes|minute|minutes}. Please save your work. Your programs stay open.",
+            "Waktu istirahat dalam {minutes} menit. Harap simpan pekerjaan Anda. Program Anda tetap terbuka."),
+        (ChildMessageKeys.BreakStart,
+            "Zeit für eine Pause! Der Computer wird jetzt für {minutes} {minutes|Minute|Minuten} gesperrt, bis {break_end} Uhr. Deine Programme bleiben offen.",
+            "Time for a break! The computer locks now for {minutes} {minutes|minute|minutes}, until {break_end}. Your programs stay open.",
+            "Waktunya istirahat! Komputer dikunci sekarang selama {minutes} menit, sampai pukul {break_end}. Program Anda tetap terbuka."),
+        (ChildMessageKeys.BreakRunning,
+            "Die Pause dauert noch bis {break_end} Uhr ({minutes} {minutes|Minute|Minuten}). Der Computer wird wieder gesperrt.",
+            "The break lasts until {break_end} ({minutes} {minutes|minute|minutes} left). The computer locks again.",
+            "Istirahat berlangsung sampai pukul {break_end} ({minutes} menit lagi). Komputer dikunci kembali."),
         (ChildMessageKeys.PromptResponsePresets,
             "Ich bin gleich mit dem Spiel fertig\nIch mache gerade Hausaufgaben\nOkay, ich höre gleich auf\nBitte noch 5 Minuten",
             "Almost done with my game\nDoing my homework\nOkay, I will stop soon\nPlease, 5 more minutes",
