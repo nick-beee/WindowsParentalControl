@@ -39,7 +39,7 @@ With `driver=none` nobody hears the sound. Read the mute state of the audio sess
 
 ## Console test without the user
 
-A session lock or a logon must happen in the console, not over RDP. You can drive the console from the Mac through pve2:
+A session lock or a logon must happen in the console, not over RDP. You can drive the console from the Mac through pve2. The scripts for this are in `scripts/vm/` (see its README):
 
 - **Screenshot:** `qm monitor 102` with `screendump /tmp/vm102.ppm`. Copy the file to the Mac with `scp` and convert it with `magick` to PNG.
 - **Keys:** `qm sendkey 102 <key>` (for example `ctrl-alt-delete`, `ret`, `shift-a`). Type text as one `sendkey` for each character.

@@ -31,3 +31,6 @@ appsettings.Development.json
 # Installer build output
 publish/
 installer/Output/
+
+# Local program list for scripts/vm/kid-run.sh
+scripts/vm/guest/kidstart.txt
