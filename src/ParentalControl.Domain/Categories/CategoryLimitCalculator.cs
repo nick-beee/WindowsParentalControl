@@ -69,6 +69,25 @@ public sealed class DayLimits
         return _categoryLimits.GetValueOrDefault(resolution.Category);
     }
 
+    /// <summary>
+    /// The limits whose warning is due now. A Category Limit warning is always due when its time comes.
+    /// An App Limit warning is due only if one of <paramref name="runningExes"/> resolves to the rule of
+    /// that App Limit, so a running process of the app is needed. The caller resolves the running processes
+    /// of the user from the process list of the service, never from data of the Session Agent.
+    /// </summary>
+    public IReadOnlyList<LimitStatus> DueWarnings(IEnumerable<CategoryResolution> runningExes)
+    {
+        var runningRuleIds = runningExes
+            .Where(r => r.Rule is not null)
+            .Select(r => r.Rule!.Id)
+            .ToHashSet();
+
+        return All
+            .Where(s => s.DueWarning != LimitWarning.None)
+            .Where(s => !s.IsAppLimit || runningRuleIds.Contains(s.Rule!.Id))
+            .ToList();
+    }
+
     /// <summary>True if the exe has no time left today.</summary>
     public bool IsExhausted(CategoryResolution resolution) => LimitFor(resolution)?.IsReached ?? false;
 }

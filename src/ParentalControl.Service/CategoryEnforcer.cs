@@ -114,14 +114,14 @@ public sealed class CategoryEnforcer : IDisposable
                     CategoryUsageRepository.GetForUserAndDate(id, today),
                     UsageRepository.GetUsage(id, today)?.BonusMinutes ?? 0));
 
-            SendWarnings(users, dayLimits);
-
             var records = SuspensionRepository.GetAll();
             if (restrictedSessions.Count == 0 && records.Count == 0)
                 return;
 
             var sessionIds = restrictedSessions.Keys.Concat(records.Select(r => r.SessionId)).ToHashSet();
             var processes = ProcessControl.ListProcesses(sessionIds);
+
+            SendWarnings(users, dayLimits, RunningExes(processes, restrictedSessions, config.Resolver));
 
             var plan = SuspensionPlanner.Plan(new PlannerInput(
                 processes,
@@ -249,14 +249,32 @@ public sealed class CategoryEnforcer : IDisposable
         _sessionTracker.OnSessionLock(sessionId, $"{action.Category} program cannot be paused - workstation locked");
     }
 
-    private void SendWarnings(IReadOnlyDictionary<int, User> users, IReadOnlyDictionary<int, DayLimits> dayLimits)
+    /// <summary>
+    /// The resolved exes of the processes that run in the sessions of each Restricted User, from the process list
+    /// of the service. An App Limit warning needs a running process of its app.
+    /// </summary>
+    private static Dictionary<int, List<CategoryResolution>> RunningExes(
+        IReadOnlyList<SessionProcess> processes, IReadOnlyDictionary<int, int> restrictedSessions, CategoryResolver resolver)
+    {
+        var running = new Dictionary<int, List<CategoryResolution>>();
+        foreach (var process in processes)
+        {
+            if (process.ExePath is null || !restrictedSessions.TryGetValue(process.SessionId, out var userId))
+                continue;
+            if (!running.TryGetValue(userId, out var list))
+                running[userId] = list = [];
+            list.Add(resolver.Resolve(process.ExePath));
+        }
+        return running;
+    }
+
+    private void SendWarnings(IReadOnlyDictionary<int, User> users, IReadOnlyDictionary<int, DayLimits> dayLimits,
+        IReadOnlyDictionary<int, List<CategoryResolution>> runningExes)
     {
         foreach (var (userId, day) in dayLimits)
         {
-            foreach (var status in day.All)
+            foreach (var status in day.DueWarnings(runningExes.GetValueOrDefault(userId) ?? []))
             {
-                if (status.DueWarning == LimitWarning.None)
-                    continue;
                 if (!_sentToday.Add($"warn:{userId}:{status.Key}:{status.DueWarning}"))
                     continue;
 
