@@ -34,3 +34,6 @@ installer/Output/
 
 # Local program list for scripts/vm/kid-run.sh
 scripts/vm/guest/kidstart.txt
+
+# Local Claude Code settings
+.claude/settings.local.json
