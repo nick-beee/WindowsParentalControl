@@ -44,7 +44,7 @@
 
 - [ ] 6.1 Run a fresh install on the VM from `test-base` (`deploy.ps1`). Verify: `/admin` shows the setup text; as `Kid` each admin route that the dashboard uses gives 401; no program of `Kid` closes during the test; after the setup in the Admin app the parent signs in from the Mac.
 - [ ] 6.2 Run the upgrade on the VM: install the build of `main` before this change, set TOTP on with a secret in the old Admin app, then deploy this change. Verify that the same authenticator entry signs in. Repeat with TOTP off: verify that `/admin` shows the setup text and that each admin route gives 401.
-- [ ] 6.3 Update `README.md` (the TOTP lines and the setup step), `scripts/vm/README.md` and the item #18 in `docs/ROADMAP.md`. Verify that no document still says that TOTP is optional or describes a TOTP switch (`grep -rn -i "enable authenticator\|totp off\|while TOTP is off" README.md docs scripts`).
+- [x] 6.3 Update `README.md` (the TOTP lines and the setup step), `scripts/vm/README.md` and the item #18 in `docs/ROADMAP.md`. Verify that no document still says that TOTP is optional or describes a TOTP switch (`grep -rn -i "enable authenticator\|totp off\|while TOTP is off" README.md docs scripts`).
 - [ ] 6.4 Run `dotnet build -p:EnableWindowsTargeting=true`, `dotnet test tests/ParentalControl.Domain.Tests` on the Mac, and `scripts/vm-test.sh`. Verify that the build has no new warnings, the xUnit tests pass, and the VM run prints `ALL ASSERTIONS PASSED`.
 
 ## Workflow follow-up
