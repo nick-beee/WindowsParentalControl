@@ -3,7 +3,7 @@
 ## 1. Prerequisites and documents
 
 - [x] 1.1 The fix of the stored XSS #5 is on `main` (PR #23, merged separately). Verify that this branch contains it: `git merge-base --is-ancestor 4593ad1 HEAD`, and `dotnet test tests/ParentalControl.Domain.Tests` passes `WebPageEscapeTests`.
-- [x] 1.2 Write `docs/adr/0009-web-admin-always-requires-totp.md` in the style of ADR 0001: the Remote Admin Interface always requires Authenticator TOTP, set up only in the Admin app. Add a line to ADR 0001 point 3 that ADR 0009 replaces it. Change the next ADR number in `CLAUDE.md` to 0010. Verify that the ADR names the rejected alternatives of design D1 and D2.
+- [x] 1.2 Write `docs/adr/0010-web-admin-always-requires-totp.md` (0009 is the React ADR of #27) in the style of ADR 0001: the Remote Admin Interface always requires Authenticator TOTP, set up only in the Admin app. Add a line to ADR 0001 point 3 that ADR 0010 replaces it. Change the next ADR number in `CLAUDE.md` to 0011. Verify that the ADR names the rejected alternatives of design D1 and D2.
 - [x] 1.3 Add the term **Admin Session** to `GLOSSARY.md` (the signed-in state of the parent in the Remote Admin Interface: a token with an issue time and an epoch, valid for 12 hours, ended by a logout, a restart or a new epoch). Verify that the specs and the code use the term in this sense only.
 
 ## 2. Pure logic in ParentalControl.Domain

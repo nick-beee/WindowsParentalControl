@@ -126,7 +126,7 @@ The TOTP card in `SettingsView.xaml` becomes "Web admin sign-in":
 - The dashboard of the Admin app shows a banner while the sign-in is not set up: "The web admin is locked until you set up the sign-in."
 
 ### D12. ADR
-ADR 0001 point 3 made TOTP optional. ADR 0009 records that the Remote Admin Interface always requires TOTP, set up only in the Admin app. This is hard to reverse for the parent, so it gets an ADR.
+ADR 0001 point 3 made TOTP optional. ADR 0010 records that the Remote Admin Interface always requires TOTP, set up only in the Admin app. This is hard to reverse for the parent, so it gets an ADR.
 
 ### New terms
 - **Admin Session**: the signed-in state of the parent in the Remote Admin Interface, a token with an issue time and an epoch. It goes into `GLOSSARY.md`.

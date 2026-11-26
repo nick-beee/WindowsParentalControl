@@ -1,4 +1,4 @@
-# 9. The Web Admin Interface Always Requires TOTP, Set Up Only in the Admin App
+# 10. The Web Admin Interface Always Requires TOTP, Set Up Only in the Admin App
 
 ## Status
 Accepted. Replaces point 3 of [ADR 0001](0001-embedded-kestrel-and-wts-notifications.md).

@@ -46,5 +46,5 @@ The Remote Admin Interface has no sign-in while Authenticator TOTP is off, and T
 - `src/ParentalControl.Domain`: new pure classes for the route policy, the login limit, the TOTP replay check and the Admin Session store, with xUnit tests.
 - `src/ParentalControl.Core`: `SettingsRepository` keys, a new table for login failures, the data folder access rules in `DatabaseManager`, a Telegram alert.
 - `src/ParentalControl.Admin`: the settings view and the setup dialog.
-- `docs/adr/0009-*.md`: the Remote Admin Interface always requires TOTP. It replaces point 3 of ADR 0001.
+- `docs/adr/0010-*.md`: the Remote Admin Interface always requires TOTP. It replaces point 3 of ADR 0001.
 - No change to the installer, the Session Agent, the request page or the enforcement.
