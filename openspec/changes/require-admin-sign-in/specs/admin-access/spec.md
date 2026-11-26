@@ -165,12 +165,43 @@ The system SHALL refuse a login and each admin request with an Admin Session fro
 - **WHEN** the system cannot find the process of a connection from this PC
 - **THEN** the system refuses the login
 
+#### Scenario: Owner is not a user account
+- **WHEN** the process of a connection from this PC, or the user of its session, is not a local or domain user account (for example a virtual account `S-1-5-90-…` or `S-1-5-96-…`, a service SID, or an Azure AD account)
+- **THEN** the system refuses the login
+
+#### Scenario: Session user not known
+- **WHEN** the session of the process has a user, but the system cannot read the SID of that user
+- **THEN** the system refuses the login
+
+#### Scenario: Process id given to a new process
+- **WHEN** the TCP table gives the create time of the connection and the owner process started after it
+- **THEN** the system refuses the login
+
 ### Requirement: No admin request from another origin
 The system SHALL refuse a state-changing admin request (POST, PUT or DELETE) and a login when the request has an `Origin` header that is not the origin of the Remote Admin Interface. A different port is a different origin.
 
 #### Scenario: Page of the child on another port
 - **WHEN** a page from `http://localhost:8000` makes the browser of the signed-in parent send `POST /api/admin/grant` to port 5050
 - **THEN** the system refuses the request and the Bonus Minutes do not change
+
+### Requirement: Limits do not depend on the web server
+The service SHALL enforce the limits also when its web server cannot start. A failure of one worker SHALL not stop the other workers.
+
+#### Scenario: Port taken by a program of the child
+- **WHEN** a program of the Restricted User holds port 5050 before the service starts its web server
+- **THEN** the service enforces the limits, logs the error, and tries to start the web server again after a wait that grows to at most 60 seconds
+- **AND** the web server answers after the port is free
+
+### Requirement: Quota for screen captures of the Session Agent
+The service SHALL accept at most 200 screen captures and 50 MB per user on one day (since local midnight), and at most 5 MB per capture, on `POST /api/agent/capture`. It SHALL refuse more without a file and without a row, and it SHALL write the refusal to the log one time per user and day.
+
+#### Scenario: Flood of captures
+- **WHEN** a process sends a 201st capture for a user on one day
+- **THEN** the service answers 429, writes no file and adds no row
+
+#### Scenario: Capture too large
+- **WHEN** a process sends a capture with more than 5 MB
+- **THEN** the service answers 413 and keeps no file
 
 ### Requirement: Child-facing routes stay open
 The routes for the Restricted User and the Session Agent (`/`, `/request`, `/api/request`, `/api/agent/*`) SHALL work without an Admin Session. None of them SHALL grant Bonus Minutes, resolve a Grace Request, or change a limit, an App Rule, a schedule, a setting or the admin credential.
@@ -222,6 +253,15 @@ The service SHALL never follow a link (a junction, a symbolic link or a hard lin
 - **WHEN** the parent opens the Admin app while the data folder is a link or is not trusted
 - **THEN** the Admin app shows the error and does not open the database
 
+#### Scenario: File in the place of the data folder
+- **WHEN** `C:\ProgramData\ParentalControl` is a file, for example a hard link to another file
+- **THEN** the service renames the file and does not change the owner or the rules of it, so the other file keeps its owner and rules
+- **AND** the service creates a real folder in its place
+
+#### Scenario: Uninstall with an unsafe folder
+- **WHEN** the parent uninstalls Parental Control and the data folder is a junction, a symbolic link or a file, or neither SYSTEM nor the Administrators group owns it
+- **THEN** the uninstaller does not delete it and does not delete the content of its target
+
 ### Requirement: Limits stay on when the data folder fails
 The service SHALL never stop the enforcement of the limits because of the data folder. If it cannot use the configured folder, it SHALL use a new data folder; while no folder works, it SHALL apply the Enforced Workstation Lock. It SHALL never close or kill a program because of the data folder.
 
@@ -244,8 +284,40 @@ The service SHALL never stop the enforcement of the limits because of the data f
 - **WHEN** the service cannot secure the configured folder and cannot create a new folder
 - **THEN** the service does not stop and does not open a database
 - **AND** the service applies the Enforced Workstation Lock to each active session of a user who is not an administrator, and does not close or kill a program
-- **AND** the service tries the data folder step again every minute, and enforces as normal after a step succeeds
+- **AND** the service tries the data folder step, the open of the database and the log file again every minute, and enforces as normal in the same process after all three succeed
 - **AND** the event log and the Admin app show the error
+
+#### Scenario: Database does not open after the data folder step
+- **WHEN** the service secured the data folder, but the open or the migration of the database or the creation of the log file fails, for example because the disk is full
+- **THEN** the service does not stop and does not restart in a loop
+- **AND** the service applies the Enforced Workstation Lock as when no data folder works, and tries again every minute
+- **AND** a retry ends the lock only after the database and the log file open
+
+#### Scenario: Slow data folder step at the start
+- **WHEN** the data folder holds many files, so the check of the data folder takes long
+- **THEN** the service reports "running" to Windows before the check, so Windows does not stop it
+- **AND** no limit worker uses the database before the check ends
+- **AND** after 5 seconds of the check, the service applies the Enforced Workstation Lock to each active session of a user who is not an administrator until the check ends
+
+#### Scenario: Folder secured at the last start
+- **WHEN** the last start secured the same data folder without a warning, and the folder still has the owner and the rules that the service writes
+- **THEN** the service does not walk through the items of the folder, after a quick check of the database, `logs` and `captures`
+
+#### Scenario: Walk reaches its time limit
+- **WHEN** the walk through the items of the data folder takes longer than 30 seconds
+- **THEN** the service stops the walk and does not make a new folder
+- **AND** if the folder itself and its database are trusted, the service keeps the folder and enforces the limits, and the Remote Admin Interface stays locked
+- **AND** else the service applies the Enforced Workstation Lock and tries again every minute
+
+#### Scenario: Lock after a move of the data folder
+- **WHEN** the service moved an untrusted data folder away or made a new data folder, and starts with a new database
+- **THEN** the service applies the Enforced Workstation Lock to each active session of a user who is not an administrator, and does not close or kill a program
+- **AND** the lock ends when a Restricted User exists in the new database, or when the parent selects "Finish setup" in the Admin app
+- **AND** the event log and the Admin app show the lock
+
+#### Scenario: Normal first install
+- **WHEN** the service starts for the first time, and no data folder exists
+- **THEN** the service creates the folder and does not apply the lock after a move
 
 ### Requirement: Location of the data folder
 The location of the data folder SHALL come from the value `DataFolderPath` in `HKLM\SOFTWARE\ParentalControl`. Only SYSTEM and the Administrators group SHALL be able to change the key; the other accounts SHALL only read it. Without the value, the location SHALL be `C:\ProgramData\ParentalControl`. Each component that opens the database or a log file SHALL read the location in this way and SHALL check the folder before it opens anything in it.
