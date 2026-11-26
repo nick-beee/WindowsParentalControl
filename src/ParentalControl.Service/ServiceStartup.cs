@@ -33,6 +33,30 @@ public sealed class ServiceStartup
 
     public bool IsReady => _ready.Task.IsCompleted;
 
+    private readonly TaskCompletionSource _webBindTried = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private string? _attachedLogsDirectory;
+
+    /// <summary>
+    /// The web server calls this after its first try to bind the port (third review, SF3), so the data folder step
+    /// starts only after the bind: a program of the child cannot take the port while the step runs.
+    /// </summary>
+    public void MarkWebBindTried() => _webBindTried.TrySetResult();
+
+    /// <summary>Waits for <see cref="MarkWebBindTried"/>, at most <paramref name="max"/>.</summary>
+    public async Task WaitWebBindTriedAsync(TimeSpan max, CancellationToken cancellationToken)
+    {
+        if (max <= TimeSpan.Zero)
+            return;
+        try
+        {
+            await _webBindTried.Task.WaitAsync(max, cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            // The data folder step must not wait for a web server that does not start.
+        }
+    }
+
     public Task WaitReadyAsync(CancellationToken cancellationToken) => _ready.Task.WaitAsync(cancellationToken);
 
     /// <summary>
@@ -44,8 +68,13 @@ public sealed class ServiceStartup
         try
         {
             DatabaseManager.InitializeSecured(prep.Folder!, prep.Result, secured: prep.Warning is null);
-            var fileLogger = (createFileLogger ?? (dir => LoggingConfig.CreateLogger("Service", dir)))(DatabaseManager.LogsDirectory);
-            _sink.Attach(fileLogger);
+            // A second sink on the same daily file can fail with a sharing error, so the logger of a folder is made once.
+            if (!string.Equals(_attachedLogsDirectory, DatabaseManager.LogsDirectory, StringComparison.OrdinalIgnoreCase))
+            {
+                var fileLogger = (createFileLogger ?? (dir => LoggingConfig.CreateLogger("Service", dir)))(DatabaseManager.LogsDirectory);
+                _sink.Attach(fileLogger);
+                _attachedLogsDirectory = DatabaseManager.LogsDirectory;
+            }
             return null;
         }
         catch (Exception ex)

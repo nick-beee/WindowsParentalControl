@@ -23,6 +23,8 @@ public static class DataFolderStatusStore
     private const string RelocatedAtValue = "DataFolderRelocatedAtUtc";
     private const string RelocationReasonValue = "DataFolderRelocationReason";
     private const string FolderValue = "DataFolderInUse";
+    private const string WebPortBlockedByValue = "WebPortBlockedBy";
+    private const string WebPortBlockedAtValue = "WebPortBlockedAtUtc";
 
     /// <param name="From">The folder that the service could not use and left alone.</param>
     /// <param name="To">The new data folder with a random name.</param>
@@ -63,6 +65,33 @@ public static class DataFolderStatusStore
         }
     }
 
+    /// <summary>
+    /// Writes the program that holds the port of the web server (third review, SF3), or clears it with null. The Admin
+    /// app shows it as a banner. Returns false if the write failed.
+    /// </summary>
+    public static bool TryWriteWebPortBlocked(string? owner, DateTimeOffset nowUtc)
+    {
+        try
+        {
+            if (owner is null)
+            {
+                using var hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+                using var existing = hklm.OpenSubKey(KeyPath, writable: true);
+                existing?.DeleteValue(WebPortBlockedByValue, throwOnMissingValue: false);
+                existing?.DeleteValue(WebPortBlockedAtValue, throwOnMissingValue: false);
+                return true;
+            }
+            using var key = DataFolderRegistry.Default.OpenForWrite();
+            key.SetValue(WebPortBlockedByValue, owner, RegistryValueKind.String);
+            key.SetValue(WebPortBlockedAtValue, nowUtc.ToString("O", CultureInfo.InvariantCulture), RegistryValueKind.String);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <summary>Reads the last result. Without a key or with an unknown value, the state is <see cref="DataFolderState.Unknown"/>.</summary>
     public static DataFolderReport Read()
     {
@@ -88,6 +117,8 @@ public static class DataFolderStatusStore
                 RelocatedAtUtc = ParseTime(key.GetValue(RelocatedAtValue) as string),
                 RelocationReason = NullIfEmpty(key.GetValue(RelocationReasonValue) as string),
                 Folder = NullIfEmpty(key.GetValue(FolderValue) as string),
+                WebPortBlockedBy = NullIfEmpty(key.GetValue(WebPortBlockedByValue) as string),
+                WebPortBlockedAtUtc = ParseTime(key.GetValue(WebPortBlockedAtValue) as string),
             };
         }
         catch

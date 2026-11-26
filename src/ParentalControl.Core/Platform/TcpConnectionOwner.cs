@@ -33,7 +33,12 @@ public static class TcpConnectionOwner
             var sessionUserKnown = true;
             try
             {
-                if (SessionManager.GetSessionUsername(sessionId.Value) is { Length: > 0 })
+                // N-e: a failed read of the session user is not "no user": the policy refuses it.
+                if (!SessionManager.TryGetSessionUsername(sessionId.Value, out var sessionUsername))
+                {
+                    sessionUserKnown = false;
+                }
+                else if (sessionUsername is { Length: > 0 })
                 {
                     sessionUser = SessionManager.GetSessionUserSid(sessionId.Value);
                     sessionUserKnown = sessionUser is not null;
@@ -89,10 +94,37 @@ public static class TcpConnectionOwner
         return found is null ? null : (found.Value, created);
     }
 
+    /// <summary>
+    /// The processes that listen on <paramref name="port"/> (IPv4 and IPv6), from the listener rows of the TCP table
+    /// (third review, SF3). The service uses it after a failed bind of the web server to name the program that holds
+    /// the port. It never closes that program (the hard rule). Each error gives an empty list.
+    /// </summary>
+    public static IReadOnlyList<int> FindListenerPids(int port)
+    {
+        var pids = new SortedSet<int>();
+        foreach (var af in new[] { AF_INET, AF_INET6 })
+        {
+            try
+            {
+                foreach (var row in ReadTable(af, TCP_TABLE_OWNER_PID_LISTENER, af == AF_INET ? ParseV4 : ParseV6))
+                {
+                    if (row.LocalPort == port)
+                        pids.Add(row.Pid);
+                }
+            }
+            catch
+            {
+                // The other family can still name the owner.
+            }
+        }
+        return pids.ToList();
+    }
+
     private readonly record struct TcpRow(IPAddress LocalAddress, int LocalPort, IPAddress RemoteAddress, int RemotePort, int Pid, DateTime? CreatedUtc = null);
 
     private const int AF_INET = 2;
     private const int AF_INET6 = 23;
+    private const int TCP_TABLE_OWNER_PID_LISTENER = 3;
     private const int TCP_TABLE_OWNER_PID_CONNECTIONS = 4;
     private const int TCP_TABLE_OWNER_MODULE_CONNECTIONS = 7;
     private const int ERROR_INSUFFICIENT_BUFFER = 122;

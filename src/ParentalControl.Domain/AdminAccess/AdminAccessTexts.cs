@@ -63,4 +63,15 @@ public static class AdminAccessTexts
         + $"Parental Control auf {machineName} hat am {whenLocal:dd.MM.yyyy} um {whenLocal:HH:mm} Uhr einen Datenordner gefunden, dem es nicht vertraut: ein anderes Konto konnte ihn ändern. "
         + $"Der Dienst hat ihn nach {movedTo} verschoben und mit einer neuen Datenbank begonnen.\n\n"
         + "Prüfe in Parental Control Admin die Limits, die Regeln und die Anmeldung. Lösche den verschobenen Ordner, wenn du ihn nicht mehr brauchst.";
+
+    /// <summary>
+    /// The Telegram alert about a program that holds port 5050 of the web server (third review, SF3). The program text
+    /// comes from an exe; the caller escapes it.
+    /// </summary>
+    public static string TelegramWebPortBlocked(string machineName, string owner, DateTime whenLocal) =>
+        "⚠️ *Port der Web-Verwaltung belegt*\n\n"
+        + $"Auf {machineName} belegt seit {whenLocal:dd.MM.yyyy} um {whenLocal:HH:mm} Uhr ein anderes Programm den Port 5050 der Web-Verwaltung: {owner}.\n\n"
+        + "Eine Seite auf http://localhost:5050 kann von diesem Programm kommen. Gib dort keinen Anmeldecode ein. "
+        + "Die Limits gelten weiter, aber die Nutzung der Kategorien zählt nicht, solange das Programm läuft. "
+        + "Parental Control beendet das Programm nicht. Schließe es oder starte den PC neu.";
 }

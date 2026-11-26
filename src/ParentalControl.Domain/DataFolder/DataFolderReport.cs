@@ -50,6 +50,14 @@ public sealed record DataFolderReport(
     /// The folder that the last start secured without a warning, or null. The fast path of the next start (CB1 b) is
     /// allowed only for this folder.
     /// </summary>
+    /// <summary>
+    /// The program that holds the port of the web server, as the service found it at a failed bind (third review,
+    /// SF3), or null. The service clears it after a successful bind. The text comes from an exe and is untrusted data.
+    /// </summary>
+    public string? WebPortBlockedBy { get; init; }
+
+    public DateTimeOffset? WebPortBlockedAtUtc { get; init; }
+
     public string? LastSecuredFolder =>
         State == DataFolderState.Secured && string.IsNullOrEmpty(Detail) ? Folder : null;
 }
@@ -63,6 +71,8 @@ public static class AdminSignInStatus
     /// </summary>
     public static string Describe(bool credentialSetUp, DateTimeOffset? setupAtUtc, DataFolderReport folder, TimeZoneInfo zone)
     {
+        if (PortBlockedWarning(folder, zone) is { } portWarning)
+            return "Locked: " + portWarning;
         switch (folder.State)
         {
             case DataFolderState.Lockdown:
@@ -87,8 +97,25 @@ public static class AdminSignInStatus
     /// True if the web admin works: the sign-in is set up and the service secured the data folder. A trusted folder
     /// whose rules the service could not reset (a Secured state with a detail) does not count.
     /// </summary>
+    /// While another program holds the port of the web server, the web admin does not count as usable either: a page
+    /// on http://localhost:5050 then comes from that program, so the parent must not type a code there (SF3).
     public static bool IsWebAdminUsable(bool credentialSetUp, DataFolderReport folder) =>
-        credentialSetUp && folder.State == DataFolderState.Secured && string.IsNullOrEmpty(folder.Detail);
+        credentialSetUp && folder.State == DataFolderState.Secured && string.IsNullOrEmpty(folder.Detail)
+        && string.IsNullOrEmpty(folder.WebPortBlockedBy);
+
+    /// <summary>
+    /// The warning about a program that holds the port of the web server (third review, SF3), or null. While it shows,
+    /// the page on http://localhost:5050 can come from a program of the child.
+    /// </summary>
+    public static string? PortBlockedWarning(DataFolderReport folder, TimeZoneInfo zone)
+    {
+        if (string.IsNullOrEmpty(folder.WebPortBlockedBy))
+            return null;
+        var since = folder.WebPortBlockedAtUtc is { } at ? $" since {Local(at, zone)}" : string.Empty;
+        return $"another program holds port 5050 of the web admin{since}: {folder.WebPortBlockedBy}. "
+               + "A page on http://localhost:5050 can come from that program. Do not type a sign-in code there. "
+               + "Parental Control does not close the program. Close it or restart the PC; the service still enforces the limits.";
+    }
 
     /// <summary>The warning about a moved, untrusted data folder, or null if there is none to show.</summary>
     public static string? QuarantineWarning(DataFolderReport folder, TimeZoneInfo zone)

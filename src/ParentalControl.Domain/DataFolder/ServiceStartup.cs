@@ -27,13 +27,42 @@ public sealed class StartupStateMachine
     /// the database and the creation of the log (<paramref name="databaseAndLogOpened"/>, false if they did not run).
     /// Returns the new phase. A Ready phase never goes back.
     /// </summary>
-    public StartupPhase Report(bool folderUsable, bool databaseAndLogOpened)
+    public StartupPhase Report(bool folderUsable, bool databaseAndLogOpened) =>
+        Report(folderUsable, databaseAndLogOpened, startActionsDone: true);
+
+    /// <summary>
+    /// The result of one try, with the start actions before the gate (<paramref name="startActionsDone"/>): the setup
+    /// lock in the new database and the read of the sessions (third review, SF2). An error of these actions on a full
+    /// disk gives the lockdown too, not an exit of the process. Returns the new phase. A Ready phase never goes back.
+    /// </summary>
+    public StartupPhase Report(bool folderUsable, bool databaseAndLogOpened, bool startActionsDone)
     {
         if (Phase == StartupPhase.Ready)
             return Phase;
-        Phase = folderUsable && databaseAndLogOpened ? StartupPhase.Ready : StartupPhase.Lockdown;
+        Phase = folderUsable && databaseAndLogOpened && startActionsDone ? StartupPhase.Ready : StartupPhase.Lockdown;
         return Phase;
     }
+}
+
+/// <summary>
+/// Decides if the start must set the setup lock in the database (require-admin-sign-in S2, third review SF1). The
+/// service can make a new folder at one try and open its database only at a later try (a lockdown retry), or a power
+/// cut can stop it between the move and the first write to the new database. So the decision joins the results of all
+/// tries of one run with OR, and also uses the admin-only registry value <c>SetupLockPending</c> that the data folder
+/// step writes in the same step as the move or the new folder.
+/// </summary>
+public sealed class SetupLockTracker
+{
+    /// <summary>True after a try of this run moved the folder away or made a new folder.</summary>
+    public bool MovedInThisRun { get; private set; }
+
+    /// <summary>Records the result of one try of the data folder step.</summary>
+    public void Report(bool quarantined, bool relocated) =>
+        MovedInThisRun |= StartupLockPolicy.StartsSetupLock(quarantined, relocated);
+
+    /// <summary>True if the start must set the setup lock in the database that it opened.</summary>
+    /// <param name="registryPending">True if the registry value <c>SetupLockPending</c> exists.</param>
+    public bool MustSetLock(bool registryPending) => MovedInThisRun || registryPending;
 }
 
 /// <summary>

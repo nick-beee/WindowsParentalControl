@@ -18,6 +18,10 @@ namespace ParentalControl.Service;
 /// <item>after a quarantine or a relocation, until a Restricted User exists in the new database or the parent finishes
 /// the setup in the Admin app (S2).</item>
 /// </list>
+/// Third review: the setup lock comes from the flags of all tries of one run and from the registry value
+/// <c>SetupLockPending</c> (SF1). Each error before the gate opens gives the lockdown, not an exit of the process
+/// (SF2); only an error after the gate opened restarts the service (exit code 3). The open of the database runs inside
+/// the wrapper that locks after 5 seconds (N-a).
 /// </summary>
 public sealed class StartupWorker : BackgroundService
 {
@@ -27,6 +31,7 @@ public sealed class StartupWorker : BackgroundService
     private readonly Serilog.ILogger _logger;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly HashSet<int> _lockedSessions = new();
+    private readonly SetupLockTracker _setupLock = new();
 
     // Tests replace the data folder step, the open of the database, the session lock and the records in the registry
     // and the event log, so a test run does not change the state of an installed service.
@@ -34,10 +39,21 @@ public sealed class StartupWorker : BackgroundService
     public Func<DataFolderPreparation, string?>? OpenStep { get; init; }
     public Func<IReadOnlyList<int>> LockStep { get; init; } = DataFolderLockdown.LockSessions;
     public Action<DataFolderPreparation, string, bool> RecordOpenFailure { get; init; } = DataFolderStartup.RecordOpenFailure;
+    /// <summary>Writes the Secured state again after a retry of the start actions only (SF2).</summary>
+    public Action<DataFolderPreparation> RecordStartRecovered { get; init; } = DataFolderStartup.RecordStartRecovered;
     public Action<EventLogEntryType, int, string> WriteEvent { get; init; } = DataFolderStartup.WriteEvent;
+    /// <summary>Reads the registry value <c>SetupLockPending</c> (SF1).</summary>
+    public Func<bool> ReadSetupLockPending { get; init; } = () => DataFolderRegistry.Default.IsSetupLockPending();
+    /// <summary>Deletes the registry value <c>SetupLockPending</c> (SF1). False on an error.</summary>
+    public Func<bool> ClearSetupLockPending { get; init; } = () => DataFolderRegistry.Default.TryClearSetupLockPending();
+    /// <summary>Writes the setup lock into the database. A full disk makes it throw (SF2).</summary>
+    public Action WriteSetupLockSetting { get; init; } =
+        () => SettingsRepository.Set(SettingsRepository.KeyDataFolderSetupLock, DateTimeOffset.UtcNow.ToString("O"));
     public TimeSpan LockInterval { get; init; } = DataFolderRecovery.LockInterval;
     public TimeSpan RetryInterval { get; init; } = DataFolderRecovery.RetryInterval;
-    /// <summary>False in a test: no session recovery, no admin start check and no setup lock.</summary>
+    /// <summary>The longest wait for the first bind of the web server before the data folder step (SF3).</summary>
+    public TimeSpan WebBindWait { get; init; } = TimeSpan.FromSeconds(5);
+    /// <summary>False in a test: no session recovery, no admin start check and no setup lock loop.</summary>
     public bool RunReadyActions { get; init; } = true;
 
     public StartupWorker(ServiceStartup startup, SessionTracker sessionTracker, TelegramBotService telegram, Serilog.ILogger logger,
@@ -58,32 +74,57 @@ public sealed class StartupWorker : BackgroundService
 
     private readonly StartupStateMachine _machine = new();
 
+    /// <summary>The result of one try of the start.</summary>
+    /// <param name="Opened">True if the database and the log are open. A retry then does not open them again.</param>
+    /// <param name="StartActionsDone">True if the start actions before the gate succeeded (the setup lock, the sessions).</param>
+    private sealed record StartAttempt(DataFolderPreparation Prep, bool FolderUsable, bool Opened, bool StartActionsDone);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await Task.Yield();
+        // Before the gate opens, no error ends the process (SF2): an exit gave a restart gap of the Service Control
+        // Manager without a lock. Each error gives the lockdown: lock every 2 seconds, try again every minute.
         try
         {
-            var prep = await RunStepWithLockAsync(writeEvent: true, stoppingToken);
-            var openError = prep.IsLockdown ? null : Open(prep);
-            if (_machine.Report(!prep.IsLockdown, openError is null) == StartupPhase.Lockdown)
+            // SF3: the web server binds its port before the data folder step, so a program of the child cannot take
+            // the port while the step runs.
+            await _startup.WaitWebBindTriedAsync(WebBindWait, stoppingToken);
+            while (_machine.Phase != StartupPhase.Ready)
             {
-                if (openError is not null)
-                    RecordOpenFailure(prep, openError, true);
-                prep = await RunLockdownAsync(stoppingToken);
+                try
+                {
+                    await StartUntilReadyAsync(stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    WriteEvent(EventLogEntryType.Error, 1013,
+                        $"The start of Parental Control failed before it enforced the limits ({ex.GetType().Name}: {ex.Message}). " +
+                        "It locks each session of a user who is not an administrator and tries again.");
+                    LockOnce("The start of Parental Control failed");
+                    await Task.Delay(LockInterval, stoppingToken);
+                }
             }
-            if (_machine.Phase != StartupPhase.Ready)
-                return; // stopped during the lockdown
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            return;
+        }
 
-            await OnReadyAsync(prep);
-            await RunSetupLockAsync(stoppingToken);
+        try
+        {
+            await AfterGateAsync(stoppingToken);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
         }
         catch (Exception ex)
         {
-            // An unknown error must not leave a service that neither enforces nor locks: the Service Control Manager
-            // starts it again.
+            // After the gate opened, an unknown error must not leave a service that neither enforces nor locks: the
+            // Service Control Manager starts it again.
             WriteEvent(EventLogEntryType.Error, 1013,
                 $"The start of Parental Control failed ({ex.GetType().Name}: {ex.Message}). The service restarts.");
             _logger.Fatal(ex, "The start of the service failed. The service restarts.");
@@ -91,21 +132,153 @@ public sealed class StartupWorker : BackgroundService
         }
     }
 
+    /// <summary>The first try, then the lockdown until a try succeeds. Returns when the phase is Ready.</summary>
+    private async Task StartUntilReadyAsync(CancellationToken stoppingToken)
+    {
+        var attempt = await RunWithLockAsync(() => TryStart(writeEvent: true, last: null), stoppingToken);
+        if (Report(attempt) == StartupPhase.Lockdown)
+            await RunLockdownAsync(attempt, stoppingToken);
+    }
+
+    private StartupPhase Report(StartAttempt attempt) =>
+        _machine.Report(attempt.FolderUsable, attempt.Opened, attempt.StartActionsDone);
+
     private string? Open(DataFolderPreparation prep) => OpenStep is { } open ? open(prep) : _startup.TryOpen(prep);
 
-    /// <summary>Runs the data folder step on a pool thread and locks while it takes long (CB1 a).</summary>
-    private async Task<DataFolderPreparation> RunStepWithLockAsync(bool writeEvent, CancellationToken stoppingToken)
+    /// <summary>
+    /// One try of the start before the gate: the data folder step, the open and migration of the database and the log
+    /// (N-a: inside the wrapper that locks), then the start actions (SF2). If the database and the log are open from
+    /// an earlier try, only the start actions run again: a second open would add a second log sink on the same file.
+    /// </summary>
+    private StartAttempt TryStart(bool writeEvent, StartAttempt? last)
+    {
+        DataFolderPreparation prep;
+        if (last is { Opened: true })
+        {
+            prep = last.Prep;
+        }
+        else
+        {
+            prep = Prepare(writeEvent);
+            // SF1: a move or a new folder at any try of this run sets the setup lock, also if the open fails first.
+            _setupLock.Report(prep.Result?.QuarantinedTo is not null, prep.Relocated);
+            if (prep.IsLockdown)
+                return new StartAttempt(prep, false, false, false);
+            var openError = Open(prep);
+            if (openError is not null)
+            {
+                RecordOpenFailure(prep, openError, writeEvent);
+                return new StartAttempt(prep, true, false, false);
+            }
+        }
+
+        var actionError = RunStartActions(prep);
+        if (actionError is not null)
+        {
+            RecordOpenFailure(prep, "A start action before the gate failed: " + actionError, writeEvent && last is null);
+            return new StartAttempt(prep, true, true, false);
+        }
+        if (last is { Opened: true })
+            RecordStartRecovered(prep);
+        return new StartAttempt(prep, true, true, true);
+    }
+
+    private DataFolderPreparation Prepare(bool writeEvent)
+    {
+        try
+        {
+            return PrepareStep(writeEvent);
+        }
+        catch (Exception ex)
+        {
+            return new DataFolderPreparation(null, "(unknown)", null, null, null, "The data folder step failed: " + ex.Message, null);
+        }
+    }
+
+    /// <summary>
+    /// The start actions before the gate opens (SF1, SF2, N-c). The database is open, but the workers do not run yet.
+    /// Returns null after a success, else the error: the caller runs the lockdown, not an exit.
+    /// </summary>
+    private string? RunStartActions(DataFolderPreparation prep)
+    {
+        try
+        {
+            if (RunReadyActions)
+            {
+                _logger.Information("Parental Control Service starting");
+                DataFolderStartup.Log(_logger);
+            }
+            // SF1: the new database after a move has no Restricted User. The registry value keeps the lock across a
+            // retry, an exit, a power cut and a reboot. It is cleared only after the write to the database succeeded.
+            if (_setupLock.MustSetLock(ReadSetupLockPending()))
+            {
+                WriteSetupLockSetting();
+                const string text = "Parental Control started with a new database after a move of the data folder. " +
+                                    "It locks each session of a user who is not an administrator until a Restricted User exists " +
+                                    "or the parent finishes the setup in Parental Control Admin.";
+                _logger.Warning(text);
+                WriteEvent(EventLogEntryType.Warning, 1010, text);
+                if (!ClearSetupLockPending())
+                    _logger.Warning("Could not delete the registry value SetupLockPending. The next start sets the setup lock again.");
+            }
+            // N-c: read the sessions before the gate. The service lifetime ignores session events until the gate
+            // opens; AfterGateAsync reads the sessions again for the events in between.
+            if (RunReadyActions)
+                _sessionTracker.Initialize();
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return $"{ex.GetType().Name}: {ex.Message}";
+        }
+    }
+
+    /// <summary>The gate is open: the workers enforce. Runs the actions that may use Telegram (N-b, N-c).</summary>
+    private async Task AfterGateAsync(CancellationToken stoppingToken)
+    {
+        _lockedSessions.Clear();
+        _startup.Open();
+        if (!RunReadyActions)
+            return;
+        try
+        {
+            // N-c: a logon between Initialize and Open had no event handler. Initialize skips the known sessions.
+            _sessionTracker.Initialize();
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "The second read of the sessions after the start gate failed. The session sync of the usage worker adds them.");
+        }
+        // N-b: the setup lock starts before the Telegram calls of the admin start check, which can take long.
+        var setupLock = RunSetupLockAsync(stoppingToken);
+        try
+        {
+            await AdminAccessStartup.RunAsync(_telegram, _logger);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "The start check of the admin sign-in failed");
+        }
+        await setupLock;
+    }
+
+    /// <summary>
+    /// Runs <paramref name="work"/> on a pool thread and locks while it takes long (CB1 a, N-a): in the Preparing phase
+    /// after 5 seconds, in the lockdown at once.
+    /// </summary>
+    private async Task<StartAttempt> RunWithLockAsync(Func<StartAttempt> work, CancellationToken stoppingToken)
     {
         var started = Stopwatch.StartNew();
         var step = Task.Run(() =>
         {
             try
             {
-                return PrepareStep(writeEvent);
+                return work();
             }
             catch (Exception ex)
             {
-                return new DataFolderPreparation(null, "(unknown)", null, null, null, "The data folder step failed: " + ex.Message, null);
+                var prep = new DataFolderPreparation(null, "(unknown)", null, null, null, "The start failed: " + ex.Message, null);
+                return new StartAttempt(prep, false, false, false);
             }
         }, stoppingToken);
         var lockingLogged = false;
@@ -128,10 +301,10 @@ public sealed class StartupWorker : BackgroundService
     }
 
     /// <summary>
-    /// The lockdown (D14, CB2, S5): lock every 2 seconds, and every minute try the whole start again: the data folder
-    /// step, the database and the log. Only a full success ends the lockdown, in this process.
+    /// The lockdown (D14, CB2, S5, SF2): lock every 2 seconds, and every minute try the start again. Only a full success
+    /// ends the lockdown, in this process.
     /// </summary>
-    private async Task<DataFolderPreparation> RunLockdownAsync(CancellationToken stoppingToken)
+    private async Task RunLockdownAsync(StartAttempt last, CancellationToken stoppingToken)
     {
         var nextRetry = DateTimeOffset.UtcNow + RetryInterval;
         while (!stoppingToken.IsCancellationRequested)
@@ -139,65 +312,24 @@ public sealed class StartupWorker : BackgroundService
             LockOnce("Parental Control has no usable data folder or database");
             if (DateTimeOffset.UtcNow >= nextRetry)
             {
-                var prep = await RunStepWithLockAsync(writeEvent: false, stoppingToken);
+                var current = last;
+                last = await RunWithLockAsync(() => TryStart(writeEvent: false, current), stoppingToken);
                 nextRetry = DateTimeOffset.UtcNow + RetryInterval;
-                if (!prep.IsLockdown)
+                if (Report(last) == StartupPhase.Ready)
                 {
-                    var openError = Open(prep);
-                    if (_machine.Report(true, openError is null) == StartupPhase.Ready)
-                    {
-                        WriteEvent(EventLogEntryType.Information, 1007,
-                            $"Parental Control has a usable data folder and database again ({prep.Folder}). It enforces the limits as normal.");
-                        return prep;
-                    }
-                    RecordOpenFailure(prep, openError!, false);
+                    WriteEvent(EventLogEntryType.Information, 1007,
+                        $"Parental Control has a usable data folder and database again ({last.Prep.Folder}). It enforces the limits as normal.");
+                    return;
                 }
             }
             await Task.Delay(LockInterval, stoppingToken);
         }
-        return new DataFolderPreparation(null, "(stopped)", null, null, null, "stopped", null);
-    }
-
-    private async Task OnReadyAsync(DataFolderPreparation prep)
-    {
-        _lockedSessions.Clear();
-        if (RunReadyActions)
-        {
-            _logger.Information("Parental Control Service starting");
-            DataFolderStartup.Log(_logger);
-            // S2: a move of an untrusted folder or a new folder gives a new database without a Restricted User.
-            if (StartupLockPolicy.StartsSetupLock(prep.Result?.QuarantinedTo is not null, prep.Relocated))
-                StartSetupLock();
-            _sessionTracker.Initialize();
-        }
-        _startup.Open();
-        if (!RunReadyActions)
-            return;
-        try
-        {
-            await AdminAccessStartup.RunAsync(_telegram, _logger);
-        }
-        catch (Exception ex)
-        {
-            _logger.Error(ex, "The start check of the admin sign-in failed");
-        }
-    }
-
-    private void StartSetupLock()
-    {
-        SettingsRepository.Set(SettingsRepository.KeyDataFolderSetupLock, DateTimeOffset.UtcNow.ToString("O"));
-        const string text = "Parental Control started with a new database after a move of the data folder. " +
-                            "It locks each session of a user who is not an administrator until a Restricted User exists " +
-                            "or the parent finishes the setup in Parental Control Admin.";
-        _logger.Warning(text);
-        WriteEvent(EventLogEntryType.Warning, 1010, text);
+        stoppingToken.ThrowIfCancellationRequested();
     }
 
     /// <summary>The setup lock after a quarantine or a relocation (S2). It ends when a Restricted User exists.</summary>
     private async Task RunSetupLockAsync(CancellationToken stoppingToken)
     {
-        if (!RunReadyActions)
-            return;
         while (!stoppingToken.IsCancellationRequested)
         {
             try

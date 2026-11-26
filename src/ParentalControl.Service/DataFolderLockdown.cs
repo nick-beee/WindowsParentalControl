@@ -45,7 +45,13 @@ public static class DataFolderLockdown
     public static void RestartService(IHostApplicationLifetime lifetime)
     {
         if (WindowsServiceHelpers.IsWindowsService())
+        {
+            // A report of SERVICE_STOPPED with this code also starts the recovery, because the installer sets
+            // "sc failureflag 1" (third review, SF2). Environment.ExitCode does not reach the Service Control Manager.
+            if (ParentalControlServiceLifetime.Current is { } service)
+                service.ExitCode = RestartExitCode;
             Environment.Exit(RestartExitCode); // no SERVICE_STOPPED report: the Service Control Manager restarts the service
+        }
         Environment.ExitCode = RestartExitCode;
         lifetime.StopApplication();
     }

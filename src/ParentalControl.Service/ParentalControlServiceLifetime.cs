@@ -10,6 +10,9 @@ public sealed class ParentalControlServiceLifetime : WindowsServiceLifetime
     private readonly Serilog.ILogger _logger;
     private readonly ServiceStartup _startup;
 
+    /// <summary>The service lifetime of this process, or null outside a Windows service. Used for the exit code.</summary>
+    public static ParentalControlServiceLifetime? Current { get; private set; }
+
     public ParentalControlServiceLifetime(
         IHostEnvironment environment,
         IHostApplicationLifetime applicationLifetime,
@@ -21,6 +24,7 @@ public sealed class ParentalControlServiceLifetime : WindowsServiceLifetime
         ServiceStartup startup)
         : base(environment, applicationLifetime, loggerFactory, optionsAccessor, windowsServiceOptions)
     {
+        Current = this;
         CanHandleSessionChangeEvent = true;
         CanHandlePowerEvent = true;
         _sessionTracker = sessionTracker;

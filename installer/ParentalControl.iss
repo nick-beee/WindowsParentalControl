@@ -104,6 +104,9 @@ begin
     Exec('sc', ExpandConstant('failure {#ServiceName}')
          + ' reset= 86400 actions= restart/10000/restart/30000/restart/60000',
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // require-admin-sign-in SF2: run the restart actions also when the service reports a stop with an error code.
+    Exec('sc', ExpandConstant('failureflag {#ServiceName} 1'),
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
 procedure CreateService();
@@ -128,6 +131,9 @@ begin
     // Configure service to restart on failure (10s, 30s, 60s)
     Exec('sc', ExpandConstant('failure {#ServiceName}')
          + ' reset= 86400 actions= restart/10000/restart/30000/restart/60000',
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // require-admin-sign-in SF2: run the restart actions also when the service reports a stop with an error code.
+    Exec('sc', ExpandConstant('failureflag {#ServiceName} 1'),
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 

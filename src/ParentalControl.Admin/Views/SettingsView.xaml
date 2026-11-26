@@ -244,7 +244,7 @@
 
                 <md:Card Padding="20" Margin="0,0,0,24" md:ElevationAssist.Elevation="Dp2">
                     <StackPanel>
-                        <TextBlock Text="The web admin (http://localhost:5050/admin) always needs a 6-digit code from an authenticator app (Google Authenticator, Microsoft Authenticator or 1Password). You can set up the sign-in only here, on this PC. Sign in from your own Windows account on this PC, or from a phone or laptop on the home network: the web admin refuses a sign-in from the account of a child."
+                        <TextBlock Text="The web admin (http://localhost:5050/admin) always needs a 6-digit code from an authenticator app (Google Authenticator, Microsoft Authenticator or 1Password). You can set up the sign-in only here, on this PC. Sign in from your own Windows account on this PC, or from a phone or laptop on the home network: the web admin refuses a sign-in from the account of a child. Sign in only while the state below shows &quot;Set up on&quot;: if it shows that another program holds port 5050, a page on localhost:5050 can come from that program, so do not type a code there."
                                    TextWrapping="Wrap" Opacity="0.8" Margin="0,0,0,16" LineHeight="20" />
 
                         <TextBlock Text="{Binding SignInStatusText}" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,16" />

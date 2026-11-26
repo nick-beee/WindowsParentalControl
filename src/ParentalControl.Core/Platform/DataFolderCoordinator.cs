@@ -67,7 +67,8 @@ public static class DataFolderCoordinator
                 tries++;
                 try
                 {
-                    var result = DataFolderGuard.Secure(reading.Folder!, budget, lastSecuredFolder);
+                    var result = DataFolderGuard.Secure(reading.Folder!, budget, lastSecuredFolder,
+                        beforeMove: () => registry.TryMarkSetupLockPending(DateTimeOffset.UtcNow));
                     return new DataFolderPreparation(reading.Folder, configured, result, null, null, null, null);
                 }
                 catch (DataFolderWalkTimeoutException ex)
@@ -133,6 +134,9 @@ public static class DataFolderCoordinator
         string configuredError, Func<byte[]> random)
     {
         var errors = new List<string> { configuredError };
+        // SF1: the new folder gets a new database without a Restricted User. Mark the setup lock before the create, so a
+        // power cut after it does not lose the lock. WriteLocation writes the value again with the location.
+        registry.TryMarkSetupLockPending(DateTimeOffset.UtcNow);
         var tries = 0;
         while (true)
         {

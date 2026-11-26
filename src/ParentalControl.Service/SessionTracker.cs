@@ -49,7 +49,9 @@ public sealed class SessionTracker
         var sessions = SessionManager.GetLoggedOnSessions();
         foreach (var (sessionId, username, sid, isDisconnected) in sessions)
         {
-            if (sid is null) continue;
+            // The start worker calls this before and after the start gate (require-admin-sign-in N-c): a known
+            // session is not read again.
+            if (sid is null || _activeSessions.ContainsKey(sessionId)) continue;
 
             // The connect state does not show a Win+L lock. Read the lock flag of Windows too.
             var (flag, rawFlags) = SessionManager.QueryLockFlag(sessionId);

@@ -18,4 +18,43 @@ public static class WebServerRetry
         var delay = TimeSpan.FromTicks(FirstDelay.Ticks << exponent);
         return delay < MaxDelay ? delay : MaxDelay;
     }
+
+    /// <summary>
+    /// True if a process other than the service holds the port (third review, SF3). A failed bind without such a
+    /// process, for example a short wait of Windows after an own restart of the web server, is no squat and gives no
+    /// alert.
+    /// </summary>
+    public static bool IsForeignOwner(IEnumerable<int> ownerPids, int servicePid) => ownerPids.Any(pid => pid != servicePid);
+}
+
+/// <summary>
+/// The alert about a program that holds the port of the web server (third review, SF3). The Telegram settings are in
+/// the database, so the alert can go out only after the start gate opened. It goes out one time per squat: the first
+/// failed bind with a foreign owner after the gate opened. A successful bind ends the squat.
+/// </summary>
+public sealed class PortSquatAlert
+{
+    private bool _squatActive;
+    private bool _alerted;
+
+    /// <summary>Records a failed bind. Returns true if the caller must send the alert now.</summary>
+    public bool OnBindFailed(bool foreignOwner, bool gateOpen)
+    {
+        if (!foreignOwner)
+            return false;
+        _squatActive = true;
+        if (!gateOpen || _alerted)
+            return false;
+        _alerted = true;
+        return true;
+    }
+
+    /// <summary>Records a successful bind. Returns true if a squat ended, so the caller clears the warning.</summary>
+    public bool OnBound()
+    {
+        var ended = _squatActive;
+        _squatActive = false;
+        _alerted = false;
+        return ended;
+    }
 }

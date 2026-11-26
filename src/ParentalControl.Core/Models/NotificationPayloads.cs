@@ -56,3 +56,11 @@ public sealed class DataFolderQuarantinedPayload
     public string MovedTo { get; set; } = string.Empty;
     public DateTime WhenLocal { get; set; }
 }
+
+/// <summary>The alert about a program that holds port 5050 of the web server (require-admin-sign-in, third review SF3).</summary>
+public sealed class WebPortBlockedPayload
+{
+    public string MachineName { get; set; } = string.Empty;
+    public string Owner { get; set; } = string.Empty;
+    public DateTime WhenLocal { get; set; }
+}

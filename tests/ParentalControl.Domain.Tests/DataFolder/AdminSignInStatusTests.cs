@@ -90,4 +90,21 @@ public class AdminSignInStatusTests
         Assert.Contains("Access is denied", AdminSignInStatus.StepWarning(Secured with { Detail = "Access is denied" }));
         Assert.Null(AdminSignInStatus.StepWarning(new DataFolderReport(DataFolderState.Lockdown, "x", At, null, null)));
     }
+
+    [Fact]
+    public void Program_on_the_port_locks_the_web_admin_and_names_the_program()
+    {
+        // SF3: while a program holds port 5050, the parent must not type a code into http://localhost:5050.
+        Assert.Null(AdminSignInStatus.PortBlockedWarning(Secured, Utc));
+        var blocked = Secured with { WebPortBlockedBy = "evil.exe (process 4242, user S-1-5-21-1-2-3-1001)", WebPortBlockedAtUtc = At };
+        Assert.False(AdminSignInStatus.IsWebAdminUsable(true, blocked));
+        var warning = AdminSignInStatus.PortBlockedWarning(blocked, Utc);
+        Assert.NotNull(warning);
+        Assert.Contains("evil.exe (process 4242", warning);
+        Assert.Contains("2026-11-26 08:30", warning);
+        Assert.Contains("Do not type a sign-in code", warning);
+        var text = AdminSignInStatus.Describe(true, At, blocked, Utc);
+        Assert.StartsWith("Locked:", text);
+        Assert.DoesNotContain("Set up on", text);
+    }
 }

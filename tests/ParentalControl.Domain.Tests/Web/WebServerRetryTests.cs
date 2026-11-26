@@ -19,4 +19,32 @@ public class WebServerRetryTests
     {
         Assert.Equal(TimeSpan.Zero, WebServerRetry.Delay(0));
     }
+
+    [Fact]
+    public void Only_another_process_on_the_port_is_a_squat()
+    {
+        Assert.False(WebServerRetry.IsForeignOwner(Array.Empty<int>(), 100));
+        Assert.False(WebServerRetry.IsForeignOwner(new[] { 100 }, 100));
+        Assert.True(WebServerRetry.IsForeignOwner(new[] { 100, 4242 }, 100));
+    }
+
+    [Fact]
+    public void Squat_alert_waits_for_the_gate_and_goes_out_one_time()
+    {
+        var alert = new PortSquatAlert();
+        Assert.False(alert.OnBindFailed(foreignOwner: true, gateOpen: false)); // no Telegram settings before the gate
+        Assert.True(alert.OnBindFailed(foreignOwner: true, gateOpen: true));
+        Assert.False(alert.OnBindFailed(foreignOwner: true, gateOpen: true)); // not one per retry
+        Assert.True(alert.OnBound());
+        Assert.False(alert.OnBound());
+        Assert.True(alert.OnBindFailed(foreignOwner: true, gateOpen: true)); // a new squat gives a new alert
+    }
+
+    [Fact]
+    public void Failed_bind_without_a_foreign_owner_gives_no_alert()
+    {
+        var alert = new PortSquatAlert();
+        Assert.False(alert.OnBindFailed(foreignOwner: false, gateOpen: true));
+        Assert.False(alert.OnBound());
+    }
 }

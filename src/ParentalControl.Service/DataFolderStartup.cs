@@ -43,14 +43,21 @@ public static class DataFolderStartup
     /// </summary>
     public static void RecordOpenFailure(DataFolderPreparation prep, string error, bool writeEvent)
     {
-        var detail = $"The database or the log in {prep.Folder} did not open: {error}";
+        var detail = $"The database, the log or a start action in {prep.Folder} failed: {error}";
         DataFolderStatusStore.TryWrite(DataFolderState.Lockdown, detail, DateTimeOffset.UtcNow, newQuarantine: null);
         if (writeEvent)
             WriteEvent(EventLogEntryType.Error, 1009,
-                "Parental Control secured the data folder, but it could not open the database or the log file. " +
+                "Parental Control secured the data folder, but the database, the log file or a start action failed. " +
                 "It locks each session of a user who is not an administrator (Enforced Workstation Lock) and tries again every minute. " +
                 detail);
     }
+
+    /// <summary>
+    /// Writes the Secured state again after the start actions before the gate succeeded at a retry (third review,
+    /// SF2). The failed try wrote the state Lockdown.
+    /// </summary>
+    public static void RecordStartRecovered(DataFolderPreparation prep) =>
+        DataFolderStatusStore.TryWrite(DataFolderState.Secured, prep.Warning, DateTimeOffset.UtcNow, newQuarantine: null, folder: prep.Folder);
 
     private static void Record(DataFolderPreparation prep, bool writeLockdownEvent)
     {
@@ -65,6 +72,10 @@ public static class DataFolderStartup
                 $"Configured folder: {prep.ConfiguredFolder}. Errors: {prep.Error}");
             return;
         }
+
+        // SF1: the step wrote SetupLockPending before the move or the create. Write it again here, in case that write failed.
+        if (StartupLockPolicy.StartsSetupLock(prep.Result?.QuarantinedTo is not null, prep.Relocated))
+            DataFolderRegistry.Default.TryMarkSetupLockPending(now);
 
         var relocation = prep.Relocated
             ? new DataFolderStatusStore.Relocation(prep.ConfiguredFolder, prep.Folder!, prep.RelocationReason!)

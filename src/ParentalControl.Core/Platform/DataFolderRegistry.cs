@@ -16,6 +16,13 @@ public sealed class DataFolderRegistry
     public const string DefaultKeyPath = @"SOFTWARE\ParentalControl";
     public const string LocationValue = "DataFolderPath";
 
+    /// <summary>
+    /// Set by the data folder step in the same step as a move of an untrusted folder or a new folder (third review,
+    /// SF1). The service copies it into the database (<c>data_folder_setup_lock</c>) and clears it only after that write
+    /// succeeded. So the setup lock survives a lockdown retry, an exit of the process, a power cut and a reboot.
+    /// </summary>
+    public const string SetupLockPendingValue = "SetupLockPending";
+
     // Owner Administrators; a protected DACL: full control for SYSTEM and Administrators, read for Users.
     public const string KeySddl = "O:BAD:PAI(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;BU)";
 
@@ -58,6 +65,57 @@ public sealed class DataFolderRegistry
     {
         using var key = OpenForWrite();
         key.SetValue(LocationValue, folder, RegistryValueKind.String);
+        // SF1: a new folder has a new database, so the setup lock is pending (the same write as the location).
+        key.SetValue(SetupLockPendingValue, DateTimeOffset.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture), RegistryValueKind.String);
+    }
+
+    /// <summary>Writes <see cref="SetupLockPendingValue"/>. Returns false on an error.</summary>
+    public bool TryMarkSetupLockPending(DateTimeOffset nowUtc)
+    {
+        try
+        {
+            using var key = OpenForWrite();
+            key.SetValue(SetupLockPendingValue, nowUtc.ToString("O", System.Globalization.CultureInfo.InvariantCulture), RegistryValueKind.String);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// True if <see cref="SetupLockPendingValue"/> exists. An error of the read gives false: the flags of the run still
+    /// set the lock after a move in this run.
+    /// </summary>
+    public bool IsSetupLockPending()
+    {
+        try
+        {
+            using var hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+            using var key = hklm.OpenSubKey(KeyPath, writable: false);
+            return key?.GetValue(SetupLockPendingValue) is string { Length: > 0 };
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Deletes <see cref="SetupLockPendingValue"/>. Returns false on an error.</summary>
+    public bool TryClearSetupLockPending()
+    {
+        try
+        {
+            using var hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+            using var key = hklm.OpenSubKey(KeyPath, writable: true);
+            key?.DeleteValue(SetupLockPendingValue, throwOnMissingValue: false);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>

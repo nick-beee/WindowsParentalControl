@@ -70,13 +70,19 @@ public static class DataFolderGuard
     /// The folder that the last start secured without a warning (from the registry), or null. If it is this folder and
     /// the folder still has the rules of the service, the step skips the walk (CB1 b).
     /// </param>
+    /// <param name="beforeMove">
+    /// Runs right before the move of an untrusted folder (third review, SF1): the service writes the registry value
+    /// <c>SetupLockPending</c>, so a power cut between the move and the first write to the new database does not lose
+    /// the setup lock. An error in it does not stop the move.
+    /// </param>
     /// <exception cref="DataFolderWalkTimeoutException">The walk reached the time limit.</exception>
-    public static DataFolderResult Secure(string folder, WalkBudget? budget = null, string? lastSecuredFolder = null)
+    public static DataFolderResult Secure(string folder, WalkBudget? budget = null, string? lastSecuredFolder = null,
+        Action? beforeMove = null)
     {
         try
         {
             TokenPrivileges.Enable("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege");
-            return SecureCore(Path.GetFullPath(folder), budget ?? WalkBudget.Default(), lastSecuredFolder);
+            return SecureCore(Path.GetFullPath(folder), budget ?? WalkBudget.Default(), lastSecuredFolder, beforeMove);
         }
         catch (DataFolderUnsafeException)
         {
@@ -88,7 +94,7 @@ public static class DataFolderGuard
         }
     }
 
-    private static DataFolderResult SecureCore(string folder, WalkBudget budget, string? lastSecuredFolder)
+    private static DataFolderResult SecureCore(string folder, WalkBudget budget, string? lastSecuredFolder, Action? beforeMove)
     {
         string? quarantinedTo = null;
         string? quarantineReason = null;
@@ -126,6 +132,7 @@ public static class DataFolderGuard
             if (reason is not null)
             {
                 // B2: the content is not trusted. Move it away and start with a new folder and a new database.
+                try { beforeMove?.Invoke(); } catch { /* Record() and the flags of the run are the fallback. */ }
                 quarantinedTo = Quarantine(folder, info);
                 quarantineReason = reason;
                 continue;

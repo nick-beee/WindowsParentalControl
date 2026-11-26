@@ -63,6 +63,26 @@ public sealed class WebServerHost : BackgroundService
     public int FailedStarts => _failedStarts;
     private int _failedStarts;
 
+    /// <summary>Finds the processes that listen on a port (SF3). Tests replace it.</summary>
+    public Func<int, IReadOnlyList<int>> FindPortOwners { get; init; } = TcpConnectionOwner.FindListenerPids;
+
+    /// <summary>The process id of the service. A listener of this process is no squat. Tests use another value.</summary>
+    public int ServicePid { get; init; } = Environment.ProcessId;
+
+    /// <summary>
+    /// Writes the program that holds the port to the admin-only registry key, or clears it with null (SF3). The Admin
+    /// app shows it as a banner. Tests replace it, so a test does not change the state of an installed service.
+    /// </summary>
+    public Action<string?> RecordPortBlocked { get; init; } = owner => DataFolderStatusStore.TryWriteWebPortBlocked(owner, DateTimeOffset.UtcNow);
+
+    /// <summary>Sends the Telegram alert about the program that holds the port (SF3). Tests replace it.</summary>
+    public Func<string, Task>? SendPortAlert { get; init; }
+
+    /// <summary>The program that held the port at the last failed bind, or null. For the tests.</summary>
+    public string? LastPortOwner { get; private set; }
+
+    private readonly PortSquatAlert _squatAlert = new();
+
     /// <param name="startup">The start gate of the service, or null in a test (the database is ready then).</param>
     public WebServerHost(SessionTracker sessionTracker, TelegramBotService telegramBotService, Serilog.ILogger logger,
         ForegroundHistory foregroundHistory, CategoryEnforcer categoryEnforcer, ServiceStartup? startup = null)
@@ -78,9 +98,9 @@ public sealed class WebServerHost : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // The routes read the database: wait for the start gate (require-admin-sign-in, CB1).
-        if (_startup is not null)
-            await _startup.WaitReadyAsync(stoppingToken);
+        // Third review, SF3: bind the port at once, before the data folder step, so a program of the child cannot take
+        // it while the step runs. Until the start gate opens, each route answers 503 (StartGateAsync): the routes read
+        // the database, which is not safe before the gate.
         await RunServerAsync(stoppingToken);
     }
 
@@ -213,24 +233,151 @@ public sealed class WebServerHost : BackgroundService
         await RunWithRetryAsync(async ct =>
         {
             var builder = WebApplication.CreateBuilder();
-            builder.WebHost.ConfigureKestrel(options => options.ListenAnyIP(Port));
+            // SF3: one listen socket on [::] (dual mode) with SO_EXCLUSIVEADDRUSE. No fallback to 0.0.0.0, so a program
+            // that holds [::1]:5050 cannot keep the IPv6 loopback, and no program can bind 127.0.0.1:5050 after us.
+            builder.WebHost.UseSockets(o => o.CreateBoundListenSocket = CreateExclusiveListenSocket);
+            builder.WebHost.ConfigureKestrel(options => options.Listen(System.Net.IPAddress.IPv6Any, Port));
             builder.Services.AddRouting();
             await using var app = builder.Build();
             ConfigureApp(app);
-            await app.StartAsync(ct);
-            _logger.Information("Starting embedded WebServer on http://0.0.0.0:{Port}", Port);
+            try
+            {
+                await app.StartAsync(ct);
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                await OnBindFailedAsync(ex);
+                throw;
+            }
+            _startup?.MarkWebBindTried();
+            await OnBoundAsync();
+            _logger.Information("Starting embedded WebServer on http://[::]:{Port}", Port);
             await app.WaitForShutdownAsync(ct);
         }, stoppingToken);
     }
 
-    private async Task RunWithRetryAsync(Func<CancellationToken, Task> runOnce, CancellationToken stoppingToken)
+    /// <summary>
+    /// A listen socket with SO_EXCLUSIVEADDRUSE on Windows (SF3): the bind fails while another socket uses the port,
+    /// and no other socket can bind the port (also not a specific address such as 127.0.0.1) while it is open.
+    /// </summary>
+    private static System.Net.Sockets.Socket CreateExclusiveListenSocket(System.Net.EndPoint endPoint)
+    {
+        if (endPoint is not System.Net.IPEndPoint ip)
+            return Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketTransportOptions.CreateDefaultBoundListenSocket(endPoint);
+        var socket = new System.Net.Sockets.Socket(ip.AddressFamily, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp);
+        try
+        {
+            if (ip.Address.Equals(System.Net.IPAddress.IPv6Any))
+                socket.DualMode = true;
+            if (OperatingSystem.IsWindows())
+                socket.ExclusiveAddressUse = true;
+            socket.Bind(ip);
+            return socket;
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// A failed bind (SF3): find the program that holds the port, log it, show it in the Admin app (registry) and, after
+    /// the start gate opened, send one Telegram alert. The service never closes that program (the hard rule).
+    /// </summary>
+    private async Task OnBindFailedAsync(Exception error)
+    {
+        _startup?.MarkWebBindTried();
+        IReadOnlyList<int> owners;
+        try { owners = FindPortOwners(Port); }
+        catch { owners = Array.Empty<int>(); }
+        var foreign = WebServerRetry.IsForeignOwner(owners, ServicePid);
+        if (!foreign)
+        {
+            _logger.Warning("The web server could not bind port {Port} ({Error}), and no other program listens on it", Port, error.Message);
+            return;
+        }
+        await ReportSquatAsync(owners);
+    }
+
+    /// <summary>After a successful bind: a program that still listens on the port is a squat too, else the squat ended.</summary>
+    private async Task OnBoundAsync()
+    {
+        IReadOnlyList<int> owners;
+        try { owners = FindPortOwners(Port); }
+        catch { owners = Array.Empty<int>(); }
+        if (WebServerRetry.IsForeignOwner(owners, ServicePid))
+        {
+            await ReportSquatAsync(owners);
+            return;
+        }
+        if (_squatAlert.OnBound())
+        {
+            _logger.Information("The web server listens on port {Port} again. No other program holds the port.", Port);
+            LastPortOwner = null;
+        }
+        RecordPortBlockedSafe(null);
+    }
+
+    private async Task ReportSquatAsync(IReadOnlyList<int> owners)
+    {
+        var owner = string.Join("; ", owners.Where(pid => pid != ServicePid).Select(DescribeProcess));
+        LastPortOwner = owner;
+        // The owner text comes from an exe: it is untrusted data, only logged and shown.
+        _logger.Warning("Another program holds port {Port} of the web server: {Owner}. Parental Control does not close it. " +
+                        "The limits stay on, but /api/agent/activity of the Session Agent does not reach the service.", Port, owner);
+        RecordPortBlockedSafe(owner);
+        if (!_squatAlert.OnBindFailed(foreignOwner: true, gateOpen: _startup?.IsReady ?? true))
+            return;
+        try
+        {
+            await (SendPortAlert is { } send ? send(owner) : _telegramBotService.SendWebPortBlockedAlertAsync(owner, DateTime.Now));
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Could not send the Telegram alert about the program on port {Port}", Port);
+        }
+    }
+
+    private void RecordPortBlockedSafe(string? owner)
+    {
+        try { RecordPortBlocked(owner); }
+        catch (Exception ex) { _logger.Warning(ex, "Could not record the state of port {Port} in the registry", Port); }
+    }
+
+    /// <summary>"name (process 123, user PC\Kid)". Each part that Windows does not give is left out.</summary>
+    private static string DescribeProcess(int pid)
+    {
+        string name;
+        try { using var process = System.Diagnostics.Process.GetProcessById(pid); name = process.ProcessName; }
+        catch { name = "unknown program"; }
+        string? user = null;
+        try
+        {
+            var sid = TcpConnectionOwner.ReadProcess(pid).UserSid;
+            if (sid is not null)
+            {
+                try { user = new System.Security.Principal.SecurityIdentifier(sid).Translate(typeof(System.Security.Principal.NTAccount)).Value; }
+                catch { user = sid; }
+            }
+        }
+        catch { }
+        return user is null ? $"{name} (process {pid})" : $"{name} (process {pid}, user {user})";
+    }
+
+    /// <summary>
+    /// Runs <paramref name="runOnce"/> until <paramref name="stoppingToken"/> ends. After an error, and also when
+    /// <paramref name="runOnce"/> ends without an error while the service still runs (third review, N-f), it waits
+    /// <see cref="RetryDelay"/> and runs it again. Public for the tests.
+    /// </summary>
+    public async Task RunWithRetryAsync(Func<CancellationToken, Task> runOnce, CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
         {
+            Exception? error = null;
             try
             {
                 await runOnce(stoppingToken);
-                return;
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -238,10 +385,19 @@ public sealed class WebServerHost : BackgroundService
             }
             catch (Exception ex)
             {
+                error = ex;
+            }
+            if (stoppingToken.IsCancellationRequested)
+                return;
+            {
                 var failed = Interlocked.Increment(ref _failedStarts);
                 var delay = RetryDelay(failed);
-                _logger.Error(ex, "The web server could not start on port {Port} (try {Try}). It tries again in {Delay}. The limits are still enforced.",
-                    Port, failed, delay);
+                if (error is null)
+                    _logger.Error("The web server on port {Port} stopped while the service runs (try {Try}). It starts again in {Delay}.",
+                        Port, failed, delay);
+                else
+                    _logger.Error(error, "The web server could not start on port {Port} (try {Try}). It tries again in {Delay}. The limits are still enforced.",
+                        Port, failed, delay);
                 try
                 {
                     await Task.Delay(delay, stoppingToken);
@@ -259,6 +415,8 @@ public sealed class WebServerHost : BackgroundService
     /// </summary>
     public void ConfigureApp(WebApplication app)
     {
+        // SF3: until the start gate opens, each route answers 503 and reads nothing from the database.
+        app.Use(StartGateAsync);
         // The gate runs after routing, so it sees the selected endpoint, and before the endpoints.
         app.UseRouting();
         app.Use(AdminGateAsync);
@@ -1946,6 +2104,23 @@ public sealed class WebServerHost : BackgroundService
     /// The one gate for all routes below <c>/api/admin/</c> (require-admin-sign-in D4). Deny by default: each admin
     /// route needs an Admin Session, and a state-changing request from another origin is refused (D8).
     /// </summary>
+    /// <summary>
+    /// Answers 503 on each route until the start gate opens (third review, SF3). The web server binds its port before
+    /// the data folder step, but the database is not safe to use before the gate. Without a gate (a test) it passes.
+    /// </summary>
+    private async Task StartGateAsync(HttpContext ctx, Func<Task> next)
+    {
+        if (_startup is null || _startup.IsReady)
+        {
+            await next();
+            return;
+        }
+        ctx.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+        ctx.Response.Headers.RetryAfter = "10";
+        ctx.Response.ContentType = "text/plain; charset=utf-8";
+        await ctx.Response.WriteAsync("Parental Control startet noch. Bitte versuche es gleich noch einmal.");
+    }
+
     private async Task AdminGateAsync(HttpContext ctx, Func<Task> next)
     {
         var template = (ctx.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText;

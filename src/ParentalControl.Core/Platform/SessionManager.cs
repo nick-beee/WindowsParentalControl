@@ -28,8 +28,17 @@ public static class SessionManager
     }
 
 
-    public static string? GetSessionUsername(int sessionId)
+    public static string? GetSessionUsername(int sessionId) =>
+        TryGetSessionUsername(sessionId, out var username) ? username : null;
+
+    /// <summary>
+    /// Reads the user name of a session. Returns false if Windows did not answer (the call failed), so a caller can
+    /// tell a failure apart from a session without a user (true with a null name, for example session 0). The admin
+    /// check refuses on a failure (require-admin-sign-in, third review N-e).
+    /// </summary>
+    public static bool TryGetSessionUsername(int sessionId, out string? username)
     {
+        username = null;
         if (!NativeMethods.WTSQuerySessionInformationW(
                 NativeMethods.WTS_CURRENT_SERVER_HANDLE,
                 sessionId,
@@ -37,13 +46,14 @@ public static class SessionManager
                 out var buffer,
                 out _))
         {
-            return null;
+            return false;
         }
 
         try
         {
-            var username = Marshal.PtrToStringUni(buffer);
-            return string.IsNullOrEmpty(username) ? null : username;
+            var name = Marshal.PtrToStringUni(buffer);
+            username = string.IsNullOrEmpty(name) ? null : name;
+            return true;
         }
         finally
         {

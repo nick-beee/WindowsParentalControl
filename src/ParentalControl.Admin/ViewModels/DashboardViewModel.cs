@@ -48,9 +48,12 @@ public partial class DashboardViewModel : ObservableObject
         var credentialSetUp = AdminAccessRepository.IsCredentialSetUp();
         var folder = ParentalControl.Core.Platform.DataFolderStatusStore.Read();
         IsWebAdminLocked = !ParentalControl.Domain.DataFolder.AdminSignInStatus.IsWebAdminUsable(credentialSetUp, folder);
-        WebAdminLockedHint = credentialSetUp
-            ? ParentalControl.Domain.DataFolder.AdminSignInStatus.Describe(credentialSetUp, null, folder, TimeZoneInfo.Local)
-            : "Open Settings and select \"Set up sign-in\" under \"Web admin sign-in\".";
+        // SF3: the warning about a program on port 5050 shows first, also before the setup.
+        WebAdminLockedHint = ParentalControl.Domain.DataFolder.AdminSignInStatus.PortBlockedWarning(folder, TimeZoneInfo.Local) is { } portWarning
+            ? "Do not sign in on this PC now: " + portWarning
+            : credentialSetUp
+                ? ParentalControl.Domain.DataFolder.AdminSignInStatus.Describe(credentialSetUp, null, folder, TimeZoneInfo.Local)
+                : "Open Settings and select \"Set up sign-in\" under \"Web admin sign-in\".";
         RefreshUsers();
         RefreshEvents();
         RefreshSetupLock();
@@ -78,6 +81,8 @@ public partial class DashboardViewModel : ObservableObject
             "Finish setup", MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (answer != MessageBoxResult.Yes)
             return;
+        // SF1: delete the registry value too, so the next start of the service does not set the lock again.
+        ParentalControl.Core.Platform.DataFolderRegistry.Default.TryClearSetupLockPending();
         SettingsRepository.Set(SettingsRepository.KeyDataFolderSetupLock, string.Empty);
         RefreshSetupLock();
     }

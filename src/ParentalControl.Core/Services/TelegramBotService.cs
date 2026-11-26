@@ -1141,6 +1141,29 @@ public sealed class TelegramBotService
         return true;
     }
 
+    /// <summary>
+    /// Tells the parent that another program holds port 5050 of the web server (require-admin-sign-in, third review
+    /// SF3). The owner text comes from an exe (untrusted): it is escaped and sent only as data.
+    /// </summary>
+    public async Task<bool> SendWebPortBlockedAlertAsync(string owner, DateTime whenLocal)
+    {
+        var token = SettingsRepository.Get(SettingsRepository.KeyTelegramBotToken);
+        var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
+        if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
+
+        var payload = new WebPortBlockedPayload { MachineName = Environment.MachineName, Owner = owner, WhenLocal = whenLocal };
+        var success = await SendWithRetryAsync(() => SendTextMessageAsync(chatId, BuildWebPortBlockedText(payload)));
+        if (!success)
+        {
+            PendingNotificationRepository.Enqueue("WEB_PORT_BLOCKED", JsonSerializer.Serialize(payload), DateTime.Now);
+        }
+        return true;
+    }
+
+    private static string BuildWebPortBlockedText(WebPortBlockedPayload payload) =>
+        ParentalControl.Domain.AdminAccess.AdminAccessTexts.TelegramWebPortBlocked(
+            EscapeMarkdown(payload.MachineName), EscapeMarkdown(payload.Owner), payload.WhenLocal);
+
     private static string BuildDataFolderRelocatedText(DataFolderRelocatedPayload payload) =>
         ParentalControl.Domain.AdminAccess.AdminAccessTexts.TelegramDataFolderRelocated(
             EscapeMarkdown(payload.MachineName), EscapeMarkdown(payload.From), EscapeMarkdown(payload.To), payload.WhenLocal);
@@ -1295,6 +1318,14 @@ public sealed class TelegramBotService
                     if (payload != null)
                     {
                         sent = await SendTextMessageAsync(chatId, BuildDataFolderRelocatedText(payload));
+                    }
+                }
+                else if (item.NotificationType == "WEB_PORT_BLOCKED")
+                {
+                    var payload = JsonSerializer.Deserialize<WebPortBlockedPayload>(item.PayloadJson);
+                    if (payload != null)
+                    {
+                        sent = await SendTextMessageAsync(chatId, BuildWebPortBlockedText(payload));
                     }
                 }
                 else if (item.NotificationType == "DATA_FOLDER_QUARANTINED")

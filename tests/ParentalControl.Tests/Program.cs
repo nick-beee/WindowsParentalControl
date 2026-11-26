@@ -1221,6 +1221,10 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
         LockInterval = TimeSpan.FromMilliseconds(50),
         RetryInterval = TimeSpan.FromMilliseconds(200),
         RunReadyActions = false,
+        ReadSetupLockPending = () => false,
+        ClearSetupLockPending = () => true,
+        RecordStartRecovered = _ => { },
+        WebBindWait = TimeSpan.Zero,
     };
     using (var workerCts = new CancellationTokenSource(TimeSpan.FromSeconds(60)))
     {
@@ -1240,16 +1244,175 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
         await worker.StopAsync(CancellationToken.None);
     }
 
+    var appLifetime = new Microsoft.Extensions.Hosting.Internal.ApplicationLifetime(
+        Microsoft.Extensions.Logging.Abstractions.NullLogger<Microsoft.Extensions.Hosting.Internal.ApplicationLifetime>.Instance);
+    var relocatedPrep = new DataFolderPreparation(tempDir, tempDir + "-old", null, null, "The process cannot access the file", null, null);
+    async Task<ParentalControl.Service.StartupWorker> RunWorkerUntilReady(ParentalControl.Service.ServiceStartup startGate,
+        Func<bool, DataFolderPreparation> prepare, Func<DataFolderPreparation, string?> open, Action writeLock,
+        Func<bool> readPending, Func<bool> clearPending, Action<DataFolderPreparation> recovered, Action<int> onLock)
+    {
+        var w = new ParentalControl.Service.StartupWorker(startGate, svcTracker, svcTelegram, svcLogger, appLifetime)
+        {
+            PrepareStep = prepare,
+            OpenStep = open,
+            LockStep = () => { onLock(1); return Array.Empty<int>(); },
+            RecordOpenFailure = (_, _, _) => { },
+            RecordStartRecovered = recovered,
+            WriteEvent = (_, _, _) => { },
+            WriteSetupLockSetting = writeLock,
+            ReadSetupLockPending = readPending,
+            ClearSetupLockPending = clearPending,
+            LockInterval = TimeSpan.FromMilliseconds(50),
+            RetryInterval = TimeSpan.FromMilliseconds(200),
+            RunReadyActions = false,
+            WebBindWait = TimeSpan.Zero,
+        };
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await w.StartAsync(cts.Token);
+        var waitReady = Stopwatch.StartNew();
+        while (!startGate.IsReady && waitReady.Elapsed < TimeSpan.FromSeconds(20))
+            await Task.Delay(10);
+        await w.StopAsync(CancellationToken.None);
+        return w;
+    }
+
+    // Third review, SF1: a relocation at the first try, then a failed open (the lockdown), then a retry without a
+    // relocation. The setup lock must be set in the database that the retry opens, and the registry value cleared after it.
+    {
+        SettingsRepository.Set(SettingsRepository.KeyDataFolderSetupLock, string.Empty);
+        var sf1Gate = new ParentalControl.Service.ServiceStartup();
+        var prepares = 0;
+        var sf1Opens = 0;
+        var cleared = 0;
+        await RunWorkerUntilReady(sf1Gate,
+            prepare: _ => ++prepares == 1 ? relocatedPrep : fakePrep,
+            open: _ => ++sf1Opens == 1 ? "SqliteException: SQLite Error 13: 'database or disk is full'." : null,
+            writeLock: () => SettingsRepository.Set(SettingsRepository.KeyDataFolderSetupLock, DateTimeOffset.UtcNow.ToString("O")),
+            readPending: () => false, // the registry write failed too: only the flags of the run remain
+            clearPending: () => { cleared++; return true; },
+            recovered: _ => { }, onLock: _ => { });
+        Debug.Assert(sf1Gate.IsReady && prepares == 2 && sf1Opens == 2, $"The retry should open the database (prepares {prepares}, opens {sf1Opens})");
+        Debug.Assert(!string.IsNullOrEmpty(SettingsRepository.Get(SettingsRepository.KeyDataFolderSetupLock)),
+            "SF1: the setup lock should be set after a relocation, an open failure and a retry without a relocation");
+        Debug.Assert(cleared == 1, "The registry value should be cleared only after the database write");
+
+        // A run without a move, but with the registry value of an earlier run (a power cut or an exit), sets the lock too.
+        SettingsRepository.Set(SettingsRepository.KeyDataFolderSetupLock, string.Empty);
+        var sf1bGate = new ParentalControl.Service.ServiceStartup();
+        await RunWorkerUntilReady(sf1bGate, _ => fakePrep, _ => null,
+            () => SettingsRepository.Set(SettingsRepository.KeyDataFolderSetupLock, DateTimeOffset.UtcNow.ToString("O")),
+            readPending: () => true, clearPending: () => true, recovered: _ => { }, onLock: _ => { });
+        Debug.Assert(!string.IsNullOrEmpty(SettingsRepository.Get(SettingsRepository.KeyDataFolderSetupLock)),
+            "SF1: the registry value should set the setup lock after a restart");
+        SettingsRepository.Set(SettingsRepository.KeyDataFolderSetupLock, string.Empty);
+        Console.WriteLine("✅ Setup Lock across Retries and Restarts Passed.");
+    }
+
+    // Third review, SF2: the write of the setup lock fails before the gate (a full disk). No exit: the lockdown locks,
+    // and a retry of the start actions only (no second open of the database) opens the gate.
+    {
+        var exitCodeBefore = Environment.ExitCode;
+        var sf2Gate = new ParentalControl.Service.ServiceStartup();
+        var writes = 0;
+        var sf2Opens = 0;
+        var sf2Locks = 0;
+        var recoveredCount = 0;
+        var cleared = 0;
+        await RunWorkerUntilReady(sf2Gate, _ => relocatedPrep, _ => { sf2Opens++; return null; },
+            () =>
+            {
+                if (++writes == 1) throw new IOException("There is not enough space on the disk.");
+                SettingsRepository.Set(SettingsRepository.KeyDataFolderSetupLock, DateTimeOffset.UtcNow.ToString("O"));
+            },
+            readPending: () => true, clearPending: () => { cleared++; return true; },
+            recovered: _ => recoveredCount++, onLock: _ => Interlocked.Increment(ref sf2Locks));
+        Debug.Assert(sf2Gate.IsReady, "SF2: a retry should open the gate after a failed start action");
+        Debug.Assert(writes == 2 && sf2Opens == 1, $"SF2: only the start actions should run again, not the open (writes {writes}, opens {sf2Opens})");
+        Debug.Assert(sf2Locks > 0, "SF2: the lockdown should lock while the start action fails");
+        Debug.Assert(recoveredCount == 1, "SF2: the Secured state should be written again after the retry");
+        Debug.Assert(cleared == 1, "SF2: the registry value should be cleared only after the successful write");
+        Debug.Assert(Environment.ExitCode == exitCodeBefore && !appLifetime.ApplicationStopping.IsCancellationRequested,
+            "SF2: an error before the gate must not end the process");
+        SettingsRepository.Set(SettingsRepository.KeyDataFolderSetupLock, string.Empty);
+        Console.WriteLine("✅ Lockdown after a Failed Start Action Passed.");
+    }
+
+    // N-e: a failed read of the session user is not "no user".
+    Debug.Assert(!SessionManager.TryGetSessionUsername(65000, out _), "N-e: an unknown session should give a failure");
+    Debug.Assert(SessionManager.TryGetSessionUsername(0, out var session0User) && session0User is null, "N-e: session 0 should have no user: " + session0User);
+
+    // N-f: the web server starts again when it ends without an error while the service runs.
+    {
+        var nfHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, new ForegroundHistory())
+        {
+            RetryDelay = _ => TimeSpan.FromMilliseconds(20),
+        };
+        using var nfCts = new CancellationTokenSource();
+        var runs = 0;
+        var nfRun = nfHost.RunWithRetryAsync(async ct => { if (Interlocked.Increment(ref runs) >= 3) await Task.Delay(Timeout.Infinite, ct); }, nfCts.Token);
+        var waitRuns = Stopwatch.StartNew();
+        while (Volatile.Read(ref runs) < 3 && waitRuns.Elapsed < TimeSpan.FromSeconds(10))
+            await Task.Delay(10);
+        Debug.Assert(Volatile.Read(ref runs) == 3 && !nfRun.IsCompleted, "N-f: an end without an error should start the web server again: " + runs);
+        nfCts.Cancel();
+        await nfRun;
+        Debug.Assert(nfRun.IsCompletedSuccessfully, "N-f: the stop of the service should end the loop");
+    }
+
+    // SF3: after the start gate opened, a program on the port gives one Telegram alert, not one per retry. (A host
+    // without a gate counts as a host whose gate is open.)
+    {
+        var alertHolder = new System.Net.Sockets.TcpListener(System.Net.IPAddress.IPv6Any, 0);
+        alertHolder.Server.DualMode = true;
+        alertHolder.ExclusiveAddressUse = true;
+        alertHolder.Start();
+        var alerts = 0;
+        var alertHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, new ForegroundHistory())
+        {
+            Port = ((System.Net.IPEndPoint)alertHolder.LocalEndpoint).Port,
+            RetryDelay = _ => TimeSpan.FromMilliseconds(100),
+            ServicePid = -1, // the holder is this test process
+            RecordPortBlocked = _ => { },
+            SendPortAlert = _ => { Interlocked.Increment(ref alerts); return Task.CompletedTask; },
+        };
+        using var alertCts = new CancellationTokenSource();
+        var alertRun = alertHost.RunServerAsync(alertCts.Token);
+        var waitAlert = Stopwatch.StartNew();
+        while (alertHost.FailedStarts < 4 && waitAlert.Elapsed < TimeSpan.FromSeconds(20))
+            await Task.Delay(20);
+        Debug.Assert(alertHost.FailedStarts >= 4 && Volatile.Read(ref alerts) == 1, $"SF3: one alert per squat (fails {alertHost.FailedStarts}, alerts {alerts})");
+        alertCts.Cancel();
+        try { await alertRun; } catch { }
+        alertHolder.Stop();
+    }
+
     // S3: a program holds the port. The web server tries again and does not stop; after the port is free, it answers.
     var holder = new System.Net.Sockets.TcpListener(System.Net.IPAddress.IPv6Any, 0);
     holder.Server.DualMode = true;
     holder.ExclusiveAddressUse = true;
     holder.Start();
     var busyPort = ((System.Net.IPEndPoint)holder.LocalEndpoint).Port;
-    var retryHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, new ForegroundHistory())
+    // SF3: the web server of a starting service (closed gate). The listener lookup reads the real TCP table; the own
+    // process id is mapped to another id while the holder (this test process) holds the port, so the host sees a squat.
+    var squatGate = new ParentalControl.Service.ServiceStartup();
+    var holderActive = true;
+    IReadOnlyList<int> lastRealOwners = Array.Empty<int>();
+    var portRecords = new List<string?>();
+    var squatAlerts = 0;
+    var retryHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, new ForegroundHistory(), squatGate)
     {
         Port = busyPort,
         RetryDelay = _ => TimeSpan.FromMilliseconds(200),
+        FindPortOwners = port =>
+        {
+            var real = TcpConnectionOwner.FindListenerPids(port);
+            if (!Volatile.Read(ref holderActive))
+                return real;
+            lastRealOwners = real;
+            return real.Select(pid => pid == Environment.ProcessId ? 42424242 : pid).ToList();
+        },
+        RecordPortBlocked = owner => { lock (portRecords) portRecords.Add(owner); },
+        SendPortAlert = _ => { Interlocked.Increment(ref squatAlerts); return Task.CompletedTask; },
     };
     using var webCts = new CancellationTokenSource();
     var serverRun = retryHost.RunServerAsync(webCts.Token);
@@ -1261,6 +1424,14 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
             await Task.Delay(50);
         Debug.Assert(retryHost.FailedStarts >= 2, "The web server should fail to start while the port is taken: " + retryHost.FailedStarts);
         Debug.Assert(!serverRun.IsCompleted, "A failed start must not end the web server task");
+        Debug.Assert(lastRealOwners.Contains(Environment.ProcessId), "SF3: the listener table should name the holder: " + string.Join(",", lastRealOwners));
+        Debug.Assert(retryHost.LastPortOwner is { } squatter && squatter.Contains("process 42424242"), "SF3: the owner should be logged: " + retryHost.LastPortOwner);
+        lock (portRecords) Debug.Assert(portRecords.LastOrDefault() is not null, "SF3: the owner should be recorded for the Admin app");
+        Debug.Assert(Volatile.Read(ref squatAlerts) == 0, "SF3: no Telegram alert before the gate opens (no settings yet)");
+        var bindWait = Stopwatch.StartNew();
+        await squatGate.WaitWebBindTriedAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+        Debug.Assert(bindWait.Elapsed < TimeSpan.FromSeconds(2), "SF3: the first bind try should release the data folder step");
+        Volatile.Write(ref holderActive, false);
         holder.Stop();
 
         var svcBase = $"http://127.0.0.1:{busyPort}";
@@ -1272,7 +1443,30 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
             catch (HttpRequestException) { await Task.Delay(100); }
             catch (TaskCanceledException) { await Task.Delay(100); }
         }
-        Debug.Assert(first is not null && (int)first.StatusCode == 302, "After the port is free, the web server should answer: " + first?.StatusCode);
+        Debug.Assert(first is not null && (int)first.StatusCode == 503, "SF3: before the gate opens, the web server should answer 503: " + first?.StatusCode);
+        foreach (var path in new[] { "/request", "/api/agent/status?user=TestBrother", "/admin", "/api/admin/settings" })
+            Debug.Assert((int)(await svcHttp.GetAsync(svcBase + path)).StatusCode == 503, "SF3: each route should answer 503 before the gate: " + path);
+        var waitClear = Stopwatch.StartNew();
+        while (waitClear.Elapsed < TimeSpan.FromSeconds(5))
+        {
+            lock (portRecords) if (portRecords.LastOrDefault() is null) break;
+            await Task.Delay(20);
+        }
+        lock (portRecords) Debug.Assert(portRecords.LastOrDefault() is null, "SF3: a successful bind should clear the warning");
+
+        // SF3: the exclusive bind. No other socket can take 127.0.0.1 or [::1] on the port of the web server.
+        foreach (var loopback in new[] { System.Net.IPAddress.Loopback, System.Net.IPAddress.IPv6Loopback })
+        {
+            using var squat = new System.Net.Sockets.Socket(loopback.AddressFamily, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp);
+            var bound = true;
+            try { squat.Bind(new System.Net.IPEndPoint(loopback, busyPort)); }
+            catch (System.Net.Sockets.SocketException) { bound = false; }
+            Debug.Assert(!bound, $"SF3: a program should not bind {loopback}:{busyPort} while the web server listens");
+        }
+
+        squatGate.Open();
+        Debug.Assert((int)(await svcHttp.GetAsync(svcBase + "/")).StatusCode == 302, "After the gate opens, the web server should answer as normal");
+        Debug.Assert(Volatile.Read(ref squatAlerts) == 0, "SF3: no alert for a squat that ended before the gate opened");
         Console.WriteLine("✅ Web Server Bind Retry Passed.");
 
         // CB1 d: the capture quota of the unauthenticated capture route.

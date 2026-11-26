@@ -71,4 +71,33 @@ public class ServiceStartupTests
         Assert.False(StartupLockPolicy.ReleaseSetupLock(setupLockPending: true, restrictedUserExists: false));
         Assert.False(StartupLockPolicy.ReleaseSetupLock(setupLockPending: false, restrictedUserExists: true));
     }
+
+    [Fact]
+    public void Failed_start_actions_before_the_gate_give_the_lockdown()
+    {
+        // SF2: the setup lock write or the read of the sessions fails on a full disk. No exit: the lockdown.
+        var machine = new StartupStateMachine();
+        Assert.Equal(StartupPhase.Lockdown, machine.Report(true, true, startActionsDone: false));
+        Assert.Equal(StartupPhase.Ready, machine.Report(true, true, startActionsDone: true));
+    }
+
+    [Fact]
+    public void Setup_lock_joins_all_tries_of_one_run()
+    {
+        // SF1: a relocation, then an open failure, then a retry without a relocation still sets the lock.
+        var tracker = new SetupLockTracker();
+        tracker.Report(quarantined: false, relocated: true);
+        tracker.Report(quarantined: false, relocated: false);
+        Assert.True(tracker.MustSetLock(registryPending: false));
+    }
+
+    [Fact]
+    public void Setup_lock_comes_from_the_registry_after_a_restart()
+    {
+        // SF1: a power cut or a 1013 exit between the move and the database write. The next run has no move.
+        var tracker = new SetupLockTracker();
+        tracker.Report(quarantined: false, relocated: false);
+        Assert.True(tracker.MustSetLock(registryPending: true));
+        Assert.False(tracker.MustSetLock(registryPending: false));
+    }
 }
