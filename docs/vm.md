@@ -13,14 +13,14 @@ The rules for tests on the VM are in `CLAUDE.md` ("Test VM"). This file has the 
 
 - SSH: `ssh winvm`. The user is `nick` (an administrator) with the key `~/.ssh/id_ed25519_winvm`. Commands run in `cmd`.
 - The VM has no Git. `scripts/vm-test.sh` copies the working tree with `tar`.
-- The VM has the .NET SDK 8.0.428.
+- The VM has the .NET SDK 8.0.428 and Node 24.22.3 (npm 11.19.1).
 - The guest agent runs. From pve2: `qm guest exec 102 -- <command>`.
 
 ## Snapshots
 
 | Snapshot | Content |
 |---|---|
-| `test-base` (2026-11-26) | Windows, OpenSSH, .NET SDK 8.0.428, `Kid`. No Parental Control. Use this one for tests. |
+| `test-base` (2026-11-26, recreated) | Windows, OpenSSH, .NET SDK 8.0.428, Node 24.22.3 (for the web admin build, ADR 0009), `Kid`. No Parental Control. Use this one for tests. |
 | `clean-before-parental` | Windows only: no OpenSSH, no SDK, no `Kid`. After a rollback to it, SSH does not work. |
 
 Roll back: `ssh root@192.168.1.98 "qm rollback 102 test-base"`.
