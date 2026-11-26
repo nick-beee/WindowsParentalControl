@@ -25,6 +25,7 @@ internal sealed class ProcessStartWatcher : IDisposable
     private ManagementEventWatcher? _watcher;
     private volatile bool _running;
     private volatile bool _disposed;
+    private int _readErrorLogged;
 
     /// <param name="isWatchedSession">True for a session id that can belong to a Restricted User. It runs on the WMI thread and must be fast.</param>
     public ProcessStartWatcher(Func<int, bool> isWatchedSession, Serilog.ILogger logger)
@@ -53,6 +54,7 @@ internal sealed class ProcessStartWatcher : IDisposable
                 _watcher.Stopped += OnStopped;
                 _watcher.Start();
                 _running = true;
+                Interlocked.Exchange(ref _readErrorLogged, 0);
                 _logger.Information("Process start watcher started (WMI Win32_ProcessStartTrace)");
             }
             catch (Exception ex)
@@ -80,7 +82,12 @@ internal sealed class ProcessStartWatcher : IDisposable
         }
         catch (Exception ex)
         {
-            _logger.Debug(ex, "Could not read a process start event");
+            // Log the first error of each run as a warning: an error here drops every event, and only the
+            // 60-second check then finds the processes.
+            if (Interlocked.Exchange(ref _readErrorLogged, 1) == 0)
+                _logger.Warning(ex, "Could not read a process start event");
+            else
+                _logger.Debug(ex, "Could not read a process start event");
         }
     }
 

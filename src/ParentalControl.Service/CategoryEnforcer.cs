@@ -61,6 +61,7 @@ public sealed class CategoryEnforcer : IDisposable
         if (!string.IsNullOrWhiteSpace(_testSuspendFailExe))
             _logger.Warning("Category test hook active: a suspension of {Exe} fails", _testSuspendFailExe);
         _blockEnforcer = new BlockEnforcer(this, sessionTracker, logger);
+        _ = Task.Run(_blockEnforcer.EnsureRunning); // at service start, before the first tick
 
         UsageRepository.BonusMinutesAdded += RequestTick;
         CategoryConfigCache.Changed += RequestTick;
@@ -102,6 +103,11 @@ public sealed class CategoryEnforcer : IDisposable
 
     public void Tick()
     {
+        // The process start watcher runs also while no Restricted User is signed in, so that it sees the first
+        // starts of a new session. After an error it starts again here. Outside the lock: a slow WMI start
+        // must not stop the tick, which is the fallback of the watcher.
+        _blockEnforcer.EnsureRunning();
+
         lock (_gate)
         {
             if (_stopped)
@@ -119,10 +125,6 @@ public sealed class CategoryEnforcer : IDisposable
 
             foreach (var hold in _holds.Expire(nowUtc, today, id => _sessionTracker.ActiveSessions.ContainsKey(id)))
                 OnHoldExpired(hold);
-
-            // The process start watcher runs also while no Restricted User is signed in, so that it sees the
-            // first starts of a new session. After an error it starts again here.
-            _blockEnforcer.EnsureRunning();
 
             // The sessions of Restricted Users, locked or not.
             var restrictedSessions = new Dictionary<int, int>();

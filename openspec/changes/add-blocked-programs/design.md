@@ -63,7 +63,7 @@ Rejected alternative: *accept each block and let D7 ignore it in silence*. The p
 ### D3. Detection: a WMI start event as a trigger, and the tick as a fallback
 Decided by the orchestrator under the user's delegation (2026-11-26).
 
-A new `ProcessStartWatcher` (Service) uses `System.Management.ManagementEventWatcher` with the query `SELECT ProcessID, SessionID FROM Win32_ProcessStartTrace`. This WMI class needs administrator rights; LocalSystem has them. The service gets a new NuGet package `System.Management` (Microsoft, MIT, version 8.0.x like the other Microsoft packages).
+A new `ProcessStartWatcher` (Service) uses `System.Management.ManagementEventWatcher` with the query `SELECT ProcessID, ParentProcessID, SessionID FROM Win32_ProcessStartTrace`. This WMI class needs administrator rights; LocalSystem has them. The service gets a new NuGet package `System.Management` (Microsoft, MIT, version 8.0.x like the other Microsoft packages).
 
 - The event is a trigger only. The service uses the `ProcessID` and the `SessionID`. It does not use `ProcessName`, because the kernel source of this event can cut the name, and the name is untrusted.
 - The watcher drops an event at once if the `SessionID` is not a session of a Restricted User (from `SessionTracker.ActiveSessions` and `UserRepository`). At sign-in, a start event can arrive before `SessionTracker` knows the new session. Such a process is not closed. The tick finds it and suspends it (see Risks).
@@ -71,6 +71,7 @@ A new `ProcessStartWatcher` (Service) uses `System.Management.ManagementEventWat
 - The watcher writes `(pid, sessionId, receivedUtc)` into a bounded `System.Threading.Channels` channel (capacity 1024, oldest dropped). One consumer task in the `BlockEnforcer` reads it. The WMI thread thus never waits for a database or a WinAPI call.
 - The consumer reads the path and the creation time from the process: `ProcessControl.QueryPathAndStart` (`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`, `QueryFullProcessImageNameW`, `GetProcessTimes`). A process that ended already is ignored.
 - If the watcher stops with an error (the `Stopped` event, or a `ManagementException` at start), the service logs a warning and starts the watcher again at the next tick. While the watcher does not run, the tick fallback applies.
+- Wiring (decided during `/opsx:apply`): `CategoryEnforcer` creates the `BlockEnforcer`, starts the watcher once at its construction and again at each tick (outside its lock), and stops it at the start of `ResumeAll`. `Program.cs` and `UsageMonitorWorker` keep their structure; the worker only gets the cleanup line of D11.
 - Fallback: `CategoryEnforcer.Tick` already lists the processes of the restricted sessions each 60 seconds. It gives each blocked process to the decision of D4. A process that the watcher missed is thus older than 10 seconds when the tick sees it in most cases, and D4 suspends it.
 
 Rejected alternatives:

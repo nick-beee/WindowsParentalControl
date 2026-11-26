@@ -109,6 +109,42 @@ internal static class BlockedProgramChecks
         Console.WriteLine("✅ Blocked Programs: Terminate, Command Line & Parent Pid Passed.");
     }
 
+    /// <summary>
+    /// Task 7.2 (part): the WMI watcher gets the start of a process with its pid, its parent pid and its session.
+    /// Needs administrator rights (the CI runner and the VM have them).
+    /// </summary>
+    public static void RunWatcher()
+    {
+        var logger = new Serilog.LoggerConfiguration().CreateLogger();
+        using var watcher = new ParentalControl.Service.ProcessStartWatcher(_ => true, logger);
+        Debug.Assert(watcher.EnsureRunning(), "The WMI process start watcher should start (administrator rights needed)");
+        Thread.Sleep(1000); // the WMI subscription needs a moment
+
+        using var helper = Process.Start(new ProcessStartInfo("ping.exe", "-n 5 127.0.0.1")
+            { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true })!;
+        using var self = Process.GetCurrentProcess();
+
+        ParentalControl.Service.ProcessStartEvent? found = null;
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        while (found is null && DateTime.UtcNow < deadline)
+        {
+            using var cts = new CancellationTokenSource(deadline - DateTime.UtcNow);
+            try
+            {
+                var ev = watcher.Events.ReadAsync(cts.Token).AsTask().GetAwaiter().GetResult();
+                if (ev.Pid == helper.Id)
+                    found = ev;
+            }
+            catch (OperationCanceledException) { break; }
+        }
+
+        Debug.Assert(found is not null, "The watcher should report the start of the helper within 15 seconds");
+        Debug.Assert(found!.Value.ParentPid == Environment.ProcessId, $"The parent pid should be the test process: {found.Value.ParentPid}");
+        Debug.Assert(found.Value.SessionId == self.SessionId, $"The session should be the session of the test: {found.Value.SessionId}");
+        helper.WaitForExit(10000);
+        Console.WriteLine("✅ Blocked Programs: WMI Process Start Watcher Passed.");
+    }
+
     private static void CheckStageOneMigration()
     {
         const string envName = "PARENTAL_CONTROL_DATA_DIR";

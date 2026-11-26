@@ -55,4 +55,8 @@
                         LogicalName="AdminSpa/%(_AdminSpaFile.RecursiveDir)%(_AdminSpaFile.Filename)%(_AdminSpaFile.Extension)" />
     </ItemGroup>
   </Target>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ParentalControl.Tests" />
+  </ItemGroup>
 </Project>
