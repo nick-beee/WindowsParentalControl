@@ -23,7 +23,8 @@ internal sealed class SessionEndWatcher : NativeWindow, IDisposable
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(2) };
 
     private readonly Func<IReadOnlyList<AgentAppDto>> _suspendedApps;
-    private bool _queryHandled;
+    // The time of the last WM_QUERYENDSESSION (Environment.TickCount64), for WaitForQuery.
+    private long? _lastQueryMs;
 
     public SessionEndWatcher(Func<IReadOnlyList<AgentAppDto>> suspendedApps)
     {
@@ -35,7 +36,7 @@ internal sealed class SessionEndWatcher : NativeWindow, IDisposable
     {
         if (m.Msg == WmQueryEndSession)
         {
-            _queryHandled = true;
+            _lastQueryMs = Environment.TickCount64;
             var kind = SessionEndQuery.Classify((long)m.LParam);
             AgentLog.Logger.Information("WM_QUERYENDSESSION lParam=0x{LParam:X}: {Kind}", (long)m.LParam, kind);
             if (kind != SessionEndKind.None)
@@ -86,18 +87,20 @@ internal sealed class SessionEndWatcher : NativeWindow, IDisposable
     /// <summary>
     /// WPF calls <c>Application.Shutdown</c> when its own window gets WM_QUERYENDSESSION, and the message loop of WPF
     /// can end before Windows sends the query to this window. Then this method pumps the messages of the thread
-    /// until this window got its query, or until the timeout. Windows sends the query during the pump.
+    /// until this window got the query of this end of the session, or until the timeout. Windows sends the query
+    /// during the pump. An older query (a CLOSEAPP query or a fake query) does not count.
     /// </summary>
-    public void WaitForQuery(TimeSpan timeout)
+    /// <param name="sessionEndingMs">The time of the SessionEnding event of WPF (Environment.TickCount64).</param>
+    public void WaitForQuery(TimeSpan timeout, long sessionEndingMs)
     {
         var watch = Stopwatch.StartNew();
-        while (!_queryHandled && watch.Elapsed < timeout)
+        while (!SessionEndQuery.IsQueryOfThisEnd(_lastQueryMs, sessionEndingMs) && watch.Elapsed < timeout)
         {
             Application.DoEvents();
             Thread.Sleep(10);
         }
         AgentLog.Logger.Information("End of the agent after a session end: query handled {Handled} after {Ms} ms",
-            _queryHandled, watch.ElapsedMilliseconds);
+            SessionEndQuery.IsQueryOfThisEnd(_lastQueryMs, sessionEndingMs), watch.ElapsedMilliseconds);
     }
 
     public void Dispose() => DestroyHandle();

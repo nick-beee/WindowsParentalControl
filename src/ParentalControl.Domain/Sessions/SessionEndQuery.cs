@@ -27,4 +27,18 @@ public static class SessionEndQuery
             return SessionEndKind.None;
         return (lParam & EndSessionLogoff) != 0 ? SessionEndKind.Logoff : SessionEndKind.Shutdown;
     }
+
+    /// <summary>
+    /// The longest time between the query of the hidden window of the agent and the SessionEnding event of WPF
+    /// for the same end of the session. Windows queries the windows of one process within milliseconds.
+    /// </summary>
+    public static readonly TimeSpan SameEndWindow = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Tells if the last query of the hidden window belongs to the end of the session that WPF reported.
+    /// An older query does not count: a CLOSEAPP query of an installer, or a fake query from the child.
+    /// The times are milliseconds of one monotonic clock (Environment.TickCount64).
+    /// </summary>
+    public static bool IsQueryOfThisEnd(long? lastQueryMs, long sessionEndingMs) =>
+        lastQueryMs is { } query && query >= sessionEndingMs - (long)SameEndWindow.TotalMilliseconds;
 }

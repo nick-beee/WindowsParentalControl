@@ -39,13 +39,13 @@ internal static class Program
 
         // WPF shuts the agent down at its own WM_QUERYENDSESSION. The window of the session-end resume must still get
         // its query, so wait for it before the controller closes that window.
-        var sessionEnding = false;
-        app.SessionEnding += (_, _) => sessionEnding = true;
+        long? sessionEndingMs = null;
+        app.SessionEnding += (_, _) => sessionEndingMs = Environment.TickCount64;
 
         using var controller = new AgentController(app);
         app.Run();
 
-        if (sessionEnding)
-            controller.WaitForSessionEndQuery(TimeSpan.FromSeconds(3));
+        if (sessionEndingMs is { } endingMs)
+            controller.WaitForSessionEndQuery(TimeSpan.FromSeconds(3), endingMs);
     }
 }
