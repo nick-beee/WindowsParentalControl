@@ -3,7 +3,7 @@
  * - setup: the sign-in is not set up; show only the setup text (require-admin-sign-in, #21).
  * - login: show the login form.
  * - refused: a login from this Windows account is not possible (#21, status 403).
- * - app: the admin is signed in (or the sign-in is off on main).
+ * - app: the admin has a valid Admin Session.
  * A missing or unknown value gives the login view (fail closed).
  */
 export type PageView = 'setup' | 'login' | 'refused' | 'app'

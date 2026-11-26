@@ -59,6 +59,14 @@ function errorText(body: unknown): string | null {
   return null
 }
 
+function messageText(body: unknown): string | null {
+  if (body && typeof body === 'object' && 'message' in body) {
+    const message = (body as { message: unknown }).message
+    if (typeof message === 'string' && message.trim() !== '') return message
+  }
+  return null
+}
+
 async function request<T>(method: Method, path: string, body?: unknown): Promise<T> {
   const init: RequestInit = { method, credentials: 'same-origin', headers: { Accept: 'application/json' } }
   if (body !== undefined) {
@@ -94,29 +102,27 @@ export const api = {
   // ── Sign-in ──
 
   /**
-   * Sends a TOTP code. A redirect means success. The other answers differ by branch:
-   * main answers a wrong code with 200 and HTML; require-admin-sign-in (#21) uses 401, 403 and 429.
+   * Sends a TOTP code. A redirect means success. A refused code gives 401 (wrong code or not set up), 403 (a login
+   * from the session of a Restricted User) or 429 (too many failed logins), each with a JSON body
+   * `{ error, message, blockedUntil }`.
    */
   async login(code: string): Promise<LoginResult> {
     const res = await fetch('/api/admin/login', {
       method: 'POST',
       credentials: 'same-origin',
       redirect: 'manual',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ code }),
     })
-    if (res.type === 'opaqueredirect' || res.redirected || (res.status >= 300 && res.status < 400)) return 'ok'
-    if (res.status === 403) return 'refused'
-    if (res.status === 429) return 'blocked'
-    return 'invalid'
+    if (res.type === 'opaqueredirect' || res.redirected || (res.status >= 300 && res.status < 400)) return { outcome: 'ok' }
+    const outcome = res.status === 403 ? 'refused' : res.status === 429 ? 'blocked' : 'invalid'
+    const message = messageText(await readJson(res))
+    return message ? { outcome, message } : { outcome }
   },
 
-  /** Ends the Admin Session. #21 accepts only POST; main accepts only GET, so a 405 gets a GET. */
+  /** Ends the Admin Session. The logout is a POST (require-admin-sign-in). */
   async logout(): Promise<void> {
-    const post = await fetch('/api/admin/logout', { method: 'POST', credentials: 'same-origin', redirect: 'manual' })
-    if (post.status === 405) {
-      await fetch('/api/admin/logout', { method: 'GET', credentials: 'same-origin', redirect: 'manual' })
-    }
+    await fetch('/api/admin/logout', { method: 'POST', credentials: 'same-origin', redirect: 'manual' })
   },
 
   // ── Dashboard and sessions ──

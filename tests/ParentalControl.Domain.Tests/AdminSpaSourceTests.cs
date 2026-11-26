@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using ParentalControl.Domain.AdminAccess;
 
 namespace ParentalControl.Domain.Tests;
 
@@ -78,6 +79,24 @@ public class AdminSpaSourceTests
         Assert.DoesNotMatch(new Regex(@"<style\b|\sstyle=""|\son\w+="""), html);
         Assert.Contains("__PC_ADMIN_VIEW__", html);
         Assert.Contains("__PC_VERSION__", html);
+    }
+
+    /// <summary>
+    /// The setup and refused views show their texts before any request, so de.ts has copies of the sign-in texts of
+    /// AdminAccessTexts. Each copy must equal its constant. The other sign-in texts come from the service at run time.
+    /// </summary>
+    [Theory]
+    [InlineData("setupTitle", AdminAccessTexts.SetupTitle)]
+    [InlineData("setupText", AdminAccessTexts.SetupText)]
+    [InlineData("setupHint", AdminAccessTexts.SetupHint)]
+    [InlineData("loginInvalid", AdminAccessTexts.InvalidCode)]
+    [InlineData("loginRefused", AdminAccessTexts.LocalClientRefused)]
+    public void TheSignInTextsAreCopiesOfAdminAccessTexts(string key, string expected)
+    {
+        var de = File.ReadAllText(Path.Combine(RepoRoot(), SpaDir, "src/i18n/de.ts"));
+        var match = Regex.Match(de, $@"\b{key}:\s*'(?<text>[^']*)'");
+        Assert.True(match.Success, $"de.ts has no text {key}");
+        Assert.Equal(expected, match.Groups["text"].Value);
     }
 
     private static string JoinStrings(string parts, char quote) =>

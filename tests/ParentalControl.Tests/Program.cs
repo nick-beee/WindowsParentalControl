@@ -1037,7 +1037,7 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
     Debug.Assert(routeTemplates.Count > 30, "The routes should be mapped");
     foreach (var template in routeTemplates)
     {
-        var isOpen = template is "/" or "/request" or "/api/request" or "/admin" || template.StartsWith("/api/agent/", StringComparison.Ordinal);
+        var isOpen = template is "/" or "/request" or "/api/request" or "/admin" or "/admin/assets/{file}" || template.StartsWith("/api/agent/", StringComparison.Ordinal);
         Debug.Assert(isOpen || AdminRoutePolicy.Classify(template) != AdminRouteClass.Open, $"Route {template} is neither a child route nor behind the admin gate");
     }
 
@@ -1066,8 +1066,17 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
     {
         // Before the setup: setup text, no form, the login refuses each code, admin routes give 401.
         SettingsRepository.Set(SettingsRepository.KeyTotpEnabled, "false");
-        var setupPage = await (await Send(HttpMethod.Get, "/admin")).Content.ReadAsStringAsync();
-        Debug.Assert(setupPage.Contains("Web-Verwaltung ist gesperrt") && !setupPage.Contains("<form"), "/admin should show the setup text and no form before the setup");
+        // /admin is the web admin (ADR 0009): the service selects the view in a meta tag and sends a strict CSP.
+        string ViewOf(string page) => System.Text.RegularExpressions.Regex.Match(page, "<meta name=\"pc-admin-view\" content=\"([a-z]+)\"").Groups[1].Value;
+        var setupResponse = await Send(HttpMethod.Get, "/admin");
+        var setupPage = await setupResponse.Content.ReadAsStringAsync();
+        Debug.Assert(ViewOf(setupPage) == "setup" && !setupPage.Contains("<form"), "/admin should select the setup view and have no form before the setup");
+        var adminCsp = setupResponse.Headers.TryGetValues("Content-Security-Policy", out var cspValues) ? cspValues.Single() : "";
+        Debug.Assert(adminCsp == ParentalControl.Service.Web.AdminSpa.ContentSecurityPolicy && adminCsp.Contains("script-src 'self';"), "/admin should send the strict CSP");
+        var assetPath = System.Text.RegularExpressions.Regex.Match(setupPage, "src=\"(/admin/assets/[^\"]+\\.js)\"").Groups[1].Value;
+        var asset = await Send(HttpMethod.Get, assetPath);
+        Debug.Assert(assetPath.Length > 0 && (int)asset.StatusCode == 200 && asset.Headers.Contains("Content-Security-Policy"), "An asset of /admin should load with the CSP");
+        Debug.Assert((int)(await Send(HttpMethod.Get, "/admin/assets/..%2Fappsettings.json")).StatusCode == 404, "An unknown asset should give 404");
         foreach (var anyCode in new[] { "000000", "" })
         {
             var notSetUp = await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(anyCode));
@@ -1094,7 +1103,7 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
         var step = Totp.StepAt(DateTimeOffset.UtcNow);
         AdminAccessRepository.CompleteSetup(gateSecret, step - 2, DateTimeOffset.UtcNow);
         var loginPage = await (await Send(HttpMethod.Get, "/admin")).Content.ReadAsStringAsync();
-        Debug.Assert(loginPage.Contains("action=\"/api/admin/login\""), "/admin should show the login form after the setup");
+        Debug.Assert(ViewOf(loginPage) == "login", "/admin should select the login view after the setup");
         string WrongCode()
         {
             var now = Totp.StepAt(DateTimeOffset.UtcNow);
@@ -1111,7 +1120,11 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
             "The admin cookie should be a session cookie (no Expires)");
         var replay = await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(code));
         Debug.Assert((int)replay.StatusCode == 401 && CookieOf(replay) is null, "The same code a second time should fail");
-        Debug.Assert((int)(await Send(HttpMethod.Post, "/api/admin/login", content: Json("{}"))).StatusCode == 401, "A JSON login without a code should fail, not crash");
+        var jsonLogin = await Send(HttpMethod.Post, "/api/admin/login", content: Json("{}"));
+        Debug.Assert((int)jsonLogin.StatusCode == 401, "A JSON login without a code should fail, not crash");
+        using (var body = System.Text.Json.JsonDocument.Parse(await jsonLogin.Content.ReadAsStringAsync()))
+            Debug.Assert(body.RootElement.GetProperty("error").GetString() == "invalid" && body.RootElement.GetProperty("message").GetString() == AdminAccessTexts.InvalidCode,
+                "A JSON login should get the text of AdminAccessTexts as JSON");
 
         var settings = await Send(HttpMethod.Get, "/api/admin/settings", cookie);
         Debug.Assert((int)settings.StatusCode == 200, "A valid session should read the settings");
@@ -1140,7 +1153,11 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
             Debug.Assert((await childLogin.Content.ReadAsStringAsync()).Contains("Windows-Konto"), "The page should tell the parent to use another account or device");
             Debug.Assert(AdminAccessRepository.GetRecentFailures(DateTimeOffset.UtcNow).Count == failuresBefore, "A refused client should not count as a failed login");
             Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/settings", cookie)).StatusCode == 401, "An Admin Session used from a process of a Restricted User should give 401");
-            Debug.Assert((int)(await Send(HttpMethod.Get, "/admin", cookie)).StatusCode == 403, "/admin should refuse a process of a Restricted User");
+            var refusedPage = await Send(HttpMethod.Get, "/admin", cookie);
+            Debug.Assert((int)refusedPage.StatusCode == 403 && ViewOf(await refusedPage.Content.ReadAsStringAsync()) == "refused", "/admin should refuse a process of a Restricted User");
+            var childJsonLogin = await Send(HttpMethod.Post, "/api/admin/login", content: Json($$"""{"code":"{{CurrentCode()}}"}"""));
+            Debug.Assert((int)childJsonLogin.StatusCode == 403 && CookieOf(childJsonLogin) is null
+                         && (await childJsonLogin.Content.ReadAsStringAsync()).Contains("\"error\":\"refused\""), "A JSON login of a Restricted User should give 403 as JSON");
         }
         finally
         {
@@ -1168,6 +1185,13 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
         var blocked = await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(CurrentCode()));
         Debug.Assert((int)blocked.StatusCode == 429 && CookieOf(blocked) is null, "The 11th code should be refused without a check");
         Debug.Assert((await blocked.Content.ReadAsStringAsync()).Contains("Zu viele falsche Codes"), "The page should show the block message");
+        var blockedJson = await Send(HttpMethod.Post, "/api/admin/login", content: Json($$"""{"code":"{{CurrentCode()}}"}"""));
+        using (var body = System.Text.Json.JsonDocument.Parse(await blockedJson.Content.ReadAsStringAsync()))
+        {
+            var until = body.RootElement.GetProperty("blockedUntil").GetString() ?? "";
+            Debug.Assert((int)blockedJson.StatusCode == 429 && until.EndsWith(" Uhr") && body.RootElement.GetProperty("message").GetString()!.Contains(until),
+                "A blocked JSON login should name the end of the block");
+        }
         Debug.Assert(AdminAccessRepository.GetRecentFailures(DateTimeOffset.UtcNow).Count == LoginThrottle.MaxPerSource, "A refused login should not count as a failure");
         // The counts are in SQLite: a new service instance (a restart) still blocks this PC, but not a LAN source.
         var restarted = new ParentalControl.Service.Web.AdminAccessService(gateTelegram, gateLogger);
@@ -1448,7 +1472,7 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
             catch (TaskCanceledException) { await Task.Delay(100); }
         }
         Debug.Assert(first is not null && (int)first.StatusCode == 503, "SF3: before the gate opens, the web server should answer 503: " + first?.StatusCode);
-        foreach (var path in new[] { "/request", "/api/agent/status?user=TestBrother", "/admin", "/api/admin/settings" })
+        foreach (var path in new[] { "/request", "/api/agent/status?user=TestBrother", "/admin", "/admin/assets/index.js", "/api/admin/settings" })
             Debug.Assert((int)(await svcHttp.GetAsync(svcBase + path)).StatusCode == 503, "SF3: each route should answer 503 before the gate: " + path);
         var waitClear = Stopwatch.StartNew();
         while (waitClear.Elapsed < TimeSpan.FromSeconds(5))

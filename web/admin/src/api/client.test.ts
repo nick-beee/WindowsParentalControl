@@ -10,17 +10,29 @@ function redirectResponse(): Response {
 describe('api.login', () => {
   it('maps a redirect to success', async () => {
     mockFetch({ 'POST /api/admin/login': () => redirectResponse() })
-    await expect(api.login('123456')).resolves.toBe('ok')
+    await expect(api.login('123456')).resolves.toEqual({ outcome: 'ok' })
   })
 
   it.each([
-    [200, 'invalid'], // main: a wrong code gives the login HTML with 200
-    [401, 'invalid'], // #21: wrong code, or not set up
-    [403, 'refused'], // #21: login from the session of the child
-    [429, 'blocked'], // #21: too many failed logins
-  ])('maps status %i to %s', async (status, result) => {
-    mockFetch({ 'POST /api/admin/login': () => new Response('<html></html>', { status }) })
-    await expect(api.login('123456')).resolves.toBe(result)
+    [401, 'invalid'], // wrong code, or not set up
+    [403, 'refused'], // login from the session of a Restricted User
+    [429, 'blocked'], // too many failed logins
+  ] as const)('maps status %i to %s', async (status, outcome) => {
+    mockFetch({ 'POST /api/admin/login': () => new Response('', { status }) })
+    await expect(api.login('123456')).resolves.toEqual({ outcome })
+  })
+
+  it('returns the text of the service, for example the end of a block', async () => {
+    const message = 'Zu viele falsche Codes. Die Anmeldung von diesem Gerät ist gesperrt bis 26.11.2026, 18:30 Uhr.'
+    mockFetch({
+      'POST /api/admin/login': () => json({ error: 'blocked', message, blockedUntil: '26.11.2026, 18:30 Uhr' }, 429),
+    })
+    await expect(api.login('123456')).resolves.toEqual({ outcome: 'blocked', message })
+  })
+
+  it('ignores an answer that is not JSON', async () => {
+    mockFetch({ 'POST /api/admin/login': () => new Response('<html></html>', { status: 401 }) })
+    await expect(api.login('123456')).resolves.toEqual({ outcome: 'invalid' })
   })
 
   it('sends the code as JSON with redirect manual', async () => {
@@ -32,19 +44,10 @@ describe('api.login', () => {
 })
 
 describe('api.logout', () => {
-  it('uses POST and stops when the server accepts it (#21)', async () => {
+  it('sends one POST and no GET', async () => {
     const calls = mockFetch({ 'POST /api/admin/logout': () => new Response('', { status: 302 }) })
     await api.logout()
     expect(calls.map((c) => c.method)).toEqual(['POST'])
-  })
-
-  it('falls back to GET when POST gives 405 (main)', async () => {
-    const calls = mockFetch({
-      'POST /api/admin/logout': () => new Response('', { status: 405 }),
-      'GET /api/admin/logout': () => new Response('', { status: 302 }),
-    })
-    await api.logout()
-    expect(calls.map((c) => c.method)).toEqual(['POST', 'GET'])
   })
 })
 

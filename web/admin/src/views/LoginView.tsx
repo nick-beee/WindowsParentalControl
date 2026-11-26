@@ -1,9 +1,10 @@
 import { useState, type FormEvent } from 'react'
 import { ADMIN_PAGE, api } from '../api/client'
-import type { LoginResult } from '../api/types'
+import type { LoginOutcome } from '../api/types'
 import { t } from '../i18n'
 
-const MESSAGES: Record<Exclude<LoginResult, 'ok'>, string> = {
+/** The texts when the answer has no message of the service. */
+const MESSAGES: Record<Exclude<LoginOutcome, 'ok'>, string> = {
   invalid: t.loginInvalid,
   refused: t.loginRefused,
   blocked: t.loginBlocked,
@@ -31,11 +32,11 @@ export function LoginView({ refused = false, onSignedIn = () => window.location.
     setError(null)
     try {
       const result = await api.login(code)
-      if (result === 'ok') {
+      if (result.outcome === 'ok') {
         onSignedIn()
         return
       }
-      setError(MESSAGES[result])
+      setError(result.message ?? MESSAGES[result.outcome])
       setCode('')
     } catch {
       setError(t.networkError)

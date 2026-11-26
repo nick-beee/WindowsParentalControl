@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { App } from '../App'
 import { t } from '../i18n'
-import { mockFetch } from '../test/fetchMock'
+import { json, mockFetch } from '../test/fetchMock'
 import { LoginView } from './LoginView'
 
 describe('LoginView', () => {
@@ -33,6 +33,24 @@ describe('LoginView', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(t.loginBlocked)
   })
 
+  it('shows the text of the service with the end of the block', async () => {
+    const message = 'Zu viele falsche Codes. Die Anmeldung von diesem Gerät ist gesperrt bis 26.11.2026, 18:30 Uhr.'
+    mockFetch({ 'POST /api/admin/login': () => json({ error: 'blocked', message, blockedUntil: '26.11.2026, 18:30 Uhr' }, 429) })
+    render(<LoginView onSignedIn={vi.fn()} />)
+    await userEvent.type(screen.getByLabelText(t.loginCodeLabel), '111111')
+    await userEvent.click(screen.getByRole('button', { name: t.loginButton }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('gesperrt bis 26.11.2026, 18:30 Uhr')
+  })
+
+  it('shows a text of the service as text, not as HTML', async () => {
+    mockFetch({ 'POST /api/admin/login': () => json({ error: 'invalid', message: '<img src=x onerror=alert(1)>' }, 401) })
+    const { container } = render(<LoginView onSignedIn={vi.fn()} />)
+    await userEvent.type(screen.getByLabelText(t.loginCodeLabel), '000000')
+    await userEvent.click(screen.getByRole('button', { name: t.loginButton }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('<img src=x onerror=alert(1)>')
+    expect(container.querySelector('img')).toBeNull()
+  })
+
   it('checks the format before it sends', async () => {
     const calls = mockFetch({})
     render(<LoginView onSignedIn={vi.fn()} />)
@@ -53,6 +71,14 @@ describe('App views', () => {
   it('shows the refusal text for the refused view', () => {
     render(<App view="refused" version="" />)
     expect(screen.getByRole('alert')).toHaveTextContent(t.loginRefused)
+  })
+
+  // A request to an admin route gets 401, and a 401 reloads /admin: the setup and refused views must send none.
+  it.each(['setup', 'refused', 'login'] as const)('sends no request in the %s view', async (view) => {
+    const calls = mockFetch({})
+    render(<App view={view} version="" />)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(calls).toHaveLength(0)
   })
 
   it('shows the login form for the login view', () => {

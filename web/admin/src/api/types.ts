@@ -206,5 +206,14 @@ export interface PromptSend {
   customOptions: string | null
 }
 
-/** The result of a login attempt. */
-export type LoginResult = 'ok' | 'invalid' | 'refused' | 'blocked'
+/** The outcome of a login attempt, from the status code of the answer. */
+export type LoginOutcome = 'ok' | 'invalid' | 'refused' | 'blocked'
+
+/**
+ * The result of a login attempt. For a refused code, the service sends the German text of AdminAccessTexts
+ * (`message`); for a block, the text names the time when the block ends.
+ */
+export interface LoginResult {
+  outcome: LoginOutcome
+  message?: string
+}

@@ -1,5 +1,7 @@
 // All texts of the web admin in German. A second language is a second file with the same shape (type Strings).
-// The texts of the sign-in follow AdminAccessTexts of require-admin-sign-in (#21).
+// The texts of the sign-in are copies of AdminAccessTexts (require-admin-sign-in). The setup and refused views need
+// them before any request; after a refused login the page shows the text that the service sends. The xUnit test
+// AdminSpaSourceTests checks that each copy equals its constant in AdminAccessTexts.
 import type { Category } from '../api/types'
 
 export const de = {
@@ -15,7 +17,7 @@ export const de = {
   networkError: 'Netzwerkfehler. Ist der Dienst erreichbar?',
   errorPrefix: (message: string) => `Fehler: ${message}`,
 
-  // ── Sign-in (texts of AdminAccessTexts, #21) ──
+  // ── Sign-in (copies of AdminAccessTexts, checked by AdminSpaSourceTests) ──
   setupTitle: 'Web-Verwaltung gesperrt',
   setupText: 'Die Web-Verwaltung ist gesperrt. Richte die Anmeldung in Parental Control Admin auf diesem PC ein.',
   setupHint:
@@ -28,6 +30,7 @@ export const de = {
   loginInvalid: 'Ungültiger Code. Bitte versuche es noch einmal.',
   loginRefused:
     'Die Anmeldung aus diesem Windows-Konto ist nicht möglich. Melde dich mit deinem eigenen Windows-Konto auf diesem PC an, oder nutze ein Handy oder einen Laptop im Heimnetz.',
+  // Only if the answer has no text of the service. The text of the service names the end of the block.
   loginBlocked: 'Zu viele falsche Codes. Die Anmeldung ist für einige Zeit gesperrt. Versuche es später noch einmal.',
   loginFormat: 'Der Code hat 6 Ziffern.',
 
