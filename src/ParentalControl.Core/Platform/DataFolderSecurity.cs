@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
-using System.Security.Principal;
 
 namespace ParentalControl.Core.Platform;
 
@@ -13,8 +12,13 @@ namespace ParentalControl.Core.Platform;
 /// </summary>
 public static class DataFolderSecurity
 {
-    private static readonly SecurityIdentifier Administrators = new(WellKnownSidType.BuiltinAdministratorsSid, null);
-    private static readonly SecurityIdentifier LocalSystem = new(WellKnownSidType.LocalSystemSid, null);
+    // Explicit SDDL, not a new DirectorySecurity with rules: the default descriptor of .NET stands for a null DACL
+    // (Everyone full access), and the result must never contain that.
+    // Folder: owner Administrators, a protected DACL with full control for SYSTEM and Administrators, inherited by all items.
+    private const string FolderSddl = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+    // Item below it: owner Administrators, no explicit rule, not protected, so only the rules of the folder apply.
+    private const string ItemSddl = "O:BAD:";
+    private const AccessControlSections OwnerAndAccess = AccessControlSections.Owner | AccessControlSections.Access;
 
     public static void Apply(string folder)
     {
@@ -26,19 +30,9 @@ public static class DataFolderSecurity
 
         TokenPrivileges.Enable("SeTakeOwnershipPrivilege", "SeRestorePrivilege");
 
-        // A new DirectorySecurity, not one from GetAccessControl: explicit rules that are there now must go.
+        // A new descriptor, not one from GetAccessControl: explicit rules that are there now must go.
         var rootSecurity = new DirectorySecurity();
-        rootSecurity.SetOwner(Administrators);
-        rootSecurity.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-        foreach (var sid in new[] { LocalSystem, Administrators })
-        {
-            rootSecurity.AddAccessRule(new FileSystemAccessRule(
-                sid,
-                FileSystemRights.FullControl,
-                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                PropagationFlags.None,
-                AccessControlType.Allow));
-        }
+        rootSecurity.SetSecurityDescriptorSddlForm(FolderSddl, OwnerAndAccess);
         root.SetAccessControl(rootSecurity);
 
         // Now the Restricted User has no access to the folder. Reset each item below it:
@@ -63,16 +57,14 @@ public static class DataFolderSecurity
             if (entry is DirectoryInfo subdirectory)
             {
                 var security = new DirectorySecurity();
-                security.SetOwner(Administrators);
-                security.SetAccessRuleProtection(isProtected: false, preserveInheritance: false);
+                security.SetSecurityDescriptorSddlForm(ItemSddl, OwnerAndAccess);
                 subdirectory.SetAccessControl(security);
                 ResetChildren(subdirectory, links);
             }
             else if (entry is FileInfo file)
             {
                 var security = new FileSecurity();
-                security.SetOwner(Administrators);
-                security.SetAccessRuleProtection(isProtected: false, preserveInheritance: false);
+                security.SetSecurityDescriptorSddlForm(ItemSddl, OwnerAndAccess);
                 file.SetAccessControl(security);
             }
         }

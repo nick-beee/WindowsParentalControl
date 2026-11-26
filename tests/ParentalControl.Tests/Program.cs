@@ -748,6 +748,76 @@ Console.WriteLine("✅ Process List, Suspend & Resume Passed.");
 }
 Console.WriteLine("✅ Admin Sign-In Storage & Start Check Passed.");
 
+// Data folder owner and access rules (require-admin-sign-in D9). Needs an elevated administrator (CI, SSH as nick).
+{
+    var aclRoot = Path.Combine(Path.GetTempPath(), "PcAclTest_" + Guid.NewGuid().ToString("N"));
+    var aclOutside = Path.Combine(Path.GetTempPath(), "PcAclOutside_" + Guid.NewGuid().ToString("N"));
+    var usersSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinUsersSid, null);
+    var systemSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.LocalSystemSid, null);
+    var adminsSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null);
+    void GrantUsersRead(FileSystemInfo item, bool inherit)
+    {
+        var rule = new System.Security.AccessControl.FileSystemAccessRule(usersSid, System.Security.AccessControl.FileSystemRights.Read,
+            inherit ? System.Security.AccessControl.InheritanceFlags.ContainerInherit | System.Security.AccessControl.InheritanceFlags.ObjectInherit : System.Security.AccessControl.InheritanceFlags.None,
+            System.Security.AccessControl.PropagationFlags.None, System.Security.AccessControl.AccessControlType.Allow);
+        if (item is DirectoryInfo d) { var sec = d.GetAccessControl(); sec.AddAccessRule(rule); d.SetAccessControl(sec); }
+        else if (item is FileInfo f) { var sec = f.GetAccessControl(); sec.AddAccessRule(rule); f.SetAccessControl(sec); }
+    }
+    List<System.Security.AccessControl.FileSystemAccessRule> RulesOf(System.Security.AccessControl.FileSystemSecurity sec, bool explicitOnly) =>
+        sec.GetAccessRules(true, !explicitOnly, typeof(System.Security.Principal.SecurityIdentifier)).Cast<System.Security.AccessControl.FileSystemAccessRule>()
+           .Where(r => !explicitOnly || !r.IsInherited).ToList();
+    try
+    {
+        var rootDir = Directory.CreateDirectory(aclRoot);
+        var subDir = Directory.CreateDirectory(Path.Combine(aclRoot, "captures"));
+        File.WriteAllText(Path.Combine(aclRoot, "data.db"), "secret");
+        File.WriteAllText(Path.Combine(subDir.FullName, "x.png"), "x");
+        GrantUsersRead(rootDir, inherit: true);
+        GrantUsersRead(new FileInfo(Path.Combine(aclRoot, "data.db")), inherit: false);
+        GrantUsersRead(subDir, inherit: true);
+
+        try { DataFolderSecurity.Apply(aclRoot); }
+        catch (Exception ex) { Debug.Fail("DataFolderSecurity.Apply failed (the test needs an elevated administrator): " + ex.Message); }
+
+        var rootSec = rootDir.GetAccessControl();
+        Debug.Assert(rootSec.GetOwner(typeof(System.Security.Principal.SecurityIdentifier))!.Equals(adminsSid), "The folder owner should be Administrators");
+        Debug.Assert(rootSec.AreAccessRulesProtected, "The folder DACL should be protected");
+        var rootRules = RulesOf(rootSec, explicitOnly: false);
+        Debug.Assert(rootRules.Count == 2 && rootRules.All(r => r.IdentityReference.Equals(systemSid) || r.IdentityReference.Equals(adminsSid)),
+            "The folder should have only SYSTEM and Administrators: " + string.Join(", ", rootRules.Select(r => r.IdentityReference.Value)));
+        var children = new FileSystemInfo[] { subDir, new FileInfo(Path.Combine(aclRoot, "data.db")), new FileInfo(Path.Combine(subDir.FullName, "x.png")) };
+        foreach (var child in children)
+        {
+            System.Security.AccessControl.FileSystemSecurity sec = child is DirectoryInfo cd ? cd.GetAccessControl() : ((FileInfo)child).GetAccessControl();
+            Debug.Assert(sec.GetOwner(typeof(System.Security.Principal.SecurityIdentifier))!.Equals(adminsSid), $"The owner of {child.Name} should be Administrators");
+            Debug.Assert(!sec.AreAccessRulesProtected, $"{child.Name} should inherit the rules of the folder");
+            Debug.Assert(RulesOf(sec, explicitOnly: true).Count == 0, $"{child.Name} should have no explicit rule");
+            var all = RulesOf(sec, explicitOnly: false);
+            Debug.Assert(all.Count > 0 && all.All(r => r.IdentityReference.Equals(systemSid) || r.IdentityReference.Equals(adminsSid)),
+                $"{child.Name} should have only SYSTEM and Administrators: " + string.Join(", ", all.Select(r => r.IdentityReference.Value)));
+        }
+
+        // A link inside the folder: the service does not follow it and fails closed.
+        var outsideDir = Directory.CreateDirectory(aclOutside);
+        GrantUsersRead(outsideDir, inherit: true);
+        Directory.CreateSymbolicLink(Path.Combine(aclRoot, "link"), aclOutside);
+        var linkRefused = false;
+        try { DataFolderSecurity.Apply(aclRoot); } catch (InvalidOperationException) { linkRefused = true; }
+        Debug.Assert(linkRefused, "A link in the data folder should make Apply fail");
+        Debug.Assert(RulesOf(outsideDir.GetAccessControl(), explicitOnly: true).Any(r => r.IdentityReference.Equals(usersSid)), "The target of the link should keep its rules");
+        var rootLinkRefused = false;
+        try { DataFolderSecurity.Apply(Path.Combine(aclRoot, "link")); } catch (InvalidOperationException) { rootLinkRefused = true; }
+        Debug.Assert(rootLinkRefused, "A data folder that is a link should make Apply fail");
+    }
+    finally
+    {
+        try { Directory.Delete(Path.Combine(aclRoot, "link")); } catch { }
+        try { Directory.Delete(aclRoot, true); } catch { }
+        try { Directory.Delete(aclOutside, true); } catch { }
+    }
+}
+Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
+
 // Admin gate over HTTP (require-admin-sign-in, group 4): the real routes on a free local port.
 {
     var gateLogger = new Serilog.LoggerConfiguration().CreateLogger();
@@ -758,6 +828,18 @@ Console.WriteLine("✅ Admin Sign-In Storage & Start Check Passed.");
     Microsoft.AspNetCore.Hosting.HostingAbstractionsWebHostBuilderExtensions.UseUrls(webBuilder.WebHost, "http://127.0.0.1:0");
     var webApp = webBuilder.Build();
     webHost.ConfigureApp(webApp);
+
+    // Deny by default (D4): each route is a child-facing route, /admin, or classified as Admin, Login or Logout.
+    var routeTemplates = ((Microsoft.AspNetCore.Routing.IEndpointRouteBuilder)webApp).DataSources
+        .SelectMany(d => d.Endpoints).OfType<Microsoft.AspNetCore.Routing.RouteEndpoint>()
+        .Select(e => e.RoutePattern.RawText ?? "").ToList();
+    Debug.Assert(routeTemplates.Count > 30, "The routes should be mapped");
+    foreach (var template in routeTemplates)
+    {
+        var isOpen = template is "/" or "/request" or "/api/request" or "/admin" || template.StartsWith("/api/agent/", StringComparison.Ordinal);
+        Debug.Assert(isOpen || AdminRoutePolicy.Classify(template) != AdminRouteClass.Open, $"Route {template} is neither a child route nor behind the admin gate");
+    }
+
     await webApp.StartAsync();
     var baseUrl = webApp.Urls.First().TrimEnd('/');
     using var http = new HttpClient(new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false });
