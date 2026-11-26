@@ -66,7 +66,9 @@ export const categories: Categories = {
 }
 
 export const rules: AppRule[] = [
-  { id: 3, matchType: 'file', pattern: 'Minecraft.exe', category: 'Games', weekdayMinutes: 90, weekendMinutes: null, isDefault: false },
+  { id: 3, matchType: 'file', pattern: 'Minecraft.exe', category: 'Games', weekdayMinutes: 90, weekendMinutes: null, isDefault: false, blocked: false, defaultBrowser: false },
+  { id: 4, matchType: 'file', pattern: 'chrome.exe', category: 'Unknown', weekdayMinutes: null, weekendMinutes: null, isDefault: true, blocked: true, defaultBrowser: true },
+  { id: 5, matchType: 'file', pattern: 'explorer.exe', category: 'System', weekdayMinutes: null, weekendMinutes: null, isDefault: true, blocked: false, defaultBrowser: false },
 ]
 
 export const schedule: Schedule = {

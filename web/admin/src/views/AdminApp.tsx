@@ -9,6 +9,7 @@ import { SettingsDialog } from '../dialogs/SettingsDialog'
 import { UpdateDialog } from '../dialogs/UpdateDialog'
 import { t } from '../i18n'
 import { ActivityPanel, presetQuery, type DatePreset } from './ActivityPanel'
+import { BlockedStartsPanel } from './BlockedStartsPanel'
 import { BreaksCard } from './BreaksCard'
 import { CapturePanel } from './CapturePanel'
 import { CategoriesPanel } from './CategoriesPanel'
@@ -193,6 +194,7 @@ function AdminPage({ version }: { version: string }) {
           reload={loadCategories}
           reloadDashboard={() => void loadDashboard()}
         />
+        <BlockedStartsPanel tick={tick} />
         <ActivityPanel
           data={data}
           query={query}

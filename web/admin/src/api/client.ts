@@ -2,6 +2,7 @@
 import type {
   AppRule,
   AppRuleInput,
+  BlockedStarts,
   BreakRuleInput,
   BreakStatus,
   Capture,
@@ -190,6 +191,12 @@ export const api = {
   addAppRule: (rule: AppRuleInput) => request<Success & { id: number }>('POST', '/api/admin/app-rules', rule),
   updateAppRule: (id: number, rule: AppRuleInput) => request<Success>('PUT', `/api/admin/app-rules/${id}`, rule),
   deleteAppRule: (id: number) => request<Success>('DELETE', `/api/admin/app-rules/${id}`),
+
+  // ── Blocked programs ──
+
+  /** Without a date, the server gives the blocked starts of its own today. */
+  getBlockedStarts: (date?: string) =>
+    request<BlockedStarts>('GET', date ? `/api/admin/blocked-starts?${query({ date })}` : '/api/admin/blocked-starts'),
 }
 
 export type Api = typeof api

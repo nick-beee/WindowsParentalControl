@@ -2040,6 +2040,7 @@ public sealed class WebServerHost : BackgroundService
                     weekendMinutes = r.Rule.AppLimit?.WeekendMinutes,
                     isDefault = r.IsDefault,
                     blocked = r.Rule.IsBlocked,
+                    defaultBrowser = CategoryDefaults.IsBlockedBrowser(r.Rule.MatchType, r.Rule.Pattern),
                 }),
             });
         });

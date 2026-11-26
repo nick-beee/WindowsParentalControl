@@ -17,6 +17,7 @@ function routes(overrides: Record<string, unknown> = {}) {
     'GET /api/admin/breaks': [
       { userId: 7, username: 'Kid', enabled: true, useMinutes: 45, breakMinutes: 10, continuousUseMinutes: 12, breakEndsAt: null },
     ],
+    'GET /api/admin/blocked-starts': { date: '2026-11-26', starts: [] },
     ...overrides,
   }
 }
@@ -140,6 +141,14 @@ describe('AdminApp', () => {
     render(<AdminApp version="" />)
     const images = await screen.findAllByAltText(t.captureAlt)
     expect(images[0]).toHaveAttribute('src', '/api/admin/captures/9')
+  })
+
+  it('shows the blocked starts of the day below the App Rules', async () => {
+    const start = { username: 'Kid', fileName: 'chrome.exe', exePath: 'C:\\Chrome\\chrome.exe', closedCount: 3, suspendedCount: 0, firstAt: '2026-11-26T14:00:00Z', lastAt: '2026-11-26T14:05:00Z' }
+    mockFetch(routes({ 'GET /api/admin/blocked-starts': { date: '2026-11-26', starts: [start] } }))
+    render(<AdminApp version="" />)
+    const panel = await screen.findByRole('region', { name: new RegExp(t.blockedStartsTitle) })
+    expect(await within(panel).findByText('chrome.exe')).toBeInTheDocument()
   })
 
   it('logs out and reloads the page', async () => {

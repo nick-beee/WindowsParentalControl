@@ -70,6 +70,64 @@ describe('CategoriesPanel', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('A rule for this file exists.')
   })
 
+  it('blocks a rule at once with its stored values and keeps an unsaved edit', async () => {
+    const calls = mockFetch({ 'PUT /api/admin/app-rules/3': { success: true } })
+    const reload = renderPanel()
+    await userEvent.selectOptions(screen.getByLabelText(`${t.colCategory}: Minecraft.exe`), 'Creative')
+    await userEvent.click(screen.getByRole('checkbox', { name: t.blockRule('Minecraft.exe') }))
+    expect(last(calls, 'PUT /api/admin/app-rules/3')?.body).toEqual({
+      matchType: 'file',
+      pattern: 'Minecraft.exe',
+      category: 'Games',
+      weekdayMinutes: 90,
+      weekendMinutes: null,
+      blocked: true,
+    })
+    expect(reload).toHaveBeenCalled()
+    expect(screen.getByLabelText(`${t.colCategory}: Minecraft.exe`)).toHaveValue('Creative')
+  })
+
+  it('unblocks a default browser rule', async () => {
+    const calls = mockFetch({ 'PUT /api/admin/app-rules/4': { success: true } })
+    renderPanel()
+    const box = screen.getByRole('checkbox', { name: t.blockRule('chrome.exe') })
+    expect(box).toBeChecked()
+    await userEvent.click(box)
+    expect(last(calls, 'PUT /api/admin/app-rules/4')?.body).toMatchObject({ pattern: 'chrome.exe', blocked: false })
+  })
+
+  it('shows the server error when a block is refused, and the switch stays off', async () => {
+    mockFetch({
+      'PUT /api/admin/app-rules/5': () => new Response(JSON.stringify({ error: 'A System rule cannot be blocked.' }), { status: 400 }),
+    })
+    const reload = renderPanel()
+    const box = screen.getByRole('checkbox', { name: t.blockRule('explorer.exe') })
+    await userEvent.click(box)
+    expect(await screen.findByRole('alert')).toHaveTextContent(t.blockRefused('A System rule cannot be blocked.'))
+    expect(box).not.toBeChecked()
+    expect(box).toBeEnabled()
+    expect(reload).not.toHaveBeenCalled()
+  })
+
+  it('marks only the default browser rules with the badge, and shows the Edge PDF hint', () => {
+    mockFetch({})
+    renderPanel()
+    const badges = screen.getAllByText((_, el) => !!el?.classList.contains('badge') && el.textContent === `🌐 ${t.defaultBrowserBadge}`)
+    expect(badges).toHaveLength(1)
+    expect(badges[0]!.closest('tr')).toHaveTextContent('chrome.exe')
+    expect(screen.getByText(t.edgePdfHint)).toBeInTheDocument()
+  })
+
+  it('adds a new rule with the block on', async () => {
+    const calls = mockFetch({ 'POST /api/admin/app-rules': { success: true, id: 9 } })
+    renderPanel()
+    await userEvent.type(screen.getByLabelText(t.colPattern), 'game2.exe')
+    await userEvent.click(screen.getByLabelText(t.newRuleBlocked))
+    await userEvent.click(screen.getByRole('button', { name: /Regel hinzufügen/ }))
+    expect(last(calls, 'POST /api/admin/app-rules')?.body).toMatchObject({ pattern: 'game2.exe', blocked: true })
+    expect(screen.getByLabelText(t.newRuleBlocked)).not.toBeChecked()
+  })
+
   it('deletes a rule after the confirmation', async () => {
     const calls = mockFetch({ 'DELETE /api/admin/app-rules/3': { success: true } })
     vi.spyOn(window, 'confirm').mockReturnValue(true)
@@ -197,6 +255,8 @@ describe('SettingsDialog', () => {
         msgBreakWarn: 'In {minutes} Minuten ist Pause.',
         msgBreakStart: 'Pause bis {break_end}',
         msgBreakRunning: 'Noch {minutes} Minuten bis {break_end}',
+        msgProgramBlocked: '{name} ist gesperrt.',
+        notifyBlockedTelegram: true,
       },
       'POST /api/admin/settings': { success: true },
     })
@@ -213,6 +273,10 @@ describe('SettingsDialog', () => {
     const start = within(dialog).getByLabelText(t.msgBreakStartLabel)
     await userEvent.clear(start)
     await userEvent.type(start, 'Pause bis {{break_end} Uhr')
+    await userEvent.click(within(dialog).getByLabelText(t.notifyBlockedTelegram))
+    const blockedText = within(dialog).getByLabelText(t.msgProgramBlockedLabel)
+    await userEvent.clear(blockedText)
+    await userEvent.type(blockedText, '{{name} ist hier gesperrt.')
     await userEvent.click(within(dialog).getByRole('button', { name: /Speichern/ }))
     expect(last(calls, 'POST /api/admin/settings')?.body).toEqual({
       telegramNotifySignIn: true,
@@ -225,6 +289,8 @@ describe('SettingsDialog', () => {
       msgBreakWarn: 'In {minutes} Minuten ist Pause.',
       msgBreakStart: 'Pause bis {break_end} Uhr',
       msgBreakRunning: 'Noch {minutes} Minuten bis {break_end}',
+      msgProgramBlocked: '{name} ist hier gesperrt.',
+      notifyBlockedTelegram: false,
     })
     expect(onClose).toHaveBeenCalled()
   })

@@ -73,6 +73,13 @@ public static class CategoryDefaults
         "chromium.exe", "waterfox.exe", "librewolf.exe", "floorp.exe", "palemoon.exe", "thorium.exe", "DuckDuckGo.exe",
     ];
 
+    /// <summary>
+    /// True for a file rule whose pattern is one of <see cref="BlockedBrowsers"/> (letter case ignored). The admin UI
+    /// marks these rules as default browsers. A folder rule is never a default browser.
+    /// </summary>
+    public static bool IsBlockedBrowser(RuleMatchType matchType, string pattern) =>
+        matchType == RuleMatchType.File && BlockedBrowsers.Contains(pattern, StringComparer.OrdinalIgnoreCase);
+
     /// <summary>The default blocked browser rules, without ids (Id = 0).</summary>
     public static IReadOnlyList<AppRule> BlockedBrowserRules() =>
         BlockedBrowsers.Select(name => new AppRule(0, RuleMatchType.File, name, AppCategory.Unknown, null, IsBlocked: true)).ToList();

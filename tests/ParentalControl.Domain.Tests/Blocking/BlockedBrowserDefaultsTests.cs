@@ -25,6 +25,17 @@ public class BlockedBrowserDefaultsTests
         }
     }
 
+    [Theory]
+    [InlineData(RuleMatchType.File, "chrome.exe", true)]
+    [InlineData(RuleMatchType.File, "CHROME.EXE", true)]
+    [InlineData(RuleMatchType.File, "DuckDuckGo.exe", true)]
+    [InlineData(RuleMatchType.File, "Minecraft.exe", false)]
+    [InlineData(RuleMatchType.Folder, "chrome.exe", false)]
+    public void IsBlockedBrowser_matches_only_a_file_rule_of_the_list(RuleMatchType matchType, string pattern, bool expected)
+    {
+        Assert.Equal(expected, CategoryDefaults.IsBlockedBrowser(matchType, pattern));
+    }
+
     [Fact]
     public void Tor_Browser_and_Opera_GX_are_blocked()
     {

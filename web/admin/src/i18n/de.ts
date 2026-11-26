@@ -196,6 +196,28 @@ export const de = {
   notDeleted: (message: string) => `Nicht gelöscht: ${message}`,
   notAssigned: (message: string) => `Nicht zugeordnet: ${message}`,
 
+  // ── Blocked programs ──
+  colBlocked: 'Gesperrt',
+  blockRule: (pattern: string) => `${pattern} sperren`,
+  blockedBadge: 'Gesperrt',
+  defaultBrowserBadge: 'Standard-Browser',
+  newRuleBlocked: 'Sperren',
+  blockRefused: (message: string) => `Sperre nicht geändert: ${message}`,
+  blockHint:
+    'Gesperrt: Parental Control schließt das Programm sofort beim Start, und das Kind bekommt eine Nachricht. Ein Programm, das schon läuft, pausiert. Die 15 Standard-Browser sind gesperrt. System-Regeln und Programme von Windows und Parental Control kann man nicht sperren.',
+  edgePdfHint:
+    'Hinweis: Wenn Edge (msedge.exe) gesperrt ist, öffnet Windows PDF-Dateien nicht mehr in Edge. Installiere ein anderes PDF-Programm und mache es zum Standard für PDF-Dateien.',
+  blockedStartsTitle: 'Gesperrte Starts',
+  blockedStartsHint: 'Versuche des Kindes, ein gesperrtes Programm zu starten: pro Programm und Tag die Anzahl und die Zeit des ersten und letzten Versuchs.',
+  blockedStartsDate: 'Datum der gesperrten Starts',
+  blockedStartsEmpty: 'An diesem Tag gibt es keine gesperrten Starts.',
+  blockedStartsLoadFailed: (message: string) => `Gesperrte Starts nicht geladen: ${message}`,
+  colClosed: 'Geschlossen',
+  colSuspended: 'Pausiert',
+  colFirstTry: 'Erster Versuch',
+  colLastTry: 'Letzter Versuch',
+  colPath: 'Pfad',
+
   // ── Activity ──
   activityTitle: 'App-Nutzung und Bildschirmzeit',
   activityHint: 'Programme im Vordergrund und ihre Zeit über den Tag.',
@@ -313,6 +335,8 @@ export const de = {
   msgBreakWarnLabel: 'Warnung an das Kind vor einer Pause. Platzhalter: {minutes}',
   msgBreakStartLabel: 'Nachricht beim Beginn einer Pause. Platzhalter: {minutes}, {break_end}',
   msgBreakRunningLabel: 'Nachricht, wenn das Kind den PC während der Pause entsperrt. Platzhalter: {minutes}, {break_end}',
+  notifyBlockedTelegram: 'Nachricht, wenn das Kind ein gesperrtes Programm starten will (einmal pro Programm und Tag)',
+  msgProgramBlockedLabel: 'Nachricht an das Kind, wenn ein gesperrtes Programm startet. Platzhalter: {name}',
   settingsSaved: 'Die Einstellungen sind gespeichert.',
   settingsSaveFailed: 'Die Einstellungen sind nicht gespeichert.',
   settingsLoadFailed: 'Die Einstellungen sind nicht geladen.',
