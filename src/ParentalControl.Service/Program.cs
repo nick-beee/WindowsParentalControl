@@ -22,6 +22,7 @@ builder.Services.Configure<HostOptions>(o => o.BackgroundServiceExceptionBehavio
 builder.Services.AddSingleton(startup);
 builder.Services.AddSingleton(logger);
 builder.Services.AddSingleton<TelegramBotService>();
+builder.Services.AddSingleton<BreakEnforcer>();
 builder.Services.AddSingleton<SessionTracker>();
 builder.Services.AddSingleton<ParentalControl.Domain.Categories.ForegroundHistory>();
 builder.Services.AddSingleton<CategoryEnforcer>();
