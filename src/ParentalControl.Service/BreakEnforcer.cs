@@ -15,6 +15,7 @@ namespace ParentalControl.Service;
 public sealed class BreakEnforcer
 {
     private readonly object _gate = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, DateTime> _lastRunningMessage = new();
     private readonly Serilog.ILogger _logger;
 
     public BreakEnforcer(Serilog.ILogger logger)
@@ -111,6 +112,16 @@ public sealed class BreakEnforcer
                 case StartBreak start:
                     StartBreakInSessions(tracker, user, unlockedSessions, start);
                     break;
+                case LockAgain again:
+                    // The unlock event was lost or the re-lock did not work (issue #14): lock within 60 seconds.
+                    foreach (var sessionId in unlockedSessions)
+                    {
+                        _logger.Information("Session {SessionId} ({Username}) shows as unlocked during a Break; locking again",
+                            sessionId, user.Username);
+                        LockForRunningBreak(sessionId, again.EndsUtc);
+                        tracker.OnSessionLock(sessionId, "Break running - workstation locked again");
+                    }
+                    break;
             }
         }
     }
@@ -167,6 +178,29 @@ public sealed class BreakEnforcer
             SessionManager.LockSession(sessionId);
             tracker.OnSessionLock(sessionId, $"Break until {endText} - workstation locked");
         }
+    }
+
+    /// <summary>
+    /// Locks a session again during a Break: first the message with the end time and the remaining minutes
+    /// (at most one time in 10 seconds per session), then the Enforced Workstation Lock. It never signs the child out.
+    /// The caller updates the lock state of <see cref="SessionTracker"/>.
+    /// </summary>
+    public void LockForRunningBreak(int sessionId, DateTime endsUtc)
+    {
+        var now = DateTime.UtcNow;
+        var notify = !_lastRunningMessage.TryGetValue(sessionId, out var last) || now - last > TimeSpan.FromSeconds(10);
+        if (notify)
+        {
+            _lastRunningMessage[sessionId] = now;
+            var title = SessionTexts.For(SettingsRepository.GetLanguagePreset())["break_title"];
+            var message = SettingsRepository.GetMessage(SettingsRepository.KeyMsgBreakRunning,
+                BreakTexts.RunningValues(now, endsUtc, TimeZoneInfo.Local));
+            Thread.Sleep(300);
+            NotificationManager.SendMessage(sessionId, title, message, isWarning: true, timeoutSeconds: 5, wait: true);
+        }
+
+        // A session that is already disconnected stays as it is; the result does not matter.
+        SessionManager.LockSession(sessionId);
     }
 
     // --- Core ---

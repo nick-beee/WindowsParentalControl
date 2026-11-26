@@ -261,6 +261,17 @@ public sealed class SessionTracker
             }
         }
 
+        if (_breakEnforcer?.GetRunningBreakEnd(user.Id) is { } breakEndsUtc)
+        {
+            // A sign-out would close the programs of the autostart (hard rule): lock the new session instead.
+            _logger.Information("Sign-in during a Break (until {End:o}): {Username}; locking the session", breakEndsUtc, username);
+            _activeSessions.TryAdd(sessionId, new ActiveSession(sessionId, sid, username, eventTime, IsLocked: true));
+            EventRepository.LogEvent(sid, EventType.LOGIN, "Break running - session locked");
+            EventRepository.LogEvent(sid, EventType.SESSION_LOCKED, "Break running on sign-in");
+            _breakEnforcer.LockForRunningBreak(sessionId, breakEndsUtc);
+            return;
+        }
+
         _activeSessions.TryAdd(sessionId, new ActiveSession(sessionId, sid, username, eventTime));
         ReportRest(sid, start: false);
 
@@ -436,6 +447,15 @@ public sealed class SessionTracker
                     SessionManager.LockSession(sessionId);
                     return;
                 }
+            }
+
+            if (_breakEnforcer?.GetRunningBreakEnd(user.Id) is { } breakEndsUtc)
+            {
+                _logger.Information("Unlock rejected (Break until {End:o}): {Username} on session {SessionId}", breakEndsUtc, session.Username, sessionId);
+                EventRepository.LogEvent(session.UserSid, EventType.LOGIN_DENIED, "Break running on unlock");
+                _activeSessions[sessionId] = session with { IsLocked = true, LastTick = DateTime.Now };
+                _breakEnforcer.LockForRunningBreak(sessionId, breakEndsUtc);
+                return;
             }
 
             EnsureAgentRunning(sessionId);
