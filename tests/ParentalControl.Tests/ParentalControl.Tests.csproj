@@ -8,5 +8,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\ParentalControl.Core\ParentalControl.Core.csproj" />
+    <!-- The gate test of require-admin-sign-in maps the routes of the web server. -->
+    <ProjectReference Include="..\..\src\ParentalControl.Service\ParentalControl.Service.csproj" />
   </ItemGroup>
 </Project>

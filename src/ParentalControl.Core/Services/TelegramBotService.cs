@@ -1058,6 +1058,7 @@ public sealed class TelegramBotService
     /// <summary>
     /// Tells the parent that a source or all sources reached the limit on failed admin logins.
     /// Returns false without a Telegram configuration; the caller then writes the event to the log only.
+    /// Returns true when the message is sent, or when it waits in the Offline Notification Queue.
     /// </summary>
     public async Task<bool> SendAdminLoginBlockedAlertAsync(string source, DateTime blockedUntilLocal, bool allSources)
     {
@@ -1077,7 +1078,7 @@ public sealed class TelegramBotService
         {
             PendingNotificationRepository.Enqueue("ADMIN_LOGIN_BLOCKED", JsonSerializer.Serialize(payload), DateTime.Now);
         }
-        return success;
+        return true;
     }
 
     /// <summary>

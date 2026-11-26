@@ -748,6 +748,143 @@ Console.WriteLine("✅ Process List, Suspend & Resume Passed.");
 }
 Console.WriteLine("✅ Admin Sign-In Storage & Start Check Passed.");
 
+// Admin gate over HTTP (require-admin-sign-in, group 4): the real routes on a free local port.
+{
+    var gateLogger = new Serilog.LoggerConfiguration().CreateLogger();
+    var gateTelegram = new TelegramBotService(gateLogger);
+    var webHost = new ParentalControl.Service.Web.WebServerHost(
+        new ParentalControl.Service.SessionTracker(gateLogger), gateTelegram, gateLogger, new ForegroundHistory());
+    var webBuilder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder();
+    Microsoft.AspNetCore.Hosting.HostingAbstractionsWebHostBuilderExtensions.UseUrls(webBuilder.WebHost, "http://127.0.0.1:0");
+    var webApp = webBuilder.Build();
+    webHost.ConfigureApp(webApp);
+    await webApp.StartAsync();
+    var baseUrl = webApp.Urls.First().TrimEnd('/');
+    using var http = new HttpClient(new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false });
+
+    async Task<HttpResponseMessage> Send(HttpMethod method, string path, string? cookie = null, string? origin = null, HttpContent? content = null)
+    {
+        var request = new HttpRequestMessage(method, baseUrl + path) { Content = content };
+        if (cookie != null) request.Headers.Add("Cookie", "pc_admin_session=" + cookie);
+        if (origin != null) request.Headers.Add("Origin", origin);
+        return await http.SendAsync(request);
+    }
+    HttpContent Json(string json) => new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+    HttpContent CodeForm(string code) => new FormUrlEncodedContent(new Dictionary<string, string> { ["code"] = code });
+    string? CookieOf(HttpResponseMessage response) =>
+        response.Headers.TryGetValues("Set-Cookie", out var values)
+            ? values.Select(v => v.Split(';')[0]).Where(v => v.StartsWith("pc_admin_session=") && v.Length > "pc_admin_session=".Length)
+                    .Select(v => v["pc_admin_session=".Length..]).FirstOrDefault()
+            : null;
+    int BonusToday() => UsageRepository.GetUsage(user.Id, DateOnly.FromDateTime(DateTime.Now))?.BonusMinutes ?? 0;
+    var grantBody = $$"""{"userId":{{user.Id}},"minutes":30}""";
+
+    try
+    {
+        // Before the setup: setup text, no form, the login refuses each code, admin routes give 401.
+        SettingsRepository.Set(SettingsRepository.KeyTotpEnabled, "false");
+        var setupPage = await (await Send(HttpMethod.Get, "/admin")).Content.ReadAsStringAsync();
+        Debug.Assert(setupPage.Contains("Web-Verwaltung ist gesperrt") && !setupPage.Contains("<form"), "/admin should show the setup text and no form before the setup");
+        foreach (var anyCode in new[] { "000000", "" })
+        {
+            var notSetUp = await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(anyCode));
+            Debug.Assert((int)notSetUp.StatusCode == 401 && CookieOf(notSetUp) is null, "The login should refuse each code before the setup");
+        }
+        var bonusBefore = BonusToday();
+        Debug.Assert((int)(await Send(HttpMethod.Post, "/api/admin/grant", content: Json(grantBody))).StatusCode == 401, "Grant without a session should give 401");
+        foreach (var variant in new[] { "//api/admin/grant", "/api//admin/grant", "/api/admin/grant/", "/API/ADMIN/GRANT", "/api/admin/%67rant", "/api/admin/unknown" })
+        {
+            var status = (int)(await Send(HttpMethod.Post, variant, content: Json(grantBody))).StatusCode;
+            Debug.Assert(status == 401 || status == 404, $"Path variant {variant} should give 401 or 404, not {status}");
+        }
+        Debug.Assert(BonusToday() == bonusBefore, "Bonus Minutes should not change without a session");
+
+        // Child-facing routes stay open.
+        var requestStatus = (int)(await Send(HttpMethod.Get, "/request")).StatusCode;
+        Debug.Assert(requestStatus != 401 && requestStatus != 403, "/request should work without a session");
+        var agentStatus = (int)(await Send(HttpMethod.Get, "/api/agent/status?user=TestBrother")).StatusCode;
+        Debug.Assert(agentStatus == 200, "/api/agent/status should work without a session");
+
+        // Setup, then login with a valid code one time only.
+        var gateSecret = TotpService.GenerateSecret();
+        TotpSecret.TryDecode(gateSecret, out var gateKey);
+        var step = Totp.StepAt(DateTimeOffset.UtcNow);
+        AdminAccessRepository.CompleteSetup(gateSecret, step - 2, DateTimeOffset.UtcNow);
+        var loginPage = await (await Send(HttpMethod.Get, "/admin")).Content.ReadAsStringAsync();
+        Debug.Assert(loginPage.Contains("action=\"/api/admin/login\""), "/admin should show the login form after the setup");
+        string WrongCode()
+        {
+            var now = Totp.StepAt(DateTimeOffset.UtcNow);
+            var valid = Enumerable.Range(-2, 5).Select(d => Totp.ComputeCode(gateKey, now + d)).ToHashSet();
+            return Enumerable.Range(0, 1000).Select(i => i.ToString("D6")).First(c => !valid.Contains(c));
+        }
+        string CurrentCode() => Totp.ComputeCode(gateKey, Totp.StepAt(DateTimeOffset.UtcNow));
+
+        var code = CurrentCode();
+        var login = await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(code));
+        var cookie = CookieOf(login);
+        Debug.Assert((int)login.StatusCode == 302 && cookie != null, "A valid code should give an Admin Session");
+        var replay = await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(code));
+        Debug.Assert((int)replay.StatusCode == 401 && CookieOf(replay) is null, "The same code a second time should fail");
+        Debug.Assert((int)(await Send(HttpMethod.Post, "/api/admin/login", content: Json("{}"))).StatusCode == 401, "A JSON login without a code should fail, not crash");
+
+        var settings = await Send(HttpMethod.Get, "/api/admin/settings", cookie);
+        Debug.Assert((int)settings.StatusCode == 200, "A valid session should read the settings");
+        Debug.Assert(!(await settings.Content.ReadAsStringAsync()).Contains(gateSecret), "No route should show the secret");
+        Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/settings")).StatusCode == 401, "No cookie should give 401");
+        Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/settings", "0123456789ABCDEF")).StatusCode == 401, "An unknown token should give 401");
+
+        // Origin check.
+        var foreign = await Send(HttpMethod.Post, "/api/admin/grant", cookie, "http://localhost:8000", Json(grantBody));
+        Debug.Assert((int)foreign.StatusCode == 403 && BonusToday() == bonusBefore, "A POST from another origin should give 403 and change nothing");
+        var sameOrigin = await Send(HttpMethod.Post, "/api/admin/settings", cookie, baseUrl, Json("{}"));
+        Debug.Assert((int)sameOrigin.StatusCode == 200, "A POST from the same origin should work");
+        Debug.Assert((int)(await Send(HttpMethod.Post, "/api/admin/login", origin: "http://localhost:8000", content: CodeForm(WrongCode()))).StatusCode == 403, "A login from another origin should give 403");
+
+        // Logout is a POST and ends the session.
+        Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/logout", cookie)).StatusCode == 405, "GET logout should give 405");
+        Debug.Assert((int)(await Send(HttpMethod.Post, "/api/admin/logout", cookie)).StatusCode == 302, "POST logout should redirect");
+        Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/settings", cookie)).StatusCode == 401, "The old cookie should give 401 after the logout");
+
+        // A new session epoch ("Sign out all web sessions") and an epoch that is not a number end the session.
+        AdminAccessRepository.SetLastUsedStep(Totp.StepAt(DateTimeOffset.UtcNow) - 2);
+        var cookie2 = CookieOf(await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(CurrentCode())));
+        Debug.Assert(cookie2 != null && (int)(await Send(HttpMethod.Get, "/api/admin/settings", cookie2)).StatusCode == 200, "A second login should work");
+        AdminAccessRepository.SignOutAllSessions();
+        Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/settings", cookie2)).StatusCode == 401, "A new epoch should end all sessions");
+
+        // Login limit: 10 wrong codes from this PC block the 11th code, also a valid one.
+        AdminAccessRepository.DeleteAllFailures();
+        AdminAccessRepository.SetLastUsedStep(Totp.StepAt(DateTimeOffset.UtcNow) - 2);
+        for (var i = 0; i < LoginThrottle.MaxPerSource; i++)
+            Debug.Assert((int)(await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(WrongCode()))).StatusCode == 401, "A wrong code should give 401");
+        var blocked = await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(CurrentCode()));
+        Debug.Assert((int)blocked.StatusCode == 429 && CookieOf(blocked) is null, "The 11th code should be refused without a check");
+        Debug.Assert((await blocked.Content.ReadAsStringAsync()).Contains("Zu viele falsche Codes"), "The page should show the block message");
+        Debug.Assert(AdminAccessRepository.GetRecentFailures(DateTimeOffset.UtcNow).Count == LoginThrottle.MaxPerSource, "A refused login should not count as a failure");
+        // The counts are in SQLite: a new service instance (a restart) still blocks this PC, but not a LAN source.
+        var restarted = new ParentalControl.Service.Web.AdminAccessService(gateTelegram, gateLogger);
+        Debug.Assert(restarted.TryLogin(CurrentCode(), System.Net.IPAddress.Loopback).Outcome == ParentalControl.Service.Web.AdminLoginOutcome.Blocked, "The block should survive a restart");
+        Debug.Assert(restarted.TryLogin(CurrentCode(), System.Net.IPAddress.Parse("192.0.2.10")).Outcome == ParentalControl.Service.Web.AdminLoginOutcome.Success, "A LAN source should still sign in");
+        // "Clear login limit" in the Admin app.
+        AdminAccessRepository.DeleteAllFailures();
+        AdminAccessRepository.SetLastUsedStep(Totp.StepAt(DateTimeOffset.UtcNow) - 2);
+        Debug.Assert(CookieOf(await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(CurrentCode()))) != null, "After the limit is cleared, this PC should sign in");
+
+        // An install that turns TOTP off again is locked at once.
+        SettingsRepository.Set(SettingsRepository.KeyTotpEnabled, "false");
+        Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/settings", cookie2)).StatusCode == 401, "No session is valid while the sign-in is not set up");
+    }
+    finally
+    {
+        await webApp.StopAsync();
+        SettingsRepository.Set(SettingsRepository.KeyTotpEnabled, "false");
+        SettingsRepository.Set(SettingsRepository.KeyTotpSecret, "");
+        AdminAccessRepository.DeleteAllFailures();
+    }
+}
+Console.WriteLine("✅ Admin Gate over HTTP Passed.");
+
 // Cleanup test user
 UserRepository.DeleteBySid(testSid);
 ScheduleRepository.DeleteForUser(user.Id);
