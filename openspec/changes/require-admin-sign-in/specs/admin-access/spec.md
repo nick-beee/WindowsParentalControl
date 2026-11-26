@@ -189,8 +189,16 @@ The service SHALL enforce the limits also when its web server cannot start. A fa
 
 #### Scenario: Port taken by a program of the child
 - **WHEN** a program of the Restricted User holds port 5050 before the service starts its web server
-- **THEN** the service enforces the limits, logs the error, and tries to start the web server again after a wait that grows to at most 60 seconds
-- **AND** the web server answers after the port is free
+- **THEN** the service enforces the limits, and tries to start the web server again after a wait that grows to at most 60 seconds
+- **AND** the service logs the process name, the process id and the user of the program that holds the port, and does not close or kill that program
+- **AND** the Admin app shows a warning that names the program, does not show the sign-in as set up, and tells the parent not to type a code on this PC
+- **AND** after the start gate opened, the service sends one Telegram alert, if Telegram is configured
+- **AND** the web server answers after the port is free, and the warning goes away
+
+#### Scenario: Port bound before the data folder step
+- **WHEN** the service starts
+- **THEN** the web server binds port 5050 before the data folder step, so that no other program can bind it, also not on `127.0.0.1` or `[::1]`
+- **AND** each route answers 503 until the start gate opens, and no route reads the database before it
 
 ### Requirement: Quota for screen captures of the Session Agent
 The service SHALL accept at most 200 screen captures and 50 MB per user on one day (since local midnight), and at most 5 MB per capture, on `POST /api/agent/capture`. It SHALL refuse more without a file and without a row, and it SHALL write the refusal to the log one time per user and day.
@@ -287,6 +295,12 @@ The service SHALL never stop the enforcement of the limits because of the data f
 - **AND** the service tries the data folder step, the open of the database and the log file again every minute, and enforces as normal in the same process after all three succeed
 - **AND** the event log and the Admin app show the error
 
+#### Scenario: Error before the start gate opens
+- **WHEN** the database is open, but a start action before the start gate fails, for example the write of the setup lock or of a user on a full disk
+- **THEN** the service does not end the process, and applies the Enforced Workstation Lock as when no data folder works
+- **AND** the service tries the start actions again every minute, and opens the start gate in the same process after they succeed
+- **AND** only an error after the start gate opened ends the process, and Windows starts the service again
+
 #### Scenario: Database does not open after the data folder step
 - **WHEN** the service secured the data folder, but the open or the migration of the database or the creation of the log file fails, for example because the disk is full
 - **THEN** the service does not stop and does not restart in a loop
@@ -314,6 +328,11 @@ The service SHALL never stop the enforcement of the limits because of the data f
 - **THEN** the service applies the Enforced Workstation Lock to each active session of a user who is not an administrator, and does not close or kill a program
 - **AND** the lock ends when a Restricted User exists in the new database, or when the parent selects "Finish setup" in the Admin app
 - **AND** the event log and the Admin app show the lock
+
+#### Scenario: Setup lock after a break of the start
+- **WHEN** the service moved the data folder away or made a new data folder, and then a lockdown retry, an end of the process, a power cut or a reboot came before the first write to the new database
+- **THEN** the next successful start still applies the setup lock, because the service wrote an admin-only registry value in the same step as the move
+- **AND** the service deletes the registry value only after the setup lock is in the database
 
 #### Scenario: Normal first install
 - **WHEN** the service starts for the first time, and no data folder exists
