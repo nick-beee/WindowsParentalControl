@@ -49,7 +49,9 @@ internal sealed class ProcessStartWatcher : IDisposable
             try
             {
                 _watcher?.Dispose();
-                _watcher = new ManagementEventWatcher(new ManagementScope(@"\\.\root\cimv2"), new WqlEventQuery(Query));
+                // EventQuery takes the WQL text as it is. The WqlEventQuery(string) constructor of System.Management 8
+                // parses this text as a class path and throws "Invalid parameter".
+                _watcher = new ManagementEventWatcher(new ManagementScope(@"\\.\root\cimv2"), new EventQuery(Query));
                 _watcher.EventArrived += OnEventArrived;
                 _watcher.Stopped += OnStopped;
                 _watcher.Start();
