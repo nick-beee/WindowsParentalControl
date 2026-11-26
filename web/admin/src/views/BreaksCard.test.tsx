@@ -186,4 +186,9 @@ describe('clockTime', () => {
     const local = new Date(2026, 10, 26, 9, 5)
     expect(clockTime(local.toISOString())).toBe('09:05')
   })
+
+  it('reads the 7 digits after the seconds that .NET sends', () => {
+    const local = new Date(2026, 10, 26, 14, 40)
+    expect(clockTime(local.toISOString().replace(/\.\d{3}Z$/, '.1234567Z'))).toBe('14:40')
+  })
 })

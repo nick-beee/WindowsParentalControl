@@ -35,9 +35,12 @@ export function exeFileName(processName: string): string {
   return /\.exe$/i.test(processName) ? processName : `${processName}.exe`
 }
 
-/** The local time of an ISO 8601 time as HH:mm (the time of the PC that shows the page). */
+/**
+ * The local time of an ISO 8601 time as HH:mm (the time of the PC that shows the page). The service sends 7 digits
+ * after the seconds (.NET "O"); some browsers do not parse more than 3, so the function cuts the rest.
+ */
 export function clockTime(iso: string): string {
-  const date = new Date(iso)
+  const date = new Date(iso.replace(/(\.\d{3})\d+/, '$1'))
   if (Number.isNaN(date.getTime())) return iso
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
 }
