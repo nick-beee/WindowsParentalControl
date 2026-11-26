@@ -11,7 +11,8 @@ namespace ParentalControl.Service.Web;
 /// <summary>
 /// Serves the web admin, a React single-page app (ADR 0009, web/admin). The build of the service embeds the
 /// Vite output as resources with the prefix "AdminSpa/" (ParentalControl.Service.csproj). The service serves
-/// only these files: the page at /admin and the hashed files at /admin/assets/.
+/// only these files: the page at /admin, the child request page at /request (RequestSpa) and the hashed files at
+/// /admin/assets/.
 /// </summary>
 public static class AdminSpa
 {
@@ -73,7 +74,10 @@ public static class AdminSpa
     /// <summary>The names of the embedded files (for example "index.html", "assets/index-abc.js").</summary>
     public static IReadOnlyCollection<string> FileNames => Files.Value.Keys;
 
-    private static void SetSecurityHeaders(HttpResponse response)
+    /// <summary>An embedded file of the build, for example "request.html" (RequestSpa).</summary>
+    internal static bool TryGetFile(string name, out byte[] bytes) => Files.Value.TryGetValue(name, out bytes!);
+
+    internal static void SetSecurityHeaders(HttpResponse response)
     {
         response.Headers.ContentSecurityPolicy = ContentSecurityPolicy;
         response.Headers.XContentTypeOptions = "nosniff";
