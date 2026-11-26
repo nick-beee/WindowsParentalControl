@@ -98,4 +98,26 @@ public class DataFolderTrustTests
     {
         Assert.NotNull(DataFolderTrust.Check(Secured(new AceFact(AceKind.Unknown, Kid, 0, false))));
     }
+
+    [Fact]
+    public void Registry_key_with_read_for_users_is_trusted()
+    {
+        const uint keyRead = 0x00020019; // KEY_READ
+        var facts = new SecurityFacts(DataFolderTrust.SystemSid,
+            new[] { Allow(DataFolderTrust.SystemSid, 0x000F003F), Allow(DataFolderTrust.AdministratorsSid, 0x000F003F), Allow(Users, keyRead) });
+        Assert.Null(DataFolderTrust.Check(facts, DataFolderTrust.RegistryKeyWriteRightsMask));
+    }
+
+    [Theory]
+    [InlineData(0x00000002u)] // KEY_SET_VALUE
+    [InlineData(0x00000004u)] // KEY_CREATE_SUB_KEY
+    [InlineData(0x00000020u)] // KEY_CREATE_LINK
+    [InlineData(0x00040000u)] // WRITE_DAC
+    [InlineData(0x10000000u)] // GENERIC_ALL
+    public void Registry_key_that_users_can_change_is_not_trusted(uint mask)
+    {
+        var facts = new SecurityFacts(DataFolderTrust.AdministratorsSid,
+            new[] { Allow(DataFolderTrust.SystemSid, 0x000F003F), Allow(Users, mask) });
+        Assert.NotNull(DataFolderTrust.Check(facts, DataFolderTrust.RegistryKeyWriteRightsMask));
+    }
 }

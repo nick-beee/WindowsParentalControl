@@ -50,6 +50,13 @@ public static class AdminAccessTexts
         + "Anfragen für mehr Zeit kannst du weiter hier in Telegram beantworten.\n"
         + "Falls dein altes Geheimnis für andere sichtbar war (zum Beispiel auf einem Foto), richte ein neues ein.";
 
+    /// <summary>The Telegram alert after the service made a new data folder, because the old one was not usable (D14).</summary>
+    public static string TelegramDataFolderRelocated(string machineName, string from, string to, DateTime whenLocal) =>
+        "⚠️ *Neuer Datenordner*\n\n"
+        + $"Parental Control auf {machineName} konnte am {whenLocal:dd.MM.yyyy} um {whenLocal:HH:mm} Uhr den Datenordner {from} nicht sicher verwenden. "
+        + $"Der Dienst hat den neuen Datenordner {to} angelegt und mit einer neuen Datenbank begonnen. Den alten Ordner hat er nicht verändert.\n\n"
+        + "Prüfe in Parental Control Admin die Limits, die Regeln und die Anmeldung. Lösche den alten Ordner, wenn du ihn nicht mehr brauchst.";
+
     /// <summary>The Telegram alert after the service moved an untrusted data folder away (finding B2).</summary>
     public static string TelegramDataFolderQuarantined(string machineName, string movedTo, DateTime whenLocal) =>
         "⚠️ *Datenordner ersetzt*\n\n"

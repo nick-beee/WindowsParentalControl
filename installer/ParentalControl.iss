@@ -205,3 +205,40 @@ begin
         StartService();
     end;
 end;
+
+// The service can make a new data folder with a random name (require-admin-sign-in D14) and stores its location in
+// HKLM\Software\ParentalControl\DataFolderPath. Read it before the uninstall removes the key, and delete the folder
+// after the service is gone. Only a name of the form {commonappdata}\ParentalControl-<32 hex digits> is deleted.
+var
+    RelocatedDataFolder: String;
+
+function IsServiceDataFolder(Path: String): Boolean;
+var
+    Prefix: String;
+    I: Integer;
+    C: Char;
+begin
+    Prefix := ExpandConstant('{commonappdata}\ParentalControl-');
+    Result := (Length(Path) = Length(Prefix) + 32) and (CompareText(Copy(Path, 1, Length(Prefix)), Prefix) = 0);
+    if Result then
+        for I := Length(Prefix) + 1 to Length(Path) do
+        begin
+            C := Path[I];
+            if not (((C >= '0') and (C <= '9')) or ((C >= 'a') and (C <= 'f')) or ((C >= 'A') and (C <= 'F'))) then
+                Result := False;
+        end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+    Value: String;
+begin
+    if CurUninstallStep = usUninstall then
+    begin
+        RelocatedDataFolder := '';
+        if RegQueryStringValue(HKLM64, 'Software\ParentalControl', 'DataFolderPath', Value) and IsServiceDataFolder(Value) then
+            RelocatedDataFolder := Value;
+    end
+    else if (CurUninstallStep = usPostUninstall) and (RelocatedDataFolder <> '') then
+        DelTree(RelocatedDataFolder, True, True, True);
+end;

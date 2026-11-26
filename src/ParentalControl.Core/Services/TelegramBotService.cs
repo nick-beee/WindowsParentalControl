@@ -1121,6 +1121,30 @@ public sealed class TelegramBotService
         return true;
     }
 
+    /// <summary>
+    /// Tells the parent that the service made a new data folder with a new database, because the old folder was not
+    /// usable (require-admin-sign-in, D14). Returns false without a Telegram configuration. Returns true when the message
+    /// is sent, or when it waits in the Offline Notification Queue because the PC is offline.
+    /// </summary>
+    public async Task<bool> SendDataFolderRelocatedAlertAsync(string from, string to, DateTime whenLocal)
+    {
+        var token = SettingsRepository.Get(SettingsRepository.KeyTelegramBotToken);
+        var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
+        if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
+
+        var payload = new DataFolderRelocatedPayload { MachineName = Environment.MachineName, From = from, To = to, WhenLocal = whenLocal };
+        var success = await SendWithRetryAsync(() => SendTextMessageAsync(chatId, BuildDataFolderRelocatedText(payload)));
+        if (!success)
+        {
+            PendingNotificationRepository.Enqueue("DATA_FOLDER_RELOCATED", JsonSerializer.Serialize(payload), DateTime.Now);
+        }
+        return true;
+    }
+
+    private static string BuildDataFolderRelocatedText(DataFolderRelocatedPayload payload) =>
+        ParentalControl.Domain.AdminAccess.AdminAccessTexts.TelegramDataFolderRelocated(
+            EscapeMarkdown(payload.MachineName), EscapeMarkdown(payload.From), EscapeMarkdown(payload.To), payload.WhenLocal);
+
     private static string BuildDataFolderQuarantinedText(DataFolderQuarantinedPayload payload) =>
         ParentalControl.Domain.AdminAccess.AdminAccessTexts.TelegramDataFolderQuarantined(
             EscapeMarkdown(payload.MachineName), EscapeMarkdown(payload.MovedTo), payload.WhenLocal);
@@ -1263,6 +1287,14 @@ public sealed class TelegramBotService
                     if (payload != null)
                     {
                         sent = await SendTextMessageAsync(chatId, BuildAdminLoginBlockedText(payload));
+                    }
+                }
+                else if (item.NotificationType == "DATA_FOLDER_RELOCATED")
+                {
+                    var payload = JsonSerializer.Deserialize<DataFolderRelocatedPayload>(item.PayloadJson);
+                    if (payload != null)
+                    {
+                        sent = await SendTextMessageAsync(chatId, BuildDataFolderRelocatedText(payload));
                     }
                 }
                 else if (item.NotificationType == "DATA_FOLDER_QUARANTINED")

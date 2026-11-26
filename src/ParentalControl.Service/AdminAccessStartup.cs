@@ -16,6 +16,7 @@ public static class AdminAccessStartup
     public static async Task RunAsync(TelegramBotService telegram, Serilog.ILogger logger)
     {
         await AlertQuarantineAsync(telegram, logger);
+        await AlertRelocationAsync(telegram, logger);
 
         var plan = AdminSetup.PlanStart(
             SettingsRepository.Get(SettingsRepository.KeyTotpEnabled, "false"),
@@ -47,6 +48,29 @@ public static class AdminAccessStartup
         catch (Exception ex)
         {
             logger.Error(ex, "Could not send the Telegram notice about the setup of the admin sign-in.");
+        }
+    }
+
+    /// <summary>
+    /// Tells the parent one time on Telegram that the service made a new data folder, because the old one was not
+    /// usable (D14). The new database has no Telegram configuration; the message goes out at the first start after the
+    /// parent configures Telegram again. The event log and the Admin app show it at once.
+    /// </summary>
+    private static async Task AlertRelocationAsync(TelegramBotService telegram, Serilog.ILogger logger)
+    {
+        var report = Core.Platform.DataFolderStatusStore.Read();
+        if (string.IsNullOrEmpty(report.RelocatedTo)
+            || SettingsRepository.Get(SettingsRepository.KeyDataFolderRelocationNotified) == report.RelocatedTo)
+            return;
+        try
+        {
+            var when = (report.RelocatedAtUtc ?? DateTimeOffset.UtcNow).ToLocalTime().DateTime;
+            if (await telegram.SendDataFolderRelocatedAlertAsync(report.RelocatedFrom ?? "?", report.RelocatedTo, when))
+                SettingsRepository.Set(SettingsRepository.KeyDataFolderRelocationNotified, report.RelocatedTo);
+        }
+        catch (Exception ex)
+        {
+            logger.Error(ex, "Could not send the Telegram alert about the new data folder.");
         }
     }
 

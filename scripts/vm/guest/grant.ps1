@@ -10,5 +10,8 @@ Invoke-WebRequest -UseBasicParsing -Method Post -Uri http://127.0.0.1:5050/api/a
 if (-not ($admin.Cookies.GetCookies('http://127.0.0.1:5050') | Where-Object Name -eq 'pc_admin_session')) { throw "Login failed with code $code" }
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:5050/api/admin/grant -WebSession $admin -ContentType application/json -Body (@{ userId = $UserId; minutes = $Minutes } | ConvertTo-Json) | ConvertTo-Json -Compress
 Start-Sleep 4
-$log = Get-ChildItem C:\ProgramData\ParentalControl\logs\*.log | Sort-Object LastWriteTime | Select-Object -Last 1
+# The service stores the location of the data folder in the registry (require-admin-sign-in D14); default C:\ProgramData\ParentalControl.
+$dataDir = (Get-ItemProperty -Path HKLM:\SOFTWARE\ParentalControl -Name DataFolderPath -ErrorAction SilentlyContinue).DataFolderPath
+if (-not $dataDir) { $dataDir = 'C:\ProgramData\ParentalControl' }
+$log = Get-ChildItem (Join-Path $dataDir 'logs\*.log') | Sort-Object LastWriteTime | Select-Object -Last 1
 Get-Content $log.FullName -Tail 5 | Select-String -NotMatch launched

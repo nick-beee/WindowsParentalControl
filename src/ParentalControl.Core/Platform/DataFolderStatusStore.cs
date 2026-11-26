@@ -7,28 +7,36 @@ namespace ParentalControl.Core.Platform;
 /// <summary>
 /// Keeps the result of the data folder step of the service in <c>HKLM\SOFTWARE\ParentalControl</c>
 /// (require-admin-sign-in, finding S3). The registry, not the database, because the database is not usable when the
-/// step fails. Only an administrator or SYSTEM can write below <c>HKLM\SOFTWARE</c>; a standard user can only read it.
-/// The values contain no secret.
+/// step fails. The key has the rules of <see cref="DataFolderRegistry.KeySddl"/>: only an administrator or SYSTEM can
+/// write it, a standard user can only read it. The values contain no secret.
 /// </summary>
 public static class DataFolderStatusStore
 {
-    private const string KeyPath = @"SOFTWARE\ParentalControl";
+    private static string KeyPath => DataFolderRegistry.Default.KeyPath;
     private const string StateValue = "DataFolderState";
     private const string DetailValue = "DataFolderDetail";
     private const string CheckedAtValue = "DataFolderCheckedAtUtc";
     private const string QuarantinedToValue = "DataFolderQuarantinedTo";
     private const string QuarantinedAtValue = "DataFolderQuarantinedAtUtc";
+    private const string RelocatedFromValue = "DataFolderRelocatedFrom";
+    private const string RelocatedToValue = "DataFolderRelocatedTo";
+    private const string RelocatedAtValue = "DataFolderRelocatedAtUtc";
+    private const string RelocationReasonValue = "DataFolderRelocationReason";
+
+    /// <param name="From">The folder that the service could not use and left alone.</param>
+    /// <param name="To">The new data folder with a random name.</param>
+    public sealed record Relocation(string From, string To, string Reason);
 
     /// <summary>
-    /// Writes the result of one start. A new move of an untrusted folder replaces the old one; a start without a move
-    /// keeps the old one, so the Admin app still shows it. Returns false if the write failed.
+    /// Writes the result of one start. A new move of an untrusted folder or a new data folder replaces the old record; a
+    /// start without one keeps the old record, so the Admin app still shows it. Returns false if the write failed.
     /// </summary>
-    public static bool TryWrite(DataFolderState state, string? detail, DateTimeOffset checkedAtUtc, string? newQuarantine)
+    public static bool TryWrite(DataFolderState state, string? detail, DateTimeOffset checkedAtUtc, string? newQuarantine,
+        Relocation? newRelocation = null)
     {
         try
         {
-            using var hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
-            using var key = hklm.CreateSubKey(KeyPath, writable: true);
+            using var key = DataFolderRegistry.Default.OpenForWrite();
             key.SetValue(StateValue, state.ToString(), RegistryValueKind.String);
             key.SetValue(DetailValue, detail ?? string.Empty, RegistryValueKind.String);
             key.SetValue(CheckedAtValue, checkedAtUtc.ToString("O", CultureInfo.InvariantCulture), RegistryValueKind.String);
@@ -36,6 +44,13 @@ public static class DataFolderStatusStore
             {
                 key.SetValue(QuarantinedToValue, newQuarantine, RegistryValueKind.String);
                 key.SetValue(QuarantinedAtValue, checkedAtUtc.ToString("O", CultureInfo.InvariantCulture), RegistryValueKind.String);
+            }
+            if (newRelocation is not null)
+            {
+                key.SetValue(RelocatedFromValue, newRelocation.From, RegistryValueKind.String);
+                key.SetValue(RelocatedToValue, newRelocation.To, RegistryValueKind.String);
+                key.SetValue(RelocationReasonValue, newRelocation.Reason, RegistryValueKind.String);
+                key.SetValue(RelocatedAtValue, checkedAtUtc.ToString("O", CultureInfo.InvariantCulture), RegistryValueKind.String);
             }
             return true;
         }
@@ -63,13 +78,21 @@ public static class DataFolderStatusStore
                 string.IsNullOrEmpty(detail) ? null : detail,
                 ParseTime(key.GetValue(CheckedAtValue) as string),
                 string.IsNullOrEmpty(quarantinedTo) ? null : quarantinedTo,
-                ParseTime(key.GetValue(QuarantinedAtValue) as string));
+                ParseTime(key.GetValue(QuarantinedAtValue) as string))
+            {
+                RelocatedFrom = NullIfEmpty(key.GetValue(RelocatedFromValue) as string),
+                RelocatedTo = NullIfEmpty(key.GetValue(RelocatedToValue) as string),
+                RelocatedAtUtc = ParseTime(key.GetValue(RelocatedAtValue) as string),
+                RelocationReason = NullIfEmpty(key.GetValue(RelocationReasonValue) as string),
+            };
         }
         catch
         {
             return DataFolderReport.None;
         }
     }
+
+    private static string? NullIfEmpty(string? text) => string.IsNullOrEmpty(text) ? null : text;
 
     private static DateTimeOffset? ParseTime(string? text) =>
         DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var value) ? value : null;

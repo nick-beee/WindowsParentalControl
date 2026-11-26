@@ -43,12 +43,23 @@ public static class DataFolderTrust
     public const uint WriteRightsMask =
         0x0002 | 0x0004 | 0x0010 | 0x0040 | 0x0100 | 0x0001_0000 | 0x0004_0000 | 0x0008_0000 | 0x1000_0000 | 0x4000_0000;
 
+    // The write rights of a registry key: KEY_SET_VALUE, KEY_CREATE_SUB_KEY, KEY_CREATE_LINK, DELETE, WRITE_DAC,
+    // WRITE_OWNER, GENERIC_ALL, GENERIC_WRITE. KEY_READ (0x20019) has none of them.
+    public const uint RegistryKeyWriteRightsMask =
+        0x0002 | 0x0004 | 0x0020 | 0x0001_0000 | 0x0004_0000 | 0x0008_0000 | 0x1000_0000 | 0x4000_0000;
+
     public static bool IsTrustedAccount(string? sid) =>
         string.Equals(sid, SystemSid, StringComparison.OrdinalIgnoreCase)
         || string.Equals(sid, AdministratorsSid, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Returns null if the item is trusted, else the reason in plain English.</summary>
-    public static string? Check(SecurityFacts facts)
+    /// <summary>Returns null if the file or folder is trusted, else the reason in plain English.</summary>
+    public static string? Check(SecurityFacts facts) => Check(facts, WriteRightsMask);
+
+    /// <summary>
+    /// Returns null if the item is trusted, else the reason in plain English. <paramref name="writeRightsMask"/> is
+    /// <see cref="WriteRightsMask"/> for a file or a folder, <see cref="RegistryKeyWriteRightsMask"/> for a registry key.
+    /// </summary>
+    public static string? Check(SecurityFacts facts, uint writeRightsMask)
     {
         if (!IsTrustedAccount(facts.OwnerSid))
             return $"the owner is {facts.OwnerSid ?? "unknown"}, not SYSTEM or Administrators";
@@ -61,7 +72,7 @@ public static class DataFolderTrust
                 continue;
             if (ace.Kind == AceKind.Unknown)
                 return $"the DACL has an entry of an unknown type for {ace.Sid}";
-            if ((ace.Mask & WriteRightsMask) == 0)
+            if ((ace.Mask & writeRightsMask) == 0)
                 continue;
             if (IsTrustedAccount(ace.Sid))
                 continue;
@@ -71,7 +82,7 @@ public static class DataFolderTrust
             if (string.Equals(ace.Sid, CreatorOwnerSid, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(ace.Sid, CreatorGroupSid, StringComparison.OrdinalIgnoreCase))
                 continue;
-            return $"{ace.Sid} has write rights (0x{ace.Mask & WriteRightsMask:X})";
+            return $"{ace.Sid} has write rights (0x{ace.Mask & writeRightsMask:X})";
         }
         return null;
     }

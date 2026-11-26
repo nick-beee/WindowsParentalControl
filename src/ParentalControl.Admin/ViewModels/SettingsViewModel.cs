@@ -214,11 +214,15 @@ public partial class SettingsViewModel : ObservableObject
         // the web admin and not only the saved setup (finding S3).
         var folder = Core.Platform.DataFolderStatusStore.Read();
         SignInStatusText = AdminSignInStatus.Describe(IsSignInSetUp, AdminAccessRepository.GetSetupTime(), folder, TimeZoneInfo.Local);
-        var warning = folder.QuarantinedTo is { } moved && Directory.Exists(moved)
-            ? AdminSignInStatus.QuarantineWarning(folder, TimeZoneInfo.Local)
-            : null;
-        DataFolderWarningText = warning ?? string.Empty;
-        HasDataFolderWarning = warning is not null;
+        // A warning shows while the old folder still exists, so the parent knows what to delete.
+        var warnings = new[]
+        {
+            folder.QuarantinedTo is { } moved && Directory.Exists(moved) ? AdminSignInStatus.QuarantineWarning(folder, TimeZoneInfo.Local) : null,
+            folder.RelocatedFrom is { } old && Directory.Exists(old) ? AdminSignInStatus.RelocationWarning(folder, TimeZoneInfo.Local) : null,
+            AdminSignInStatus.StepWarning(folder),
+        }.Where(w => w is not null).ToList();
+        DataFolderWarningText = string.Join(Environment.NewLine + Environment.NewLine, warnings);
+        HasDataFolderWarning = warnings.Count > 0;
         SetupButtonText = IsSignInSetUp ? "Set up a new secret" : "Set up sign-in";
     }
 

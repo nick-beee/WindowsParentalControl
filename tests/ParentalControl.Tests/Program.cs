@@ -753,6 +753,7 @@ Console.WriteLine("✅ Admin Sign-In Storage & Start Check Passed.");
     var aclBase = Path.Combine(Path.GetTempPath(), "PcAclTest_" + Guid.NewGuid().ToString("N"));
     var aclRoot = Path.Combine(aclBase, "ParentalControl");
     var aclOutside = Path.Combine(aclBase, "Outside");
+    var testKey = new DataFolderRegistry(@"SOFTWARE\ParentalControl.Test-" + Guid.NewGuid().ToString("N"));
     var usersSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinUsersSid, null);
     var systemSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.LocalSystemSid, null);
     var adminsSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null);
@@ -868,7 +869,73 @@ Console.WriteLine("✅ Admin Sign-In Storage & Start Check Passed.");
             try { DataFolderGuard.Secure(aclRoot); } catch (DataFolderUnsafeException) { heldRefused = true; }
             Debug.Assert(heldRefused, "Secure should fail while the untrusted folder cannot be moved");
             Debug.Assert(File.ReadAllText(Path.Combine(aclRoot, "data.db")) == "planted", "Nothing should change when the move fails");
+
+            // D14: the service does not stop. It leaves the held folder alone, makes a new folder with a random name,
+            // stores its location in the admin-only registry key, and the limits stay on.
+            var relocated = DataFolderCoordinator.Prepare(testKey, aclBase, sleep: _ => { });
+            Debug.Assert(!relocated.IsLockdown && relocated.Relocated, "A held, untrusted folder should give a new folder: " + relocated.Error);
+            Debug.Assert(string.Equals(Path.GetDirectoryName(relocated.Folder), aclBase, StringComparison.OrdinalIgnoreCase)
+                         && ParentalControl.Domain.DataFolder.DataFolderLocation.IsFallbackName(Path.GetFileName(relocated.Folder!)),
+                "The new folder should be <root>\\ParentalControl-<32 hex digits>: " + relocated.Folder);
+            AssertSecuredRoot(relocated.Folder!, "New random folder");
+            Debug.Assert(Directory.GetFileSystemEntries(relocated.Folder!).Length == 0, "The new folder should be empty (a new database)");
+            Debug.Assert(relocated.RelocationReason is not null && relocated.RegistryError is null, "The result should give the reason and no registry error");
+            Debug.Assert(File.ReadAllText(Path.Combine(aclRoot, "data.db")) == "planted", "The held folder should stay as it is");
+            Debug.Assert(testKey.ReadLocation(aclBase).Folder == relocated.Folder, "The registry value should name the new folder");
+            DataFolderGuard.EnsureSafeToOpen(relocated.Folder!, "data.db"); // the Admin app can open the new folder
+            using (var hklm = Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.LocalMachine, Microsoft.Win32.RegistryView.Registry64))
+            using (var key = hklm.OpenSubKey(testKey.KeyPath)!)
+            {
+                Debug.Assert(DataFolderRegistry.CheckKey(key) is null, "The registry key should be trusted");
+                var keySec = key.GetAccessControl();
+                Debug.Assert(keySec.AreAccessRulesProtected, "The registry key should have a protected DACL");
+                var keyRules = keySec.GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier))
+                    .Cast<System.Security.AccessControl.RegistryAccessRule>().ToList();
+                Debug.Assert(keyRules.Where(r => r.IdentityReference.Equals(usersSid))
+                        .All(r => (r.RegistryRights & ~(System.Security.AccessControl.RegistryRights.ReadKey)) == 0),
+                    "Users should only read the registry key");
+                Debug.Assert(keyRules.All(r => r.IdentityReference.Equals(usersSid) || r.IdentityReference.Equals(systemSid) || r.IdentityReference.Equals(adminsSid)),
+                    "Only SYSTEM, Administrators and Users should be in the DACL of the registry key");
+            }
+
+            // The next start uses the stored folder again, also while the old folder is still held.
+            var second = DataFolderCoordinator.Prepare(testKey, aclBase, sleep: _ => { });
+            Debug.Assert(second.Folder == relocated.Folder && !second.Relocated && second.Warning is null, "The next start should use the same new folder");
         }
+
+        // A name that exists already is never used: the service picks another random name.
+        {
+            var taken = Enumerable.Repeat((byte)0xAB, 16).ToArray();
+            var fresh = Enumerable.Repeat((byte)0xCD, 16).ToArray();
+            var takenFolder = ParentalControl.Domain.DataFolder.DataFolderLocation.FallbackFolder(aclBase, taken);
+            Directory.CreateDirectory(takenFolder);
+            File.WriteAllText(Path.Combine(takenFolder, "data.db"), "planted");
+            testKey.WriteLocation(@"C:\Windows"); // a value that is not accepted: the service never uses it
+            var names = new Queue<byte[]>(new[] { taken, fresh });
+            var collision = DataFolderCoordinator.Prepare(testKey, aclBase, random: () => names.Dequeue(), sleep: _ => { });
+            Debug.Assert(collision.Folder == ParentalControl.Domain.DataFolder.DataFolderLocation.FallbackFolder(aclBase, fresh),
+                "An existing name should give the next random name: " + collision.Folder);
+            Debug.Assert(File.ReadAllText(Path.Combine(takenFolder, "data.db")) == "planted", "The existing folder should not change");
+            AssertSecuredRoot(collision.Folder!, "Second random folder");
+        }
+
+        // No folder can be made (the parent folder does not exist): the result is a lockdown, not an exception.
+        {
+            var missingRoot = Path.Combine(aclBase, "missing", "deeper");
+            var lockdownKey = new DataFolderRegistry(testKey.KeyPath + "-lockdown");
+            try
+            {
+                var lockdown = DataFolderCoordinator.Prepare(lockdownKey, missingRoot, sleep: _ => { });
+                Debug.Assert(lockdown.IsLockdown && lockdown.Error is not null, "No usable folder should give a lockdown");
+                Debug.Assert(!Directory.Exists(missingRoot), "The lockdown should not create a folder");
+            }
+            finally { lockdownKey.DeleteKey(); }
+        }
+
+        // The lockdown spares a session of an administrator (the UAC-filtered token has Administrators as deny-only).
+        using (var me = System.Security.Principal.WindowsIdentity.GetCurrent())
+            Debug.Assert(SessionAdminCheck.ForToken(me.Token) == ParentalControl.Domain.DataFolder.SessionAdminStatus.Administrator,
+                "The token of the elevated test run should count as an administrator");
 
         var plantedResult = DataFolderGuard.Secure(aclRoot);
         Debug.Assert(plantedResult.QuarantinedTo is { } moved && Directory.Exists(moved) && Path.GetFileName(moved).StartsWith("ParentalControl.untrusted-"),
@@ -888,6 +955,7 @@ Console.WriteLine("✅ Admin Sign-In Storage & Start Check Passed.");
     {
         try { Directory.Delete(aclRoot); } catch { } // a junction: delete the link only
         try { Directory.Delete(aclBase, true); } catch { }
+        try { testKey.DeleteKey(); } catch { }
     }
 }
 Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");

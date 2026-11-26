@@ -4,11 +4,22 @@ namespace ParentalControl.Core.Data;
 
 public static class DatabaseManager
 {
-    private static string DataDirectory => Environment.GetEnvironmentVariable("PARENTAL_CONTROL_DATA_DIR") ?? @"C:\ProgramData\ParentalControl";
     private const string DatabaseFileName = "data.db";
     public const int RetentionDays = 30;
     public const int CapturesRetentionDays = 7;
     public const long MaxCapturesStorageBytes = 500L * 1024 * 1024; // 500 MB
+
+    private static readonly object Gate = new();
+    private static string? _checkedDirectory;
+
+    /// <summary>
+    /// The data folder. The tests set <c>PARENTAL_CONTROL_DATA_DIR</c>. Else the location comes from the admin-only
+    /// registry value (<see cref="Platform.DataFolderRegistry"/>, default <c>C:\ProgramData\ParentalControl</c>), and
+    /// this process checks the folder with <see cref="Platform.DataFolderGuard.EnsureSafeToOpen"/> before the first use
+    /// (require-admin-sign-in, D14). The service sets the folder after its own step (<see cref="InitializeSecured"/>).
+    /// </summary>
+    /// <exception cref="Platform.DataFolderUnsafeException">The location or the folder is not safe.</exception>
+    public static string DataDirectory => CustomDataDirectory ?? EnsureCheckedDirectory();
 
     public static string DatabasePath => Path.Combine(DataDirectory, DatabaseFileName);
     public static string CapturesDirectory => Path.Combine(DataDirectory, "captures");
@@ -28,32 +39,71 @@ public static class DatabaseManager
     /// <summary>The result of the data folder step of the service at this start, or null.</summary>
     public static Platform.DataFolderResult? DataFolderResult { get; private set; }
 
-    private static bool UsesCustomDataDirectory => !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("PARENTAL_CONTROL_DATA_DIR"));
+    private static string? CustomDataDirectory
+    {
+        get
+        {
+            var custom = Environment.GetEnvironmentVariable("PARENTAL_CONTROL_DATA_DIR");
+            return string.IsNullOrEmpty(custom) ? null : custom;
+        }
+    }
 
-    /// <param name="enforceDataFolderSecurity">
-    /// True only in the service (LocalSystem): it removes links, moves an untrusted data folder away, makes the
-    /// Administrators group the owner of the data folder and replaces all access rules of the folder and its files.
-    /// The Admin app passes false: it only checks the folder and creates a missing one with the final rules.
+    /// <summary>
+    /// The data folder of this process after the trust check. The Admin app, the test tools and each other process
+    /// that is not the service read the location from the registry and run the same check as the Admin app.
+    /// </summary>
+    private static string EnsureCheckedDirectory()
+    {
+        lock (Gate)
+        {
+            if (_checkedDirectory is not null)
+                return _checkedDirectory;
+            var reading = Platform.DataFolderRegistry.Default.ReadLocation(Platform.DataFolderRegistry.ProgramDataRoot);
+            if (!reading.IsUsable)
+                throw new Platform.DataFolderUnsafeException(reading.Error ?? "The location of the data folder is not usable.");
+            Platform.DataFolderGuard.EnsureSafeToOpen(reading.Folder!, DatabaseFileName);
+            _checkedDirectory = reading.Folder!;
+            return _checkedDirectory;
+        }
+    }
+
+    /// <summary>
+    /// The service only: use the folder of its data folder step (<see cref="Platform.DataFolderCoordinator"/>) and
+    /// create or migrate the database in it.
+    /// </summary>
+    /// <param name="secured">
+    /// False if the service uses a trusted folder whose rules it could not reset (D14). The limits work, but the Remote
+    /// Admin Interface stays locked, because another account can still have read access to the secret.
     /// </param>
+    public static void InitializeSecured(string folder, Platform.DataFolderResult? result, bool secured = true)
+    {
+        lock (Gate)
+        {
+            _checkedDirectory = folder;
+            DataFolderResult = result;
+            DataFolderSecured = secured;
+        }
+        Initialize();
+    }
+
+    /// <summary>
+    /// Creates or migrates the database. In a process that is not the service, the first use of
+    /// <see cref="DataDirectory"/> reads the location from the registry and checks the folder: it creates a missing
+    /// folder with the final rules, but it never changes the rules of an existing one.
+    /// </summary>
     /// <exception cref="Platform.DataFolderUnsafeException">
     /// The data folder is not safe. The method then does not open the database (fail closed).
     /// </exception>
-    public static void Initialize(bool enforceDataFolderSecurity = false)
+    public static void Initialize()
     {
-        if (UsesCustomDataDirectory)
+        if (CustomDataDirectory is { } custom)
         {
-            Directory.CreateDirectory(DataDirectory);
-            DataFolderSecured = true;
-        }
-        else if (enforceDataFolderSecurity)
-        {
-            DataFolderSecured = false;
-            DataFolderResult = Platform.DataFolderGuard.Secure(DataDirectory);
+            Directory.CreateDirectory(custom);
             DataFolderSecured = true;
         }
         else
         {
-            Platform.DataFolderGuard.EnsureSafeToOpen(DataDirectory, DatabaseFileName);
+            _ = DataDirectory; // reads the location and runs the trust check once
         }
 
         if (!Directory.Exists(CapturesDirectory))

@@ -5,10 +5,11 @@ using ParentalControl.Core.Data;
 using ParentalControl.Core.Logging;
 using ParentalControl.Service;
 
-// Only the service secures the data folder at each start (require-admin-sign-in D9). If the folder is not safe, the
-// service stops before it opens the database or a log file in it (fail closed); the Service Control Manager starts it again.
+// Only the service secures the data folder at each start (require-admin-sign-in D9, D14). If the configured folder is
+// not safe, the service makes a new folder with a random name. If no folder works, the service does not stop: it runs
+// the lockdown (Enforced Workstation Lock for each session of a user who is not an administrator) and tries again each minute.
 if (!DataFolderStartup.TryInitialize())
-    return 1;
+    return DataFolderLockdown.Run(args);
 var logger = LoggingConfig.CreateLogger("Service", DatabaseManager.LogsDirectory);
 logger.Information("Parental Control Service starting");
 DataFolderStartup.Log(logger);

@@ -159,6 +159,82 @@ public static class DataFolderGuard
         }
     }
 
+    /// <summary>
+    /// Creates a new data folder with a random name (D14) with its final owner and rules in one call, so there is no
+    /// moment in which another account can change it. It never uses an existing item: if the name exists, it returns
+    /// <see cref="NewFolderResult.NameExists"/> and the caller picks another name. After the create, it checks the
+    /// folder through a handle. Throws <see cref="DataFolderUnsafeException"/> on another error.
+    /// </summary>
+    public static NewFolderResult CreateNewFolder(string folder)
+    {
+        try
+        {
+            TokenPrivileges.Enable("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege");
+            folder = Path.GetFullPath(folder);
+            if (!Native.CreateDirectoryWithSddl(folder, FolderSddl, allowExisting: true))
+                return NewFolderResult.NameExists;
+            using var handle = Native.TryOpen(folder, Native.ReadAccess) ?? throw new IOException($"{folder} is gone after the create.");
+            var info = Native.GetInfo(handle);
+            if (info.IsReparsePoint || !info.IsDirectory)
+                throw new IOException($"{folder} is not a real folder after the create.");
+            var reason = Describe(folder, DataFolderTrust.Check(Native.ReadFacts(handle)));
+            if (reason is not null)
+                throw new IOException("The new folder is not trusted: " + reason);
+            return NewFolderResult.Created;
+        }
+        catch (Exception ex) when (ex is not DataFolderUnsafeException)
+        {
+            throw new DataFolderUnsafeException($"The service could not create the new data folder {folder}: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// The read-only check after a failed <see cref="Secure"/> (D14). Returns null if the folder and each item in it are
+    /// trusted, no item is a link, and no file has more than one name. Only SYSTEM or an administrator can have made
+    /// such a folder, so the service can keep using it. Returns the reason otherwise; a failed check is a reason too.
+    /// </summary>
+    public static string? FindReasonNotTrustedForUse(string folder)
+    {
+        try
+        {
+            folder = Path.GetFullPath(folder);
+            using var root = Native.TryOpen(folder, Native.ReadAccess);
+            if (root is null)
+                return $"{folder} does not exist";
+            var info = Native.GetInfo(root);
+            if (info.IsReparsePoint)
+                return $"{folder} is a link";
+            if (!info.IsDirectory)
+                return $"{folder} is a file, not a folder";
+            return Describe(folder, DataFolderTrust.Check(Native.ReadFacts(root))) ?? FindItemNotTrustedForUse(folder);
+        }
+        catch (Exception ex)
+        {
+            return $"{folder} could not be checked: {ex.Message}";
+        }
+    }
+
+    private static string? FindItemNotTrustedForUse(string directory)
+    {
+        foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+        {
+            using var handle = Native.TryOpen(entry, Native.ReadAccess);
+            if (handle is null)
+                continue;
+            var info = Native.GetInfo(handle);
+            if (info.IsReparsePoint)
+                return $"{entry} is a link";
+            if (!info.IsDirectory && info.LinkCount > 1)
+                return $"{entry} has more than one name (a hard link)";
+            var reason = Describe(entry, DataFolderTrust.Check(Native.ReadFacts(handle)));
+            if (reason is not null)
+                return reason;
+            if (info.IsDirectory && FindItemNotTrustedForUse(entry) is { } inner)
+                return inner;
+        }
+        return null;
+    }
+
     private static string? Describe(string path, string? reason) => reason is null ? null : $"{path}: {reason}";
 
     /// <summary>The reason for the first item below the folder that is not trusted, or null. Links are skipped.</summary>
@@ -241,8 +317,8 @@ public static class DataFolderGuard
 
     /// <summary>
     /// Renames the checked folder (the same object, through a handle) to <c>&lt;name&gt;.untrusted-&lt;guid&gt;</c>.
-    /// The rename fails if a process holds a handle to the folder or to an item in it without delete sharing; then the
-    /// start fails (fail closed). After the rename, the service locks the moved folder itself (through the same handle).
+    /// The rename fails if a process holds a handle to the folder or to an item in it without delete sharing; then
+    /// <see cref="Secure"/> throws, and <see cref="DataFolderCoordinator"/> leaves the folder alone and makes a new one (D14). After the rename, the service locks the moved folder itself (through the same handle).
     /// It does not walk into the moved folder: the child controlled its content, so a walk by path could follow a link.
     /// </summary>
     private static string Quarantine(string folder, Native.FileInfoByHandle checkedInfo)
@@ -449,7 +525,12 @@ public static class DataFolderGuard
             if (!GetKernelObjectSecurity(handle, info, buffer, needed, out _))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "GetKernelObjectSecurity failed");
 
-            var descriptor = new RawSecurityDescriptor(buffer, 0);
+            return FactsOf(new RawSecurityDescriptor(buffer, 0));
+        }
+
+        /// <summary>The owner and the DACL of a security descriptor, for <see cref="DataFolderTrust.Check(SecurityFacts, uint)"/>.</summary>
+        public static SecurityFacts FactsOf(RawSecurityDescriptor descriptor)
+        {
             List<AceFact>? dacl = null;
             if ((descriptor.ControlFlags & ControlFlags.DiscretionaryAclPresent) != 0 && descriptor.DiscretionaryAcl is { } acl)
             {
@@ -488,8 +569,11 @@ public static class DataFolderGuard
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "SetKernelObjectSecurity failed");
         }
 
-        /// <summary>Creates a folder with its owner and DACL in one step.</summary>
-        public static void CreateDirectoryWithSddl(string path, string sddl, bool allowExisting)
+        /// <summary>
+        /// Creates a folder with its owner and DACL in one step. Returns true if it created the folder, false if an item
+        /// with the name exists and <paramref name="allowExisting"/> is true.
+        /// </summary>
+        public static bool CreateDirectoryWithSddl(string path, string sddl, bool allowExisting)
         {
             var descriptor = Binary(sddl);
             var pin = GCHandle.Alloc(descriptor, GCHandleType.Pinned);
@@ -502,10 +586,10 @@ public static class DataFolderGuard
                     InheritHandle = 0,
                 };
                 if (CreateDirectoryW(path, ref attributes))
-                    return;
+                    return true;
                 var error = Marshal.GetLastWin32Error();
                 if (error == ERROR_ALREADY_EXISTS && allowExisting)
-                    return;
+                    return false;
                 throw new Win32Exception(error, $"Could not create {path}");
             }
             finally
