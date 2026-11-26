@@ -10,10 +10,12 @@ namespace ParentalControl.Service;
 /// <summary>
 /// Enforces the Category Limits and App Limits. It sends the warnings, suspends the processes of an exe
 /// that has no time left, keeps them suspended and resumes them when time is available again.
-/// It never closes or kills a process. If Windows refuses a suspension, it locks the session (fallback).
-/// Each suspension starts as a Pending Suspension: the Session Agent minimizes the windows of the process, and the
-/// enforcer suspends it <see cref="PendingSuspensions.Delay"/> later. During a Session End Hold of a session, it
-/// suspends no process of that session.
+/// It also suspends a Blocked Program that runs, and gives each Blocked Start of the tick to
+/// <see cref="BlockEnforcer"/>, the only code that closes a process.
+/// It never closes or kills a process itself. If Windows refuses a suspension, it locks the session (fallback).
+/// Each suspension (also a blocked one) starts as a Pending Suspension: the Session Agent minimizes the windows of the
+/// process, and the enforcer suspends it <see cref="PendingSuspensions.Delay"/> later. During a Session End Hold of a
+/// session, it suspends no process of that session.
 /// <see cref="UsageMonitorWorker"/> calls <see cref="Tick"/> every 60 seconds. A bonus approval, an admin
 /// change, an unlock and the follow-up timer (the end of a Pending Suspension or of a hold) call <see cref="RequestTick"/>.
 /// </summary>
@@ -35,6 +37,7 @@ public sealed class CategoryEnforcer : IDisposable
     private readonly TelegramBotService _telegram;
     private readonly Serilog.ILogger _logger;
     private readonly string? _testSuspendFailExe;
+    private readonly BlockEnforcer _blockEnforcer;
 
     private readonly object _gate = new();
     private bool _stopped;
@@ -57,6 +60,7 @@ public sealed class CategoryEnforcer : IDisposable
         _testSuspendFailExe = Environment.GetEnvironmentVariable(TestSuspendFailEnv);
         if (!string.IsNullOrWhiteSpace(_testSuspendFailExe))
             _logger.Warning("Category test hook active: a suspension of {Exe} fails", _testSuspendFailExe);
+        _blockEnforcer = new BlockEnforcer(this, sessionTracker, logger);
 
         UsageRepository.BonusMinutesAdded += RequestTick;
         CategoryConfigCache.Changed += RequestTick;
@@ -71,6 +75,7 @@ public sealed class CategoryEnforcer : IDisposable
         _sessionTracker.SessionUnlocked -= OnSessionUnlocked;
         _sessionTracker.SessionEnded -= OnSessionEnded;
         _followUp.Dispose();
+        _blockEnforcer.Dispose();
     }
 
     private void OnSessionUnlocked(int sessionId) => RequestTick();
@@ -115,6 +120,10 @@ public sealed class CategoryEnforcer : IDisposable
             foreach (var hold in _holds.Expire(nowUtc, today, id => _sessionTracker.ActiveSessions.ContainsKey(id)))
                 OnHoldExpired(hold);
 
+            // The process start watcher runs also while no Restricted User is signed in, so that it sees the
+            // first starts of a new session. After an error it starts again here.
+            _blockEnforcer.EnsureRunning();
+
             // The sessions of Restricted Users, locked or not.
             var restrictedSessions = new Dictionary<int, int>();
             var users = new Dictionary<int, User>();
@@ -147,6 +156,10 @@ public sealed class CategoryEnforcer : IDisposable
 
             SendWarnings(users, dayLimits, RunningExes(processes, restrictedSessions, config.Resolver));
 
+            // Blocks: the decision "at its start" runs before the planner. A Blocked Start is closed here and
+            // skipped by the planner; each other blocked process is suspended by the planner.
+            var pendingClose = CloseBlockedStarts(processes, restrictedSessions, users, records, config);
+
             var plan = SuspensionPlanner.Plan(new PlannerInput(
                 processes,
                 restrictedSessions,
@@ -154,13 +167,15 @@ public sealed class CategoryEnforcer : IDisposable
                 {
                     var resolution = config.Resolver.Resolve(path);
                     var exhausted = dayLimits.TryGetValue(userId, out var day) && day.IsExhausted(resolution);
-                    return new ExeVerdict(resolution.Category, exhausted);
+                    return new ExeVerdict(resolution.Category, exhausted, _blockEnforcer.IsBlockedProgram(resolution));
                 },
                 (userId, path) => _foregroundHistory.WasForeground(userId, today, path),
                 records,
                 SessionTracker.GetAgentExecutablePath(),
                 Environment.GetFolderPath(Environment.SpecialFolder.Windows),
-                _holds.HeldSessions(nowUtc)));
+                _holds.HeldSessions(nowUtc),
+                p => pendingClose.Contains((p.Pid, p.StartTimeUtc)),
+                _blockEnforcer.ProtectedPrograms));
 
             foreach (var record in plan.ToDrop)
             {
@@ -168,8 +183,14 @@ public sealed class CategoryEnforcer : IDisposable
                 _logger.Information("Dropped stale suspension record {Pid} ({Exe})", record.Pid, record.ExePath);
             }
 
+            foreach (var record in plan.ToRelabel)
+            {
+                SuspensionRepository.UpdateReason(record.Pid, record.StartTimeUtc, record.Reason, record.Category);
+                _logger.Information("Suspension of {Exe} (pid {Pid}) now has the reason {Reason}", record.ExePath, record.Pid, record.Reason);
+            }
+
             foreach (var record in plan.ToResume)
-                ResumeRecord(record, "time available again");
+                ResumeRecord(record, record.Reason == SuspensionReason.Blocked ? "block removed" : "time available again");
 
             // Two phases: the agent minimizes the windows of a pending process, and the next steps suspend it.
             var step = _pending.Step(plan.ToSuspend, nowUtc);
@@ -286,9 +307,13 @@ public sealed class CategoryEnforcer : IDisposable
         _followUp.Change(delay + FollowUpMargin, Timeout.InfiniteTimeSpan);
     }
 
-    /// <summary>Resumes every recorded process and stops further suspensions. The service calls it when it stops.</summary>
+    /// <summary>
+    /// Stops the block enforcer, resumes every recorded process (also a blocked one) and stops further suspensions.
+    /// The service calls it when it stops.
+    /// </summary>
     public void ResumeAll()
     {
+        _blockEnforcer.Stop();
         lock (_gate)
         {
             _stopped = true;
@@ -318,7 +343,7 @@ public sealed class CategoryEnforcer : IDisposable
     private void Suspend(SuspendAction action, IReadOnlyDictionary<int, User> users)
     {
         var p = action.Process;
-        var record = new SuspensionRecord(p.Pid, p.StartTimeUtc, p.SessionId, action.UserId, action.Category, action.ExePath);
+        var record = new SuspensionRecord(p.Pid, p.StartTimeUtc, p.SessionId, action.UserId, action.Category, action.ExePath, action.Reason);
 
         // Record before the suspension: a crash between the two then leaves no suspended process without a record.
         if (!action.IsRecorded)
@@ -341,9 +366,14 @@ public sealed class CategoryEnforcer : IDisposable
         switch (result)
         {
             case ProcessOpResult.Ok:
-                _logger.Information("Suspended {Exe} (pid {Pid}, {Category}) of {Username}{Again}",
-                    action.ExePath, p.Pid, action.Category, username, action.IsRecorded ? " again" : "");
-                if (!action.IsRecorded && user is not null && _sentToday.Add($"suspended:{action.UserId}:{action.Category}"))
+                _logger.Information("Suspended {Exe} (pid {Pid}, {Category}, {Reason}) of {Username}{Again}",
+                    action.ExePath, p.Pid, action.Category, action.Reason, username, action.IsRecorded ? " again" : "");
+                if (action.Reason == SuspensionReason.Blocked)
+                {
+                    if (!action.IsRecorded && user is not null)
+                        _blockEnforcer.OnBlockedSuspended(p.Pid, action.ExePath, user);
+                }
+                else if (!action.IsRecorded && user is not null && _sentToday.Add($"suspended:{action.UserId}:{action.Category}"))
                 {
                     EventRepository.LogEvent(user.Sid, EventType.LIMIT_REACHED, $"{action.Category} limit reached: programs paused");
                     var categoryName = CategoryNames.For(action.Category, SettingsRepository.GetLanguagePreset());
@@ -438,8 +468,44 @@ public sealed class CategoryEnforcer : IDisposable
         }
     }
 
+    /// <summary>
+    /// Decides the block of each process of a restricted session that has no suspension record, and closes each
+    /// Blocked Start through the block enforcer. Returns the Blocked Starts, so that the planner skips them.
+    /// </summary>
+    private HashSet<(int Pid, DateTime Start)> CloseBlockedStarts(IReadOnlyList<SessionProcess> processes,
+        IReadOnlyDictionary<int, int> restrictedSessions, IReadOnlyDictionary<int, User> users,
+        IReadOnlyList<SuspensionRecord> records, CategoryConfigCache.Snapshot config)
+    {
+        var pending = new HashSet<(int Pid, DateTime Start)>();
+        var recorded = records.Select(r => (r.Pid, r.StartTimeUtc)).ToHashSet();
+        foreach (var process in processes)
+        {
+            if (process.ExePath is null || recorded.Contains((process.Pid, process.StartTimeUtc)))
+                continue;
+            if (!restrictedSessions.TryGetValue(process.SessionId, out var userId) || !users.TryGetValue(userId, out var user))
+                continue;
+            if (_blockEnforcer.Decide(process, isRestrictedSession: true, config) != BlockDecision.Close)
+                continue;
+
+            pending.Add((process.Pid, process.StartTimeUtc));
+            _blockEnforcer.Close(process.Pid, process.StartTimeUtc, process.ExePath, user);
+        }
+        return pending;
+    }
+
+    /// <summary>True if the user has a session that is not locked, so that a session message can show.</summary>
+    internal bool HasUnlockedSession(int userId)
+    {
+        foreach (var (_, session) in _sessionTracker.ActiveSessions)
+        {
+            if (!session.IsLocked && UserRepository.GetBySid(session.UserSid)?.Id == userId)
+                return true;
+        }
+        return false;
+    }
+
     /// <summary>Sends a session message to each unlocked session of the user. Returns the number of sessions.</summary>
-    private int SendToUser(int userId, string message)
+    internal int SendToUser(int userId, string message)
     {
         var count = 0;
         foreach (var (sessionId, session) in _sessionTracker.ActiveSessions)
@@ -455,7 +521,7 @@ public sealed class CategoryEnforcer : IDisposable
         return count;
     }
 
-    private void SendParentAlert(string text)
+    internal void SendParentAlert(string text)
     {
         var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
         if (string.IsNullOrWhiteSpace(chatId))
@@ -469,7 +535,7 @@ public sealed class CategoryEnforcer : IDisposable
         _ = Task.Run(async () =>
         {
             var ok = await _telegram.SendTextMessageAsync(chatId, escaped);
-            _logger.Information("Category alert to Telegram: {Result}", ok ? "sent" : "failed");
+            _logger.Information("Parent alert to Telegram: {Result}", ok ? "sent" : "failed");
         });
     }
 

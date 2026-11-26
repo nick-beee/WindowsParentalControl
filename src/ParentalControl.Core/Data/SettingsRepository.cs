@@ -44,6 +44,8 @@ public static class SettingsRepository
     public const string KeyMsgBreakWarn = ChildMessageKeys.BreakWarn;
     public const string KeyMsgBreakStart = ChildMessageKeys.BreakStart;
     public const string KeyMsgBreakRunning = ChildMessageKeys.BreakRunning;
+    // Blocked programs. Placeholder: {name} (the exe file name without ".exe").
+    public const string KeyMsgProgramBlocked = ChildMessageKeys.ProgramBlocked;
 
     public static string Get(string key, string defaultValue = "")
     {

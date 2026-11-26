@@ -18,6 +18,8 @@ public static class ChildMessageKeys
     public const string BreakWarn = "msg_break_warn";
     public const string BreakStart = "msg_break_start";
     public const string BreakRunning = "msg_break_running";
+    // Blocked programs. Placeholder: {name} (the exe file name without ".exe").
+    public const string ProgramBlocked = "msg_program_blocked";
     /// <summary>The reasons that the child can pick to decline a parent prompt, one per line.</summary>
     public const string PromptResponsePresets = "prompt_response_presets";
 
@@ -25,7 +27,7 @@ public static class ChildMessageKeys
     {
         LimitWarn, CurfewWarn, LimitReached, CurfewReached, LoginDeniedLimit, LoginDeniedCurfew,
         RemoteLock, BonusGranted, CategoryWarn, CategorySuspended, BreakWarn, BreakStart, BreakRunning,
-        PromptResponsePresets,
+        ProgramBlocked, PromptResponsePresets,
     };
 }
 
@@ -86,6 +88,10 @@ public static class MessageCatalog
             "Die Pause dauert noch bis {break_end} Uhr ({minutes} {minutes|Minute|Minuten}). Der Computer wird wieder gesperrt.",
             "The break lasts until {break_end} ({minutes} {minutes|minute|minutes} left). The computer locks again.",
             "Istirahat berlangsung sampai pukul {break_end} ({minutes} menit lagi). Komputer dikunci kembali."),
+        (ChildMessageKeys.ProgramBlocked,
+            "{name} ist auf diesem Computer gesperrt. Frag deine Eltern, wenn du das Programm brauchst.",
+            "{name} is blocked on this computer. Ask your parents if you need this program.",
+            "{name} diblokir di komputer ini. Tanya orang tuamu jika kamu membutuhkan program ini."),
         (ChildMessageKeys.PromptResponsePresets,
             "Ich bin gleich mit dem Spiel fertig\nIch mache gerade Hausaufgaben\nOkay, ich höre gleich auf\nBitte noch 5 Minuten",
             "Almost done with my game\nDoing my homework\nOkay, I will stop soon\nPlease, 5 more minutes",

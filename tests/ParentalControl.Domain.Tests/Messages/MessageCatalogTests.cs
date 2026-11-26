@@ -52,6 +52,22 @@ public class MessageCatalogTests
     }
 
     [Fact]
+    public void GermanBlockedProgramMessageEqualsTheSpec() =>
+        Assert.Equal("chrome ist auf diesem Computer gesperrt. Frag deine Eltern, wenn du das Programm brauchst.",
+            MessageCatalog.Defaults("de").Format(ChildMessageKeys.ProgramBlocked, ("name", "chrome")));
+
+    [Fact]
+    public void BlockedProgramMessageHasOnlyTheNamePlaceholderInEachPreset()
+    {
+        foreach (var preset in new[] { "de", "en", "id" })
+        {
+            var text = MessageCatalog.Defaults(preset).Format(ChildMessageKeys.ProgramBlocked, ("name", "brave"));
+            Assert.StartsWith("brave ", text);
+            Assert.DoesNotContain("{", text);
+        }
+    }
+
+    [Fact]
     public void EarlierEnglishDefaultsAreKnown()
     {
         Assert.Single(MessageCatalog.EarlierDefaults(ChildMessageKeys.LimitWarn));
