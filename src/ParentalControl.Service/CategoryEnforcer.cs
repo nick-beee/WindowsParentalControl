@@ -3,6 +3,7 @@ using ParentalControl.Core.Models;
 using ParentalControl.Core.Platform;
 using ParentalControl.Core.Services;
 using ParentalControl.Domain.Categories;
+using ParentalControl.Domain.Messages;
 
 namespace ParentalControl.Service;
 
@@ -209,8 +210,9 @@ public sealed class CategoryEnforcer : IDisposable
                 if (!action.IsRecorded && user is not null && _sentToday.Add($"suspended:{action.UserId}:{action.Category}"))
                 {
                     EventRepository.LogEvent(user.Sid, EventType.LIMIT_REACHED, $"{action.Category} limit reached: programs paused");
+                    var categoryName = CategoryNames.For(action.Category, SettingsRepository.GetLanguagePreset());
                     SendToUser(action.UserId, SettingsRepository.GetMessage(SettingsRepository.KeyMsgCategorySuspended,
-                        new Dictionary<string, string> { ["name"] = action.Category.ToString(), ["category"] = action.Category.ToString() }));
+                        new Dictionary<string, string> { ["name"] = categoryName, ["category"] = categoryName }));
                 }
                 break;
 
@@ -278,11 +280,13 @@ public sealed class CategoryEnforcer : IDisposable
                 if (!_sentToday.Add($"warn:{userId}:{status.Key}:{status.DueWarning}"))
                     continue;
 
-                var name = status.Rule is null ? status.Category.ToString() : AppName(status.Rule);
+                // A category message names the category in the language of the preset. An App Limit names the app.
+                var categoryName = CategoryNames.For(status.Category, SettingsRepository.GetLanguagePreset());
+                var name = status.Rule is null ? categoryName : AppName(status.Rule);
                 var message = SettingsRepository.GetMessage(SettingsRepository.KeyMsgCategoryWarn, new Dictionary<string, string>
                 {
                     ["name"] = name,
-                    ["category"] = status.Category.ToString(),
+                    ["category"] = categoryName,
                     ["minutes"] = status.RemainingMinutes.ToString(),
                 });
                 var sent = SendToUser(userId, message);

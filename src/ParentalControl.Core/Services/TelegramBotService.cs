@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using ParentalControl.Core.Data;
 using ParentalControl.Core.Models;
 using ParentalControl.Core.Platform;
+using ParentalControl.Domain.Messages;
 
 namespace ParentalControl.Core.Services;
 
@@ -362,8 +363,9 @@ public sealed class TelegramBotService
                 var userSession = activeSessions.FirstOrDefault(s => s.Sid == user.Sid);
                 if (userSession.Sid != null)
                 {
-                    NotificationManager.SendMessage(userSession.SessionId, "Parental Control — Tambahan Waktu Disetujui!",
-                        $"Kabar baik! Administrator telah menyetujui tambahan waktu layar sebesar +{bonusMins} menit untuk hari ini.",
+                    var texts = ChildTexts();
+                    NotificationManager.SendMessage(userSession.SessionId, texts["bonus_title"],
+                        texts.Format("bonus_body", ("minutes", bonusMins)),
                         isWarning: false, timeoutSeconds: 20);
                 }
             }
@@ -399,8 +401,13 @@ public sealed class TelegramBotService
                 var userSession = activeSessions.FirstOrDefault(s => s.Sid == user.Sid);
                 if (userSession.Sid != null)
                 {
-                    NotificationManager.SendMessage(userSession.SessionId, "Parental Control — Jadwal Disetujui!",
-                        $"Jadwal khusus untuk tanggal {targetDate:dd/MM/yyyy} ({mins}m, {start:HH:mm}–{end:HH:mm}) telah disetujui orang tua.",
+                    var texts = ChildTexts();
+                    NotificationManager.SendMessage(userSession.SessionId, texts["exception_title"],
+                        texts.Format("exception_body",
+                            ("date", SessionTexts.FormatDate(texts, targetDate)),
+                            ("minutes", mins),
+                            ("start", start.ToString("HH:mm")),
+                            ("end", end.ToString("HH:mm"))),
                         isWarning: false, timeoutSeconds: 20);
                 }
             }
@@ -435,8 +442,13 @@ public sealed class TelegramBotService
                 var userSession = activeSessions.FirstOrDefault(s => s.Sid == user.Sid);
                 if (userSession.Sid != null)
                 {
-                    NotificationManager.SendMessage(userSession.SessionId, "Parental Control — Jadwal Permanen Disetujui!",
-                        $"Jadwal mingguan hari {GetIndonesianDay(targetDayOfWeek)} ({mins}m, {start:HH:mm}–{end:HH:mm}) telah diperbarui permanen oleh orang tua.",
+                    var texts = ChildTexts();
+                    NotificationManager.SendMessage(userSession.SessionId, texts["weekly_title"],
+                        texts.Format("weekly_body",
+                            ("day", SessionTexts.DayName(texts, targetDayOfWeek)),
+                            ("minutes", mins),
+                            ("start", start.ToString("HH:mm")),
+                            ("end", end.ToString("HH:mm"))),
                         isWarning: false, timeoutSeconds: 20);
                 }
             }
@@ -466,14 +478,11 @@ public sealed class TelegramBotService
         }
         else if (action == "dec_preset")
         {
-            string declineReason = bonusMins switch
-            {
-                1 => "Selesaikan tugas sekolah terlebih dahulu.",
-                2 => "Sudah waktunya tidur/istirahat.",
-                3 => "Waktunya makan bersama keluarga.",
-                4 => "Waktu bermain dibatasi karena melanggar aturan.",
-                _ => "Permintaan ditolak oleh orang tua."
-            };
+            // The child sees the reason, so it follows the Language Preset. The Telegram buttons stay Indonesian.
+            var reasonTexts = ChildTexts();
+            string declineReason = bonusMins is >= 1 and <= 4
+                ? reasonTexts[$"decline_reason_{bonusMins}"]
+                : reasonTexts["decline_reason_default"];
 
             GraceRequestRepository.Resolve(requestId, "DECLINED", declineReason);
             var user = UserRepository.GetAll().FirstOrDefault(u => u.Id == req.UserId);
@@ -484,8 +493,8 @@ public sealed class TelegramBotService
                 var userSession = activeSessions.FirstOrDefault(s => s.Sid == user.Sid);
                 if (userSession.Sid != null)
                 {
-                    NotificationManager.SendMessage(userSession.SessionId, "Parental Control — Permintaan Ditolak",
-                        $"Permintaan Anda ditolak: \"{declineReason}\"",
+                    NotificationManager.SendMessage(userSession.SessionId, ChildTexts()["declined_title"],
+                        ChildTexts().Format("declined_with_reason", ("reason", declineReason)),
                         isWarning: true, timeoutSeconds: 15);
                 }
             }
@@ -513,8 +522,8 @@ public sealed class TelegramBotService
                 var userSession = activeSessions.FirstOrDefault(s => s.Sid == user.Sid);
                 if (userSession.Sid != null)
                 {
-                    NotificationManager.SendMessage(userSession.SessionId, "Parental Control — Permintaan Ditolak",
-                        "Permintaan tambahan waktu layar Anda ditolak oleh administrator.",
+                    NotificationManager.SendMessage(userSession.SessionId, ChildTexts()["declined_title"],
+                        ChildTexts()["declined"],
                         isWarning: true, timeoutSeconds: 15);
                 }
             }
@@ -589,8 +598,8 @@ public sealed class TelegramBotService
                         var userSession = activeSessions.FirstOrDefault(s => s.Sid == user.Sid);
                         if (userSession.Sid != null)
                         {
-                            NotificationManager.SendMessage(userSession.SessionId, "Parental Control — Permintaan Ditolak",
-                                $"Permintaan Anda ditolak: \"{customReason}\"",
+                            NotificationManager.SendMessage(userSession.SessionId, ChildTexts()["declined_title"],
+                                ChildTexts().Format("declined_with_reason", ("reason", customReason)),
                                 isWarning: true, timeoutSeconds: 15);
                         }
                     }
@@ -981,7 +990,7 @@ public sealed class TelegramBotService
         var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
         if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
 
-        var lang = SettingsRepository.Get(SettingsRepository.KeyLanguagePreset, "id");
+        var lang = LanguagePreset.ParentLanguage(SettingsRepository.GetLanguagePreset());
         var text = BuildSignInNotificationText(username, machineName, time, remainingMinutes, start, end, lang);
 
         var success = await SendWithRetryAsync(() => SendTextMessageAsync(chatId, text));
@@ -1006,7 +1015,7 @@ public sealed class TelegramBotService
         var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
         if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
 
-        var lang = SettingsRepository.Get(SettingsRepository.KeyLanguagePreset, "id");
+        var lang = LanguagePreset.ParentLanguage(SettingsRepository.GetLanguagePreset());
         var text = BuildSignOutNotificationText(username, machineName, time, minutesUsedToday, lang);
 
         var success = await SendWithRetryAsync(() => SendTextMessageAsync(chatId, text));
@@ -1029,7 +1038,7 @@ public sealed class TelegramBotService
         var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
         if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
 
-        var lang = SettingsRepository.Get(SettingsRepository.KeyLanguagePreset, "id");
+        var lang = LanguagePreset.ParentLanguage(SettingsRepository.GetLanguagePreset());
         var (text, keyboard) = BuildAdminSignInAlert(sessionId, username, machineName, time, lang);
 
         var success = await SendWithRetryAsync(() => SendTextMessageWithKeyboardAsync(chatId, text, keyboard));
@@ -1052,7 +1061,7 @@ public sealed class TelegramBotService
         var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
         if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
 
-        var lang = SettingsRepository.Get(SettingsRepository.KeyLanguagePreset, "id");
+        var lang = LanguagePreset.ParentLanguage(SettingsRepository.GetLanguagePreset());
         var isYes = string.Equals(prompt.Response, "YES", StringComparison.OrdinalIgnoreCase);
         var isTimeout = string.Equals(prompt.Response, "TIMEOUT", StringComparison.OrdinalIgnoreCase);
         var durationStr = lang == "en" ? $"{prompt.TurnaroundSeconds} seconds" : $"{prompt.TurnaroundSeconds} detik";
@@ -1137,7 +1146,7 @@ public sealed class TelegramBotService
 
             try
             {
-                var lang = SettingsRepository.Get(SettingsRepository.KeyLanguagePreset, "id");
+                var lang = LanguagePreset.ParentLanguage(SettingsRepository.GetLanguagePreset());
                 bool sent = false;
 
                 if (item.NotificationType == "USER_SIGN_IN")
@@ -1206,6 +1215,9 @@ public sealed class TelegramBotService
         }
         catch { }
     }
+
+    /// <summary>The fixed session texts for the child in the current Language Preset.</summary>
+    private static TextSet ChildTexts() => SessionTexts.For(SettingsRepository.GetLanguagePreset());
 
     private static string GetIndonesianDay(DayOfWeek day) => day switch
     {

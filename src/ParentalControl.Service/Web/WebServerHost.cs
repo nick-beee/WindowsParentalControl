@@ -14,6 +14,7 @@ using ParentalControl.Core.Services;
 using ParentalControl.Service.Web.Pages;
 using ParentalControl.Core;
 using ParentalControl.Domain.Categories;
+using ParentalControl.Domain.Messages;
 
 namespace ParentalControl.Service.Web;
 
@@ -274,20 +275,20 @@ public sealed class WebServerHost : BackgroundService
             var baseLimit = LimitRepository.GetByUserId(targetUser.Id);
             var customSchedules = ScheduleRepository.GetWeeklySchedule(targetUser.Id);
             var upcomingExceptions = ScheduleExceptionRepository.GetUpcomingForUser(targetUser.Id, today);
-            var defaultSummary = baseLimit != null
-                ? $"{baseLimit.DailyMinutes}m ({baseLimit.ScheduleStart:HH:mm}–{baseLimit.ScheduleEnd:HH:mm})"
-                : "120m (08:00–22:00)";
+            // The page shows its texts in the Language Preset. The preset comes only from app_settings.
+            var preset = SettingsRepository.GetLanguagePreset();
+            var pageTexts = RequestPageTexts.For(preset);
+            var sessionTexts = SessionTexts.For(preset);
+            var defaultSummary = pageTexts.Format("schedule_default",
+                ("minutes", baseLimit?.DailyMinutes ?? 120),
+                ("start", (baseLimit?.ScheduleStart ?? new TimeOnly(8, 0)).ToString("HH:mm")),
+                ("end", (baseLimit?.ScheduleEnd ?? new TimeOnly(22, 0)).ToString("HH:mm")));
 
-            var dayNames = new (DayOfWeek Day, string Code, string Name)[]
+            var dayNames = new[]
             {
-                (DayOfWeek.Monday, "Sen", "Senin"),
-                (DayOfWeek.Tuesday, "Sel", "Selasa"),
-                (DayOfWeek.Wednesday, "Rab", "Rabu"),
-                (DayOfWeek.Thursday, "Kam", "Kamis"),
-                (DayOfWeek.Friday, "Jum", "Jumat"),
-                (DayOfWeek.Saturday, "Sab", "Sabtu"),
-                (DayOfWeek.Sunday, "Min", "Minggu")
-            };
+                DayOfWeek.Monday, DayOfWeek.Tuesday, DayOfWeek.Wednesday, DayOfWeek.Thursday,
+                DayOfWeek.Friday, DayOfWeek.Saturday, DayOfWeek.Sunday
+            }.Select(d => (Day: d, Code: RequestPageTexts.DayCode(pageTexts, d), Name: SessionTexts.DayName(sessionTexts, d))).ToArray();
 
             var weeklySchedule = dayNames.Select(dn =>
             {
@@ -307,7 +308,7 @@ public sealed class WebServerHost : BackgroundService
                         mins = todayExc.DailyMinutes;
                         start = todayExc.ScheduleStart;
                         end = todayExc.ScheduleEnd;
-                        excNote = "Pengecualian Hari Ini";
+                        excNote = pageTexts["exception_today"];
                     }
                 }
 
@@ -325,6 +326,8 @@ public sealed class WebServerHost : BackgroundService
             }).ToList();
 
             var html = RequestPage.Render(
+                pageTexts,
+                sessionTexts,
                 targetUser.Username,
                 remaining,
                 remainingSeconds,
@@ -348,6 +351,8 @@ public sealed class WebServerHost : BackgroundService
         // User Grace Request Submission API
         app.MapPost("/api/request", async (HttpContext ctx) =>
         {
+            // The child sees these messages on the request page, so they follow the Language Preset.
+            var texts = RequestPageTexts.For(SettingsRepository.GetLanguagePreset());
             try
             {
                 using var reader = new StreamReader(ctx.Request.Body);
@@ -362,14 +367,14 @@ public sealed class WebServerHost : BackgroundService
                 {
                     if (minutes <= 0 || minutes > 480 || string.IsNullOrWhiteSpace(reason))
                     {
-                        return Results.BadRequest(new { error = "Jumlah menit tidak valid (1–480 menit) atau alasan harus diisi." });
+                        return Results.BadRequest(new { error = texts["api_invalid_schedule"] });
                     }
                 }
                 else
                 {
                     if (minutes <= 0 || minutes > 120 || string.IsNullOrWhiteSpace(reason))
                     {
-                        return Results.BadRequest(new { error = "Jumlah menit tidak valid (1–120 menit) atau alasan harus diisi." });
+                        return Results.BadRequest(new { error = texts["api_invalid_extension"] });
                     }
                 }
 
@@ -397,25 +402,25 @@ public sealed class WebServerHost : BackgroundService
 
                 if (user == null)
                 {
-                    return Results.BadRequest(new { error = "Pengguna terbatas tidak ditemukan." });
+                    return Results.BadRequest(new { error = texts["api_no_user"] });
                 }
 
                 // Check daily request limits and pending requests
                 var maxRequests = SettingsRepository.GetMaxDailyRequests();
                 if (maxRequests <= 0)
                 {
-                    return Results.BadRequest(new { error = "Permintaan tambahan waktu dinonaktifkan oleh administrator." });
+                    return Results.BadRequest(new { error = texts["api_disabled"] });
                 }
 
                 if (GraceRequestRepository.HasPendingRequest(user.Id, today))
                 {
-                    return Results.BadRequest(new { error = "Anda masih memiliki permintaan yang sedang menunggu keputusan administrator." });
+                    return Results.BadRequest(new { error = texts["api_pending"] });
                 }
 
                 var countToday = GraceRequestRepository.GetTodayRequestCount(user.Id, today);
                 if (countToday >= maxRequests)
                 {
-                    return Results.BadRequest(new { error = $"Anda telah mencapai batas maksimal ({maxRequests}) permintaan untuk hari ini." });
+                    return Results.BadRequest(new { error = texts.Format("api_max_reached", ("max", maxRequests)) });
                 }
 
                 // Check internet
@@ -430,7 +435,7 @@ public sealed class WebServerHost : BackgroundService
                     var targetDateStr = doc.RootElement.GetProperty("targetDate").GetString();
                     if (!DateOnly.TryParse(targetDateStr, out var targetDate))
                     {
-                        return Results.BadRequest(new { error = "Tanggal sasaran tidak valid." });
+                        return Results.BadRequest(new { error = texts["api_invalid_date"] });
                     }
 
                     var startStr = doc.RootElement.TryGetProperty("requestedStart", out var sProp) ? sProp.GetString() : null;
@@ -441,20 +446,21 @@ public sealed class WebServerHost : BackgroundService
                     var req = GraceRequestRepository.CreateScheduleChange(user.Id, today, targetDate, minutes, start, end, reason);
                     _ = _telegramBotService.SendGraceRequestAlertAsync(req, user.Username);
 
-                    return Results.Ok(new { success = true, message = $"Pengajuan jadwal baru untuk {targetDate:dd/MM/yyyy} ({minutes}m) berhasil dikirim ke orang tua." });
+                    return Results.Ok(new { success = true, message = texts.Format("api_schedule_sent",
+                        ("date", SessionTexts.FormatDate(SessionTexts.For(texts.Preset), targetDate)), ("minutes", minutes)) });
                 }
                 else
                 {
                     var req = GraceRequestRepository.Create(user.Id, today, minutes, reason);
                     _ = _telegramBotService.SendGraceRequestAlertAsync(req, user.Username);
 
-                    return Results.Ok(new { success = true, message = $"Permintaan tambahan waktu +{minutes} menit berhasil dikirim ke orang tua." });
+                    return Results.Ok(new { success = true, message = texts.Format("api_extension_sent", ("minutes", minutes)) });
                 }
             }
             catch (Exception ex)
             {
                 _logger.Error(ex, "Failed to process grace request submission");
-                return Results.BadRequest(new { error = "Permintaan tidak valid." });
+                return Results.BadRequest(new { error = texts["api_invalid"] });
             }
         });
 
@@ -468,6 +474,8 @@ public sealed class WebServerHost : BackgroundService
             }
 
             var user = UserRepository.GetByUsername(username);
+            // The Session Agent shows its texts in this Language Preset. The preset comes only from app_settings.
+            var language = SettingsRepository.GetLanguagePreset();
 
             object? activePromptObj = null;
             var activePrompt = SessionPromptRepository.GetActivePrompt(username);
@@ -502,8 +510,9 @@ public sealed class WebServerHost : BackgroundService
                     username,
                     isRestricted = false,
                     remainingSeconds = 0,
-                    curfew = "Akun tidak dibatasi",
+                    curfew = AgentTexts.For(language)["status_unrestricted"],
                     isLocked = false,
+                    language,
                     activePrompt = activePromptObj
                 });
             }
@@ -582,6 +591,7 @@ public sealed class WebServerHost : BackgroundService
                 lastDeclinedTime,
                 captureRequested,
                 watchIntervalSeconds = watchInterval,
+                language,
                 activePrompt = activePromptObj
             });
         });
@@ -1018,7 +1028,7 @@ public sealed class WebServerHost : BackgroundService
             var doc = JsonDocument.Parse(await reader.ReadToEndAsync());
             var sessionId = doc.RootElement.GetProperty("sessionId").GetInt32();
 
-            NotificationManager.SendMessage(sessionId, "Parental Control", "Administrator has terminated this session.", true, 5);
+            NotificationManager.SendMessage(sessionId, "Parental Control", SessionTexts.For(SettingsRepository.GetLanguagePreset())["session_ended"], true, 5);
             SessionManager.ForceLogoff(sessionId);
             _sessionTracker.RemoveSession(sessionId);
 
@@ -1052,8 +1062,9 @@ public sealed class WebServerHost : BackgroundService
                     sessionId, sessionUser, seconds, message);
 
                 // 1. Send unskippable native Win32 popup into session with countdown duration
-                var popupText = $"{message}\n\n(Layar akan otomatis dikunci dalam {seconds} detik)";
-                NotificationManager.SendMessage(sessionId, "Parental Control — Layar Dikunci", popupText, isWarning: true, timeoutSeconds: seconds);
+                var lockTexts = SessionTexts.For(SettingsRepository.GetLanguagePreset());
+                var popupText = $"{message}\n\n{lockTexts.Format("lock_countdown", ("seconds", seconds))}";
+                NotificationManager.SendMessage(sessionId, lockTexts["lock_title"], popupText, isWarning: true, timeoutSeconds: seconds);
 
                 // 2. Schedule lock after countdown so user has 10-15s to view/save
                 _ = Task.Run(async () =>
@@ -1109,7 +1120,8 @@ public sealed class WebServerHost : BackgroundService
 
                     if (!_sessionTracker.IsAgentRunning(activeSession.SessionId))
                     {
-                        var popupTitle = urgency == "URGENT" ? "🚨 Parental Control — Mendesak" : "Parental Control — Pesan";
+                        var popupTexts = SessionTexts.For(SettingsRepository.GetLanguagePreset());
+                        var popupTitle = urgency == "URGENT" ? popupTexts["message_urgent_title"] : popupTexts["message_title"];
                         NotificationManager.SendMessage(activeSession.SessionId, popupTitle, message, urgency == "URGENT", timeoutSeconds: 30);
                     }
                 }
@@ -1574,7 +1586,7 @@ public sealed class WebServerHost : BackgroundService
                 telegramNotifySignIn = SettingsRepository.IsTelegramNotifySignInEnabled(),
                 telegramNotifySignOut = SettingsRepository.IsTelegramNotifySignOutEnabled(),
                 telegramNotifyAdminLogon = SettingsRepository.IsTelegramNotifyAdminLogonEnabled(),
-                promptResponsePresets = SettingsRepository.Get(SettingsRepository.KeyPromptResponsePresets, SettingsRepository.DefaultPromptResponsePresets),
+                promptResponsePresets = SettingsRepository.GetMessage(SettingsRepository.KeyPromptResponsePresets),
                 msgCategoryWarn = SettingsRepository.GetMessage(SettingsRepository.KeyMsgCategoryWarn),
                 msgCategorySuspended = SettingsRepository.GetMessage(SettingsRepository.KeyMsgCategorySuspended)
             });
@@ -1604,9 +1616,9 @@ public sealed class WebServerHost : BackgroundService
                 }
                 if (doc.RootElement.TryGetProperty("promptResponsePresets", out var pr))
                 {
-                    SettingsRepository.Set(SettingsRepository.KeyPromptResponsePresets, pr.GetString() ?? SettingsRepository.DefaultPromptResponsePresets);
+                    SettingsRepository.Set(SettingsRepository.KeyPromptResponsePresets, pr.GetString() ?? string.Empty); // An empty list gives the default reasons of the preset.
                 }
-                // An empty text keeps the old one: GetMessage would otherwise apply the language preset to all messages.
+                // An empty text keeps the old one.
                 if (doc.RootElement.TryGetProperty("msgCategoryWarn", out var mcw) && !string.IsNullOrWhiteSpace(mcw.GetString()))
                 {
                     SettingsRepository.Set(SettingsRepository.KeyMsgCategoryWarn, mcw.GetString()!.Trim());

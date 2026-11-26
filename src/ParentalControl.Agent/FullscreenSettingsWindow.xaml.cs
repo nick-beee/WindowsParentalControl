@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using ParentalControl.Domain.Messages;
 using WinFormsScreen = System.Windows.Forms.Screen;
 
 namespace ParentalControl.Agent;
@@ -9,16 +10,36 @@ public partial class FullscreenSettingsWindow : Window
     private readonly WidgetSettings _settings;
     private readonly Action<WidgetSettings>? _onSave;
     private readonly Action<WidgetSettings>? _onPreview;
+    private readonly TextSet _texts;
 
-    public FullscreenSettingsWindow(WidgetSettings settings, Action<WidgetSettings>? onSave = null, Action<WidgetSettings>? onPreview = null)
+    public FullscreenSettingsWindow(WidgetSettings settings, TextSet texts, Action<WidgetSettings>? onSave = null, Action<WidgetSettings>? onPreview = null)
     {
         InitializeComponent();
         _settings = settings;
+        _texts = texts;
+        ApplyTexts();
         _onSave = onSave;
         _onPreview = onPreview;
 
         LoadScreens();
         ApplyToUI();
+    }
+
+    private void ApplyTexts()
+    {
+        Title = _texts["fs_window_title"];
+        HeadingText.Text = _texts["fs_heading"];
+        CornerLabel.Text = _texts["fs_corner_label"];
+        CornerTopRight.Content = _texts["fs_corner_top_right"];
+        CornerTopLeft.Content = _texts["fs_corner_top_left"];
+        CornerBottomRight.Content = _texts["fs_corner_bottom_right"];
+        CornerBottomLeft.Content = _texts["fs_corner_bottom_left"];
+        MonitorLabel.Text = _texts["fs_monitor_label"];
+        OpacityTitle.Text = _texts["fs_opacity_label"];
+        AutoCollapseCheck.Content = _texts["fs_auto_collapse"];
+        PreviewBtn.Content = _texts["fs_preview"];
+        CancelBtn.Content = _texts["fs_cancel"];
+        SaveBtn.Content = _texts["fs_save"];
     }
 
     private void LoadScreens()
@@ -27,8 +48,8 @@ public partial class FullscreenSettingsWindow : Window
         var screens = WinFormsScreen.AllScreens;
         for (int i = 0; i < screens.Length; i++)
         {
-            var isPrimary = screens[i].Primary ? " (Utama)" : "";
-            var text = $"Monitor {i + 1}{isPrimary} [{screens[i].Bounds.Width}x{screens[i].Bounds.Height}]";
+            var text = _texts.Format(screens[i].Primary ? "fs_monitor_item_primary" : "fs_monitor_item",
+                ("number", i + 1), ("width", screens[i].Bounds.Width), ("height", screens[i].Bounds.Height));
             var item = new ComboBoxItem { Content = text, Tag = i };
             MonitorCombo.Items.Add(item);
         }

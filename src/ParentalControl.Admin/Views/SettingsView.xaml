@@ -151,11 +151,15 @@
 
                 <md:Card Padding="20" Margin="0,0,0,24" md:ElevationAssist.Elevation="Dp2">
                     <StackPanel>
-                        <TextBlock Text="Customize all dialog messages shown to restricted child sessions. Placeholders like {minutes} and {curfew_end} are dynamically replaced at runtime."
+                        <TextBlock Text="Customize all dialog messages shown to restricted child sessions. Placeholders like {minutes} and {curfew_end} are dynamically replaced at runtime. {minutes|Minute|Minuten} gives the word for the number: the first word for 1, the second word for each other number. A preset replaces only the texts that you did not edit."
                                    TextWrapping="Wrap" Opacity="0.8" Margin="0,0,0,14" LineHeight="20" />
 
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
                             <TextBlock Text="Language Presets:" VerticalAlignment="Center" FontWeight="SemiBold" Margin="0,0,12,0" />
+                            <Button Content="🇩🇪 Deutsch Preset"
+                                    Command="{Binding ApplyPresetDeCommand}"
+                                    Style="{StaticResource MaterialDesignOutlinedButton}"
+                                    Margin="0,0,8,0" />
                             <Button Content="🇮🇩 Bahasa Indonesia Preset"
                                     Command="{Binding ApplyPresetIdCommand}"
                                     Style="{StaticResource MaterialDesignOutlinedButton}"

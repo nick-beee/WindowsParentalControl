@@ -6,6 +6,7 @@ using ParentalControl.Core.Security;
 using ParentalControl.Core;
 using ParentalControl.Core.Services;
 using ParentalControl.Domain.Categories;
+using ParentalControl.Domain.Messages;
 
 Console.WriteLine("=== Running ParentalControl Self-Checks ===");
 
@@ -459,7 +460,32 @@ Console.WriteLine("✅ Offline Telegram Notification Queue & Timestamp Drift Bug
 // 18. Test Interactive Session Prompts Repository & Presets
 var defaultPresets = SettingsRepository.GetPromptResponsePresets();
 Debug.Assert(defaultPresets.Count >= 3, "Default prompt presets should have at least 3 items");
-Debug.Assert(defaultPresets.Any(p => p.Contains("selesai game", StringComparison.OrdinalIgnoreCase)), "Default preset should include game finish option");
+Debug.Assert(defaultPresets.Any(p => p.Contains("Hausaufgaben", StringComparison.OrdinalIgnoreCase)), "Default preset of a new install should be German");
+
+// 18a. Language Preset: a new database gets "de"; a preset switch and an empty text keep the edited texts.
+Debug.Assert(SettingsRepository.Get(SettingsRepository.KeyLanguagePreset) == "de", "A new database should store the preset de");
+Debug.Assert(SettingsRepository.GetMessage(SettingsRepository.KeyMsgLimitReached) == MessageCatalog.Defaults("de")[ChildMessageKeys.LimitReached], "msg_limit_reached should be the German default");
+var oneMinuteWarn = SettingsRepository.GetMessage(SettingsRepository.KeyMsgLimitWarn, new Dictionary<string, string> { ["minutes"] = "1" });
+Debug.Assert(oneMinuteWarn.Contains("1 Minute um"), "The German warning should say '1 Minute'");
+SettingsRepository.Set(SettingsRepository.KeyMsgRemoteLock, "Abendessen!");
+var keptKeys = SettingsRepository.ApplyLanguagePreset("id");
+Debug.Assert(SettingsRepository.Get(SettingsRepository.KeyLanguagePreset) == "id", "The preset should be id after the switch");
+Debug.Assert(SettingsRepository.Get(SettingsRepository.KeyMsgRemoteLock) == "Abendessen!", "An edited text should survive a preset switch");
+Debug.Assert(keptKeys.Contains(SettingsRepository.KeyMsgRemoteLock), "The switch should report the kept key");
+Debug.Assert(SettingsRepository.Get(SettingsRepository.KeyMsgLimitReached) == MessageCatalog.Defaults("id")[ChildMessageKeys.LimitReached], "An unedited text should get the Indonesian default");
+SettingsRepository.Set(SettingsRepository.KeyMsgBonusGranted, "");
+var bonusText = SettingsRepository.GetMessage(SettingsRepository.KeyMsgBonusGranted, new Dictionary<string, string> { ["minutes"] = "15" });
+Debug.Assert(bonusText == MessageCatalog.Defaults("id").Format(ChildMessageKeys.BonusGranted, ("minutes", 15)), "An empty text should give the default of the current preset");
+Debug.Assert(SettingsRepository.Get(SettingsRepository.KeyMsgRemoteLock) == "Abendessen!", "An empty text should not change another key");
+// An update keeps the preset; an earlier "en" default gets the word forms.
+SettingsRepository.ApplyLanguagePreset("en");
+SettingsRepository.Set(SettingsRepository.KeyMsgLimitWarn, "You have {minutes} minutes of daily screen time remaining. Please save your work.");
+DatabaseManager.Initialize();
+Debug.Assert(SettingsRepository.Get(SettingsRepository.KeyLanguagePreset) == "en", "Initialize should keep the stored preset");
+Debug.Assert(SettingsRepository.Get(SettingsRepository.KeyMsgLimitWarn) == MessageCatalog.Defaults("en")[ChildMessageKeys.LimitWarn], "Initialize should replace an earlier default text");
+Debug.Assert(SettingsRepository.Get(SettingsRepository.KeyMsgRemoteLock) == "Abendessen!", "Initialize should keep an edited text");
+SettingsRepository.ApplyLanguagePreset("de");
+Console.WriteLine("✅ Language Preset Verification Passed.");
 
 var promptId1 = SessionPromptRepository.Create(testSid, "TestBrother", "Mau makan siang?", "URGENT", 1, "Sekarang|Nanti 10m");
 Debug.Assert(promptId1 > 0, "Created prompt ID should be > 0");

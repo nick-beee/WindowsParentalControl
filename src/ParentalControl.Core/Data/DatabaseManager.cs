@@ -312,6 +312,9 @@ public static class DatabaseManager
             repairTrans.Commit();
         }
 
+        // Language Preset and child texts: "de" for a new install; an update keeps the edited texts.
+        SettingsRepository.SeedChildMessages(connection);
+
         // App Categories: default limits for missing categories; default rules one time only.
         CategoryRepository.SeedIfNeeded(connection, CategoryRepository.LocalDefaultRuleFolders());
     }

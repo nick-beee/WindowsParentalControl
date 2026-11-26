@@ -6,6 +6,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
+using ParentalControl.Domain.Messages;
 using MediaColor = System.Windows.Media.Color;
 using WinFormsScreen = System.Windows.Forms.Screen;
 
@@ -25,6 +26,7 @@ public partial class WidgetWindow : Window
     public bool IsCollapsed => _isCollapsed;
 
     private WidgetSettings _settings;
+    private TextSet _texts = AgentTexts.For(LanguagePreset.Default);
     private bool _isFullscreenActive;
     private bool _isPreviewActive;
     private double _savedUserLeft;
@@ -38,6 +40,7 @@ public partial class WidgetWindow : Window
 
         _settings = WidgetSettings.Load();
         UserTitleText.Text = Environment.UserName;
+        ApplyTexts(_texts);
 
         // Restore last dragged coordinates or default to top-right of primary work area
         if (_settings.LastUserX >= 0 && _settings.LastUserY >= 0)
@@ -99,6 +102,23 @@ public partial class WidgetWindow : Window
         }
     }
 
+    /// <summary>Sets each fixed text of the widget in the language of the Language Preset.</summary>
+    public void ApplyTexts(TextSet texts)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            _texts = texts;
+            RemainingLabel.Text = texts["widget_remaining_label"];
+            SettingsBtn.ToolTip = texts["widget_settings_tooltip"];
+            CollapseBtn.ToolTip = texts["widget_collapse_tooltip"];
+            ExpandBtn.ToolTip = texts["widget_expand_tooltip"];
+            CurfewIcon.ToolTip = texts["widget_curfew_tooltip"];
+            RequestBtn.Content = texts["widget_request_button"];
+            DeclineTitleText.Text = texts["widget_declined_title"];
+            if (_isLocked) CurfewText.Text = texts["widget_locked"];
+        });
+    }
+
     public void UpdateData(int remainingSec, string curfew, bool isLocked, string username, bool isCurfewClamped = false)
     {
         Dispatcher.Invoke(() =>
@@ -110,12 +130,12 @@ public partial class WidgetWindow : Window
 
             if (_isLocked)
             {
-                CurfewText.Text = "⏸ Sesi Terkunci (Dijeda)";
+                CurfewText.Text = _texts["widget_locked"];
                 CurfewIcon.Visibility = Visibility.Collapsed;
             }
             else
             {
-                CurfewText.Text = !string.IsNullOrWhiteSpace(curfew) ? curfew : "Jam malam: --:--";
+                CurfewText.Text = !string.IsNullOrWhiteSpace(curfew) ? curfew : _texts["widget_curfew_empty"];
                 CurfewIcon.Visibility = _isCurfewRestricted ? Visibility.Visible : Visibility.Collapsed;
             }
 
@@ -127,7 +147,7 @@ public partial class WidgetWindow : Window
     {
         Dispatcher.Invoke(() =>
         {
-            DeclineReasonText.Text = !string.IsNullOrWhiteSpace(reason) ? reason : "Permintaan ditolak oleh orang tua.";
+            DeclineReasonText.Text = !string.IsNullOrWhiteSpace(reason) ? reason : _texts["widget_declined_default"];
             DeclineTimeText.Text = $"{time:HH:mm:ss}";
             DeclineToastPanel.Visibility = Visibility.Visible;
             _toastTimer.Stop();
@@ -383,6 +403,7 @@ public partial class WidgetWindow : Window
     {
         var dlg = new FullscreenSettingsWindow(
             _settings,
+            _texts,
             onSave: newSettings =>
             {
                 _settings = newSettings;
