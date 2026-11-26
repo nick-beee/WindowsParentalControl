@@ -1,3 +1,4 @@
+using ParentalControl.Domain.Messages;
 using ParentalControl.Core.Data;
 namespace ParentalControl.Core.Platform;
 
@@ -34,39 +35,36 @@ public static class NotificationManager
 
     public static void SendLogonBanner(int sessionId, string username, int allowedMinutes, TimeOnly start, TimeOnly end)
     {
-        var hours = allowedMinutes / 60;
-        var mins = allowedMinutes % 60;
-        var timeStr = hours > 0 ? $"{hours} jam {mins} menit" : $"{mins} menit";
+        var texts = SessionTexts.For(SettingsRepository.GetLanguagePreset());
+        var msg = texts.Format("logon_body",
+            ("username", username),
+            ("time", SessionTexts.Duration(texts, allowedMinutes)),
+            ("start", start.ToString("HH:mm")),
+            ("end", end.ToString("HH:mm")));
 
-        var title = "Parental Control — Sesi Aktif";
-        var msg = $"Halo, {username}!\n\n"
-                + $"• Jatah Waktu Layar Hari Ini: {timeStr}\n"
-                + $"• Jam Yang Diizinkan: {start:HH:mm} – {end:HH:mm}\n\n"
-                + "Anda akan menerima peringatan otomatis sebelum waktu sesi habis.";
-
-        SendMessage(sessionId, title, msg, isWarning: false, timeoutSeconds: 20);
+        SendMessage(sessionId, texts["logon_title"], msg, isWarning: false, timeoutSeconds: 20);
     }
 
     public static void SendWarning(int sessionId, int minutesRemaining)
     {
-        var title = "Parental Control — Screen Time Warning";
+        var texts = SessionTexts.For(SettingsRepository.GetLanguagePreset());
         var msg = SettingsRepository.GetMessage(SettingsRepository.KeyMsgLimitWarn, new Dictionary<string, string>
         {
             ["minutes"] = minutesRemaining.ToString()
         });
 
-        SendMessage(sessionId, title, msg, isWarning: true, timeoutSeconds: 30);
+        SendMessage(sessionId, texts["warn_title"], msg, isWarning: true, timeoutSeconds: 30);
     }
 
     public static void SendCurfewWarning(int sessionId, int minutesRemaining, TimeOnly curfewTime)
     {
-        var title = "Parental Control — Curfew Warning";
+        var texts = SessionTexts.For(SettingsRepository.GetLanguagePreset());
         var msg = SettingsRepository.GetMessage(SettingsRepository.KeyMsgCurfewWarn, new Dictionary<string, string>
         {
             ["minutes"] = minutesRemaining.ToString(),
             ["curfew_end"] = curfewTime.ToString("HH:mm")
         });
 
-        SendMessage(sessionId, title, msg, isWarning: true, timeoutSeconds: 30);
+        SendMessage(sessionId, texts["curfew_warn_title"], msg, isWarning: true, timeoutSeconds: 30);
     }
 }

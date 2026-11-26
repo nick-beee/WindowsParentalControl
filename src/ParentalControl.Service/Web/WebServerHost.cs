@@ -14,6 +14,7 @@ using ParentalControl.Core.Services;
 using ParentalControl.Service.Web.Pages;
 using ParentalControl.Core;
 using ParentalControl.Domain.Categories;
+using ParentalControl.Domain.Messages;
 
 namespace ParentalControl.Service.Web;
 
@@ -1018,7 +1019,7 @@ public sealed class WebServerHost : BackgroundService
             var doc = JsonDocument.Parse(await reader.ReadToEndAsync());
             var sessionId = doc.RootElement.GetProperty("sessionId").GetInt32();
 
-            NotificationManager.SendMessage(sessionId, "Parental Control", "Administrator has terminated this session.", true, 5);
+            NotificationManager.SendMessage(sessionId, "Parental Control", SessionTexts.For(SettingsRepository.GetLanguagePreset())["session_ended"], true, 5);
             SessionManager.ForceLogoff(sessionId);
             _sessionTracker.RemoveSession(sessionId);
 
@@ -1052,8 +1053,9 @@ public sealed class WebServerHost : BackgroundService
                     sessionId, sessionUser, seconds, message);
 
                 // 1. Send unskippable native Win32 popup into session with countdown duration
-                var popupText = $"{message}\n\n(Layar akan otomatis dikunci dalam {seconds} detik)";
-                NotificationManager.SendMessage(sessionId, "Parental Control — Layar Dikunci", popupText, isWarning: true, timeoutSeconds: seconds);
+                var lockTexts = SessionTexts.For(SettingsRepository.GetLanguagePreset());
+                var popupText = $"{message}\n\n{lockTexts.Format("lock_countdown", ("seconds", seconds))}";
+                NotificationManager.SendMessage(sessionId, lockTexts["lock_title"], popupText, isWarning: true, timeoutSeconds: seconds);
 
                 // 2. Schedule lock after countdown so user has 10-15s to view/save
                 _ = Task.Run(async () =>
@@ -1109,7 +1111,8 @@ public sealed class WebServerHost : BackgroundService
 
                     if (!_sessionTracker.IsAgentRunning(activeSession.SessionId))
                     {
-                        var popupTitle = urgency == "URGENT" ? "🚨 Parental Control — Mendesak" : "Parental Control — Pesan";
+                        var popupTexts = SessionTexts.For(SettingsRepository.GetLanguagePreset());
+                        var popupTitle = urgency == "URGENT" ? popupTexts["message_urgent_title"] : popupTexts["message_title"];
                         NotificationManager.SendMessage(activeSession.SessionId, popupTitle, message, urgency == "URGENT", timeoutSeconds: 30);
                     }
                 }

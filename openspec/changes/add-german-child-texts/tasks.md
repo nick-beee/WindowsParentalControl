@@ -20,10 +20,10 @@
 
 ## 3. Session messages in the service
 
-- [ ] 3.1 `NotificationManager`: `SendLogonBanner`, `SendWarning` and `SendCurfewWarning` use `SessionTexts` of the current preset. Verify that `dotnet build -p:EnableWindowsTargeting=true` succeeds and that `grep -n "jam\|menit\|Anda" src/ParentalControl.Core/Platform/NotificationManager.cs` gives no result.
-- [ ] 3.2 `CategoryEnforcer`: put `CategoryNames.For(category, preset)` into `{name}` and `{category}` for a category message. Keep the app name for an App Limit warning. Verify that `dotnet build -p:EnableWindowsTargeting=true` succeeds.
-- [ ] 3.3 `WebServerHost`: the lock countdown and title, the terminate text and the parent message titles use `SessionTexts`. `/api/admin/settings` GET gives the default prompt reasons of the current preset. Verify that `dotnet build -p:EnableWindowsTargeting=true` succeeds and that `grep -n "Layar akan otomatis\|terminated this session\|Mendesak" src/ParentalControl.Service/Web/WebServerHost.cs` gives no result.
-- [ ] 3.4 `TelegramBotService`: the approve and decline popups to the child and the decline reasons use `SessionTexts` (date format and weekday names too). Each `lang` read uses `LanguagePreset.ParentLanguage(GetLanguagePreset())`. Verify that `dotnet build -p:EnableWindowsTargeting=true` succeeds and that `grep -n 'KeyLanguagePreset' src/ParentalControl.Core/Services/TelegramBotService.cs` gives no result.
+- [x] 3.1 `NotificationManager`: `SendLogonBanner`, `SendWarning` and `SendCurfewWarning` use `SessionTexts` of the current preset. Verify that `dotnet build -p:EnableWindowsTargeting=true` succeeds and that `grep -n "jam\|menit\|Anda" src/ParentalControl.Core/Platform/NotificationManager.cs` gives no result.
+- [x] 3.2 `CategoryEnforcer`: put `CategoryNames.For(category, preset)` into `{name}` and `{category}` for a category message. Keep the app name for an App Limit warning. Verify that `dotnet build -p:EnableWindowsTargeting=true` succeeds.
+- [x] 3.3 `WebServerHost`: the lock countdown and title, the terminate text and the parent message titles use `SessionTexts`. `/api/admin/settings` GET gives the default prompt reasons of the current preset. Verify that `dotnet build -p:EnableWindowsTargeting=true` succeeds and that `grep -n "Layar akan otomatis\|terminated this session\|Mendesak" src/ParentalControl.Service/Web/WebServerHost.cs` gives no result.
+- [x] 3.4 `TelegramBotService`: the approve and decline popups to the child and the decline reasons use `SessionTexts` (date format and weekday names too). Each `lang` read uses `LanguagePreset.ParentLanguage(GetLanguagePreset())`. Verify that `dotnet build -p:EnableWindowsTargeting=true` succeeds and that `grep -n 'KeyLanguagePreset' src/ParentalControl.Core/Services/TelegramBotService.cs` gives no result.
 
 ## 4. Session Agent
 
