@@ -48,10 +48,9 @@ public class BlockedSuspensionPlannerTests
 
     private static SuspensionPlan Plan(IEnumerable<SessionProcess> processes, Func<int, string, ExeVerdict> verdict,
         IEnumerable<SuspensionRecord>? records = null, Func<int, string, bool>? seen = null, Func<SessionProcess, bool>? pendingClose = null,
-        ProtectedPrograms? protectedPrograms = null) =>
+        ProtectedPrograms? protectedPrograms = null, IReadOnlySet<int>? held = null) =>
         SuspensionPlanner.Plan(new PlannerInput(processes.ToList(), KidSessions, verdict, seen ?? ((_, _) => false),
-            (records ?? []).ToList(), Agent, @"C:\Windows", PendingClose: pendingClose,
-            ProtectedPrograms: protectedPrograms ?? Protected));
+            (records ?? []).ToList(), Agent, @"C:\Windows", held, pendingClose, protectedPrograms ?? Protected));
 
     [Fact]
     public void Blocked_process_is_suspended_without_a_Foreground_Window()
@@ -88,6 +87,28 @@ public class BlockedSuspensionPlannerTests
         var action = Assert.Single(plan.ToSuspend);
         Assert.True(action.IsRecorded);
         Assert.Equal(SuspensionReason.Blocked, action.Reason);
+    }
+
+    [Fact]
+    public void Session_End_Hold_suspends_no_blocked_process_and_keeps_the_blocked_record()
+    {
+        // The session ends: the service resumed the recorded Chrome, and a new Firefox process runs. Neither is suspended
+        // during the hold, and the record of Chrome stays for the suspension after the hold.
+        var plan = Plan([Proc(10, Chrome, suspended: false), Proc(11, Firefox)], Verdict(Rules()),
+            [Record(10, Chrome, SuspensionReason.Blocked)], held: new HashSet<int> { KidSession });
+        Assert.Empty(plan.ToSuspend);
+        Assert.Empty(plan.ToResume);
+        Assert.Empty(plan.ToDrop);
+        Assert.Empty(plan.ToRelabel);
+    }
+
+    [Fact]
+    public void After_the_hold_the_blocked_processes_are_suspended_again()
+    {
+        var plan = Plan([Proc(10, Chrome, suspended: false), Proc(11, Firefox)], Verdict(Rules()),
+            [Record(10, Chrome, SuspensionReason.Blocked)], held: new HashSet<int>());
+        Assert.Equal(2, plan.ToSuspend.Count);
+        Assert.All(plan.ToSuspend, a => Assert.Equal(SuspensionReason.Blocked, a.Reason));
     }
 
     [Fact]
