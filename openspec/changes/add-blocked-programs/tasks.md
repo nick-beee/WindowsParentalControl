@@ -24,8 +24,8 @@ PR #20 (`add-german-child-texts`) is merged (design D14). Do not install a build
 
 ## 4. Domain: default blocked browsers
 
-- [ ] 4.1 Add `CategoryDefaults.BlockedBrowsers` with the 15 file names of design D8, each a file rule with the category Unknown and the block on. Verify with an xUnit test that the list has no `launcher.exe`, has no duplicates (letter case ignored), and that each pattern passes `AppRule.NormalizePattern`.
-- [ ] 4.2 Add a pure seed plan: input the existing rules, output the rules to insert and the rule ids to set blocked (design D8). Verify with xUnit tests: an empty database, an existing `chrome.exe` rule to Video (gets the block, keeps Video and its App Limit), and an existing `CHROME.EXE` rule (letter case ignored).
+- [x] 4.1 Add `CategoryDefaults.BlockedBrowsers` with the 15 file names of design D8, each a file rule with the category Unknown and the block on. Verify with an xUnit test that the list has no `launcher.exe`, has no duplicates (letter case ignored), and that each pattern passes `AppRule.NormalizePattern`.
+- [x] 4.2 Add a pure seed plan: input the existing rules, output the rules to insert and the rule ids to set blocked (design D8). Verify with xUnit tests: an empty database, an existing `chrome.exe` rule to Video (gets the block, keeps Video and its App Limit), and an existing `CHROME.EXE` rule (letter case ignored).
 
 ## 5. Core: data
 
