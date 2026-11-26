@@ -37,6 +37,15 @@ jobs:
         shell: pwsh
         run: .\build.ps1
 
+      # The updater refuses a release without this file (UpdateReleasePolicy.ChecksumFileName).
+      # The file uses the sha256sum format: "<hash>  ParentalControlSetup.exe".
+      - name: Write SHA-256 of the installer
+        shell: bash
+        run: |
+          cd installer/Output
+          sha256sum ParentalControlSetup.exe > ParentalControlSetup.exe.sha256
+          cat ParentalControlSetup.exe.sha256
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -59,5 +68,6 @@ jobs:
 
           gh release create "$TAG" \
             installer/Output/ParentalControlSetup.exe \
+            installer/Output/ParentalControlSetup.exe.sha256 \
             --title "$TAG" \
             --notes-file notes.md

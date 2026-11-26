@@ -1554,19 +1554,12 @@ public sealed class WebServerHost : BackgroundService
         });
 
         // Admin Apply Update API
+        // The service ignores the request body (old clients send a downloadUrl). It reads the
+        // latest release of AppVersion.GitHubRepo itself and runs only a checked installer (issue #8).
         app.MapPost("/api/admin/update/apply", async (HttpContext ctx) =>
         {
             if (!CheckAuth(ctx)) return Results.Unauthorized();
-            using var reader = new StreamReader(ctx.Request.Body);
-            var body = await reader.ReadToEndAsync();
-            var doc = JsonDocument.Parse(body);
-            var downloadUrl = doc.RootElement.GetProperty("downloadUrl").GetString();
-            if (string.IsNullOrWhiteSpace(downloadUrl))
-            {
-                return Results.BadRequest(new { error = "Download URL required." });
-            }
-
-            var (success, msg) = await UpdateService.DownloadAndApplyUpdateAsync(downloadUrl);
+            var (success, msg) = await UpdateService.ApplyLatestUpdateAsync();
             return Results.Ok(new { success, message = msg });
         });
 

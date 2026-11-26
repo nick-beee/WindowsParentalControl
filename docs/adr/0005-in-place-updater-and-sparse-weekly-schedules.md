@@ -10,9 +10,10 @@ Accepted
 
 ## Decision
 1. **GitHub Releases In-Place Updater**:
-   - Background service and Admin interfaces query `https://api.github.com/repos/DarkTama/WindowsParentalControl/releases/latest` using semver comparison against `AppVersion.Current`.
+   - Background service and Admin interfaces query `https://api.github.com/repos/{AppVersion.GitHubRepo}/releases/latest` (the fork `nick-beee/WindowsParentalControl`) using semver comparison against `AppVersion.Current`.
    - Admin UI (Desktop & Web Admin) displays release notes, publication date, and an "Update Now" trigger.
    - When triggered, the service downloads `ParentalControlSetup.exe` into a temporary scratch directory and executes the installer with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`.
+   - Amendment (issue #8): the apply route ignores its request body. The service reads the latest release itself, accepts only `ParentalControlSetup.exe` on `https://github.com/{repo}/releases/download/{tag}/` with a strict version above `AppVersion.Current`, and runs it only if its SHA-256 matches the `ParentalControlSetup.exe.sha256` asset of the same release. The release workflow publishes that file. The installer is not signed; an Authenticode check is a follow-up.
    - The installer gracefully stops services, updates files, and restarts services/agents.
 2. **Sparse Schedule Override Persistence**:
    - The primary `limits` table defines the baseline limit (`daily_minutes`, `schedule_start`, `schedule_end`) for each restricted user.

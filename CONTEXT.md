@@ -81,7 +81,7 @@ The transparent, user-facing schedule view displayed on the screen time request 
 A persistence pattern where day-of-week limits are only stored in `schedule_days` when explicitly marked as custom by an Administrator; all untoggled days dynamically resolve to the baseline user limit.
 
 ### Built-in Updater
-An administrative subsystem capable of querying GitHub Releases for newer binary packages, presenting release changelogs, downloading `ParentalControlSetup.exe`, and initiating automated silent in-place upgrades.
+An administrative subsystem capable of querying GitHub Releases for newer binary packages, presenting release changelogs, downloading `ParentalControlSetup.exe`, and initiating automated silent in-place upgrades. The service reads the latest release of `AppVersion.GitHubRepo` itself and never takes an installer URL from a request. It installs only `ParentalControlSetup.exe` from `https://github.com/<repo>/releases/download/<tag>/` with a version above `AppVersion.Current`, and only if its SHA-256 matches the `ParentalControlSetup.exe.sha256` of the same release (`UpdateReleasePolicy`).
 
 ### Schedule Exception
 A date-specific single-day override record defining custom Allowance Time and Schedule Windows for a specific calendar date, taking precedence over both Weekly Schedules and baseline limits before expiring automatically.
