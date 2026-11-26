@@ -7,6 +7,7 @@ using ParentalControl.Core;
 using ParentalControl.Core.Services;
 using ParentalControl.Domain.Categories;
 using ParentalControl.Domain.Messages;
+using ParentalControl.Domain.AdminAccess;
 
 Console.WriteLine("=== Running ParentalControl Self-Checks ===");
 
@@ -413,7 +414,7 @@ EventRepository.LogEvent(testSid, EventType.SECURITY_ALERT, "Unauthorized admini
 var secEvents = EventRepository.GetEvents(userSid: testSid);
 Debug.Assert(secEvents.Any(e => e.EventType == EventType.SECURITY_ALERT), "SECURITY_ALERT event should be stored and retrievable");
 
-var testLogger = ParentalControl.Core.Logging.LoggingConfig.CreateLogger("Test");
+var testLogger = ParentalControl.Core.Logging.LoggingConfig.CreateLogger("Test", Path.Combine(tempDir, "logs"));
 var botService = new TelegramBotService(testLogger);
 var resSignIn = botService.SendUserSignInNotificationAsync("testuser", "TEST-PC", DateTime.Now, 120, new TimeOnly(8, 0), new TimeOnly(20, 0)).GetAwaiter().GetResult();
 Debug.Assert(!resSignIn, "SendUserSignInNotificationAsync should return false gracefully when token is unconfigured");
@@ -665,6 +666,908 @@ Console.WriteLine("✅ App Categories, Rules, Category Usage & Suspension Record
 }
 Console.WriteLine("✅ Process List, Suspend & Resume Passed.");
 
+// Admin sign-in storage and start check (require-admin-sign-in, tasks 3.1 and 3.3)
+{
+    var now = DateTimeOffset.UtcNow;
+    AdminAccessRepository.DeleteAllFailures();
+    AdminAccessRepository.AddFailure(LoginSource.Local, now.AddMinutes(-5));
+    AdminAccessRepository.AddFailure(LoginSource.Local, now.AddMinutes(-4));
+    AdminAccessRepository.AddFailure("192.168.1.50", now.AddMinutes(-3));
+    AdminAccessRepository.AddFailure(LoginSource.Local, now.AddHours(-25));
+    DatabaseManager.Initialize(); // the rows survive a new Initialize()
+    Debug.Assert(DatabaseManager.DataFolderSecured, "A test data folder counts as secured");
+    var recentFailures = AdminAccessRepository.GetRecentFailures(now);
+    Debug.Assert(recentFailures.Count == 3, "Only the failures of the last 24 hours should be listed");
+    Debug.Assert(recentFailures.All(f => Math.Abs((f.FailedAtUtc - now).TotalMinutes) < 6), "Failure times should round-trip");
+    Debug.Assert(AdminAccessRepository.DeleteFailuresOlderThan24Hours(now) == 1, "The failure of 25 hours ago should be deleted");
+    Debug.Assert(AdminAccessRepository.DeleteFailuresOfSource("192.168.1.50") == 1, "Delete by source should remove only that source");
+    Debug.Assert(AdminAccessRepository.GetRecentFailures(now).All(f => f.Source == LoginSource.Local), "The failures of the other source should stay");
+    Debug.Assert(AdminAccessRepository.DeleteAllFailures() == 2, "Delete all should remove the rest");
+
+    // SetMany writes all keys or none.
+    SettingsRepository.SetMany(new Dictionary<string, string> { ["admin_test_a"] = "1", ["admin_test_b"] = "2" });
+    Debug.Assert(SettingsRepository.Get("admin_test_a") == "1" && SettingsRepository.Get("admin_test_b") == "2", "SetMany should write all keys");
+    static IEnumerable<KeyValuePair<string, string>> FailHalfway()
+    {
+        yield return new("admin_test_c", "3");
+        throw new InvalidOperationException("test");
+    }
+    var setManyFailed = false;
+    try { SettingsRepository.SetMany(FailHalfway()); } catch (InvalidOperationException) { setManyFailed = true; }
+    Debug.Assert(setManyFailed && SettingsRepository.Get("admin_test_c") == "", "SetMany should write no key when it fails");
+
+    // Session epoch: missing = 0, increment, garbage = not valid, increment repairs it.
+    Debug.Assert(AdminAccessRepository.GetSessionEpoch() == 0, "The epoch should start at 0");
+    AdminAccessRepository.SignOutAllSessions();
+    Debug.Assert(AdminAccessRepository.GetSessionEpoch() == 1, "Sign out all should increment the epoch");
+    SettingsRepository.Set(SettingsRepository.KeyAdminSessionEpoch, "garbage");
+    Debug.Assert(AdminAccessRepository.GetSessionEpoch() is null, "An epoch that is not a number should not be valid");
+    AdminAccessRepository.SignOutAllSessions();
+    Debug.Assert(AdminAccessRepository.GetSessionEpoch() == 1, "Increment should repair an epoch that is not a number");
+
+    // Setup in one transaction; the confirmation code cannot log in.
+    Debug.Assert(!AdminAccessRepository.IsCredentialSetUp(), "A fresh install should not be set up");
+    var invalidSetupRefused = false;
+    try { AdminAccessRepository.CompleteSetup("SHORT", 1, now); } catch (ArgumentException) { invalidSetupRefused = true; }
+    Debug.Assert(invalidSetupRefused && !AdminAccessRepository.IsCredentialSetUp(), "A setup with an invalid secret should save nothing");
+    var adminSecret = TotpService.GenerateSecret();
+    Debug.Assert(TotpSecret.TryDecode(adminSecret, out var adminKey), "A new secret should be valid");
+    var confirmStep = Totp.StepAt(now);
+    var confirmCode = Totp.ComputeCode(adminKey, confirmStep);
+    Debug.Assert(Totp.TryVerify(adminSecret, confirmCode, now, Totp.NoStepUsed, out var matchedStep) && matchedStep == confirmStep, "The confirmation code should be valid");
+    AdminAccessRepository.AddFailure(LoginSource.Local, now);
+    AdminAccessRepository.CompleteSetup(adminSecret.ToLowerInvariant(), matchedStep, now);
+    Debug.Assert(AdminAccessRepository.IsCredentialSetUp(), "The setup should be complete");
+    Debug.Assert(SettingsRepository.Get(SettingsRepository.KeyTotpSecret) == adminSecret, "The secret should be saved in normal form");
+    Debug.Assert(AdminAccessRepository.GetSessionEpoch() == 2, "The setup should end all Admin Sessions");
+    Debug.Assert(AdminAccessRepository.GetRecentFailures(now).Count == 0, "The setup should clear the login limit");
+    Debug.Assert(AdminAccessRepository.GetSetupTime() is not null, "The setup time should be saved");
+    Debug.Assert(!Totp.TryVerify(adminSecret, confirmCode, now, AdminAccessRepository.GetLastUsedStep(), out _), "The confirmation code should not log in");
+
+    // Start check: the four upgrade cases.
+    static AdminStartupPlan PlanWith(string enabled, string secret)
+    {
+        SettingsRepository.Set(SettingsRepository.KeyTotpEnabled, enabled);
+        SettingsRepository.Set(SettingsRepository.KeyTotpSecret, secret);
+        return AdminSetup.PlanStart(
+            SettingsRepository.Get(SettingsRepository.KeyTotpEnabled),
+            SettingsRepository.Get(SettingsRepository.KeyTotpSecret),
+            noticeSent: false, telegramConfigured: true);
+    }
+    var planValid = PlanWith("true", adminSecret);
+    Debug.Assert(!planValid.DisableTotp && !planValid.SendSetupNotice && AdminAccessRepository.IsCredentialSetUp(), "TOTP on with a valid secret keeps its sign-in");
+    var planEmpty = PlanWith("true", "");
+    Debug.Assert(planEmpty.DisableTotp && planEmpty.SendSetupNotice && !AdminAccessRepository.IsCredentialSetUp(), "TOTP on with an empty secret is not set up");
+    var planShort = PlanWith("true", TotpSecret.Encode(new byte[9]));
+    Debug.Assert(planShort.DisableTotp && !AdminAccessRepository.IsCredentialSetUp(), "TOTP on with a 9-byte secret is not set up");
+    var planOff = PlanWith("false", adminSecret);
+    Debug.Assert(!planOff.DisableTotp && planOff.SendSetupNotice && !AdminAccessRepository.IsCredentialSetUp(), "TOTP off with an old secret is not set up");
+
+    SettingsRepository.Set(SettingsRepository.KeyTotpEnabled, "false");
+    SettingsRepository.Set(SettingsRepository.KeyTotpSecret, "");
+}
+Console.WriteLine("✅ Admin Sign-In Storage & Start Check Passed.");
+
+// Data folder owner and access rules (require-admin-sign-in D9, findings B1, B2, S1, S2). Needs an elevated administrator (CI, SSH as nick).
+{
+    var aclBase = Path.Combine(Path.GetTempPath(), "PcAclTest_" + Guid.NewGuid().ToString("N"));
+    var aclRoot = Path.Combine(aclBase, "ParentalControl");
+    var aclOutside = Path.Combine(aclBase, "Outside");
+    var testKey = new DataFolderRegistry(@"SOFTWARE\ParentalControl.Test-" + Guid.NewGuid().ToString("N"));
+    var usersSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinUsersSid, null);
+    var systemSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.LocalSystemSid, null);
+    var adminsSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null);
+    // Test items get an explicit owner and DACL, so the result does not depend on the default owner of the test account.
+    void SetSddl(FileSystemInfo item, string sddl)
+    {
+        const System.Security.AccessControl.AccessControlSections sections =
+            System.Security.AccessControl.AccessControlSections.Owner | System.Security.AccessControl.AccessControlSections.Access;
+        if (item is DirectoryInfo d) { var sec = new System.Security.AccessControl.DirectorySecurity(); sec.SetSecurityDescriptorSddlForm(sddl, sections); d.SetAccessControl(sec); }
+        else if (item is FileInfo f) { var sec = new System.Security.AccessControl.FileSecurity(); sec.SetSecurityDescriptorSddlForm(sddl, sections); f.SetAccessControl(sec); }
+    }
+    // A folder of an install: owner Administrators, SYSTEM and Administrators, plus read for Users (an old, open rule).
+    const string trustedWithUsersRead = "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)";
+    // A folder that a standard user could change: Users have full access.
+    const string usersCanWrite = "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;BU)";
+    List<System.Security.AccessControl.FileSystemAccessRule> RulesOf(System.Security.AccessControl.FileSystemSecurity sec, bool explicitOnly) =>
+        sec.GetAccessRules(true, !explicitOnly, typeof(System.Security.Principal.SecurityIdentifier)).Cast<System.Security.AccessControl.FileSystemAccessRule>()
+           .Where(r => !explicitOnly || !r.IsInherited).ToList();
+    bool OnlySystemAndAdmins(IEnumerable<System.Security.AccessControl.FileSystemAccessRule> rules) =>
+        rules.Any() && rules.All(r => r.IdentityReference.Equals(systemSid) || r.IdentityReference.Equals(adminsSid));
+    void AssertSecuredRoot(string path, string what)
+    {
+        var info = new DirectoryInfo(path);
+        Debug.Assert(info.Exists && !info.Attributes.HasFlag(FileAttributes.ReparsePoint), $"{what}: the data folder should be a real folder");
+        var sec = info.GetAccessControl();
+        Debug.Assert(sec.GetOwner(typeof(System.Security.Principal.SecurityIdentifier))!.Equals(adminsSid), $"{what}: the folder owner should be Administrators");
+        Debug.Assert(sec.AreAccessRulesProtected, $"{what}: the folder DACL should be protected");
+        var rules = RulesOf(sec, explicitOnly: false);
+        Debug.Assert(rules.Count == 2 && OnlySystemAndAdmins(rules),
+            $"{what}: the folder should have only SYSTEM and Administrators: " + string.Join(", ", rules.Select(r => r.IdentityReference.Value)));
+    }
+    void RunCmd(string arguments)
+    {
+        using var p = Process.Start(new ProcessStartInfo("cmd.exe", "/c " + arguments) { CreateNoWindow = true, UseShellExecute = false })!;
+        p.WaitForExit(10000);
+        Debug.Assert(p.ExitCode == 0, "cmd /c " + arguments + " failed");
+    }
+    try
+    {
+        Directory.CreateDirectory(aclBase);
+        var outsideDir = Directory.CreateDirectory(aclOutside);
+        SetSddl(outsideDir, trustedWithUsersRead);
+        File.WriteAllText(Path.Combine(aclOutside, "target.txt"), "outside");
+
+        // 1. An install with open read rules, a link inside and a hard link to data.db (D9, S2).
+        var rootDir = Directory.CreateDirectory(aclRoot);
+        SetSddl(rootDir, trustedWithUsersRead);
+        var subDir = Directory.CreateDirectory(Path.Combine(aclRoot, "logs"));
+        var dbPath = Path.Combine(aclRoot, "data.db");
+        File.WriteAllText(dbPath, "secret");
+        File.WriteAllText(Path.Combine(subDir.FullName, "x.log"), "x");
+        foreach (FileSystemInfo item in new FileSystemInfo[] { subDir, new FileInfo(dbPath), new FileInfo(Path.Combine(subDir.FullName, "x.log")) })
+            SetSddl(item, "O:BAD:AI(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;;FR;;;BU)");
+        var hardLink = Path.Combine(aclOutside, "data-hardlink.db");
+        Debug.Assert(TestNative.CreateHardLinkW(hardLink, dbPath, IntPtr.Zero), "The test hard link should be created");
+        RunCmd($"mklink /J \"{Path.Combine(aclRoot, "captures")}\" \"{aclOutside}\"");
+        Directory.CreateSymbolicLink(Path.Combine(aclRoot, "link"), aclOutside);
+
+        DataFolderResult secured = null!;
+        try { secured = DataFolderGuard.Secure(aclRoot); }
+        catch (Exception ex) { Debug.Fail("DataFolderGuard.Secure failed (the test needs an elevated administrator): " + ex); }
+        Debug.Assert(secured.QuarantinedTo is null, "A trusted folder should not be moved: " + secured.QuarantineReason);
+        AssertSecuredRoot(aclRoot, "Open read rules");
+        foreach (var child in new FileSystemInfo[] { subDir, new FileInfo(dbPath), new FileInfo(Path.Combine(subDir.FullName, "x.log")) })
+        {
+            System.Security.AccessControl.FileSystemSecurity sec = child is DirectoryInfo cd ? cd.GetAccessControl() : ((FileInfo)child).GetAccessControl();
+            Debug.Assert(sec.GetOwner(typeof(System.Security.Principal.SecurityIdentifier))!.Equals(adminsSid), $"The owner of {child.Name} should be Administrators");
+            Debug.Assert(!sec.AreAccessRulesProtected, $"{child.Name} should inherit the rules of the folder");
+            Debug.Assert(RulesOf(sec, explicitOnly: true).Count == 0, $"{child.Name} should have no explicit rule");
+            var all = RulesOf(sec, explicitOnly: false);
+            Debug.Assert(OnlySystemAndAdmins(all),
+                $"{child.Name} should have only SYSTEM and Administrators: " + string.Join(", ", all.Select(r => r.IdentityReference.Value)));
+        }
+        Debug.Assert(!Directory.Exists(Path.Combine(aclRoot, "captures")) && !File.Exists(Path.Combine(aclRoot, "link")), "The links in the folder should be deleted");
+        Debug.Assert(File.ReadAllText(Path.Combine(aclOutside, "target.txt")) == "outside", "The target of a link should keep its content");
+        Debug.Assert(RulesOf(outsideDir.GetAccessControl(), explicitOnly: true).Any(r => r.IdentityReference.Equals(usersSid)), "The target of a link should keep its rules");
+        Debug.Assert(secured.Repairs.Count >= 3, "The result should list the deleted links and the replaced hard link: " + string.Join(" | ", secured.Repairs));
+        Debug.Assert(File.ReadAllText(dbPath) == "secret", "data.db should keep its content after the copy");
+        Debug.Assert(TestNative.LinkCount(dbPath) == 1, "data.db should have one name after the repair");
+        // A second start finds nothing to repair: no permanent lockout because of a link.
+        var again = DataFolderGuard.Secure(aclRoot);
+        Debug.Assert(again.QuarantinedTo is null && again.Repairs.Count == 0, "A second start should change nothing");
+        DataFolderGuard.EnsureSafeToOpen(aclRoot, "data.db"); // the check of the Admin app passes
+
+        // 2. B1: a junction as the data folder, with a planted data.db in its target.
+        Directory.Delete(aclRoot, true);
+        File.WriteAllText(Path.Combine(aclOutside, "data.db"), "planted");
+        RunCmd($"mklink /J \"{aclRoot}\" \"{aclOutside}\"");
+        var adminAppRefused = false;
+        try { DataFolderGuard.EnsureSafeToOpen(aclRoot, "data.db"); } catch (DataFolderUnsafeException) { adminAppRefused = true; }
+        Debug.Assert(adminAppRefused, "The Admin app should not open a data folder that is a junction");
+        var junctionResult = DataFolderGuard.Secure(aclRoot);
+        AssertSecuredRoot(aclRoot, "Junction");
+        Debug.Assert(!File.Exists(Path.Combine(aclRoot, "data.db")), "The new data folder should be empty");
+        Debug.Assert(File.ReadAllText(Path.Combine(aclOutside, "data.db")) == "planted", "The target of the junction should not change");
+        Debug.Assert(RulesOf(outsideDir.GetAccessControl(), explicitOnly: true).Any(r => r.IdentityReference.Equals(usersSid)), "The target of the junction should keep its rules");
+        Debug.Assert(junctionResult.Repairs.Count == 1, "The result should report the deleted junction");
+
+        // 3. B2: a folder that Users can change (as one that the child made before the install), with a planted data.db.
+        Directory.Delete(aclRoot, true);
+        var plantedRoot = Directory.CreateDirectory(aclRoot);
+        SetSddl(plantedRoot, usersCanWrite);
+        File.WriteAllText(Path.Combine(aclRoot, "data.db"), "planted");
+        var plantedRefused = false;
+        try { DataFolderGuard.EnsureSafeToOpen(aclRoot, "data.db"); } catch (DataFolderUnsafeException) { plantedRefused = true; }
+        Debug.Assert(plantedRefused, "The Admin app should not open a folder that Users can change");
+
+        // While a process holds the folder without delete sharing, the move fails and the start fails (fail closed).
+        using (var held = TestNative.OpenDirectoryWithoutDeleteSharing(aclRoot))
+        {
+            Debug.Assert(!held.IsInvalid, "The test should hold the folder");
+            var heldRefused = false;
+            try { DataFolderGuard.Secure(aclRoot); } catch (DataFolderUnsafeException) { heldRefused = true; }
+            Debug.Assert(heldRefused, "Secure should fail while the untrusted folder cannot be moved");
+            Debug.Assert(File.ReadAllText(Path.Combine(aclRoot, "data.db")) == "planted", "Nothing should change when the move fails");
+
+            // D14: the service does not stop. It leaves the held folder alone, makes a new folder with a random name,
+            // stores its location in the admin-only registry key, and the limits stay on.
+            var relocated = DataFolderCoordinator.Prepare(testKey, aclBase, sleep: _ => { });
+            Debug.Assert(!relocated.IsLockdown && relocated.Relocated, "A held, untrusted folder should give a new folder: " + relocated.Error);
+            Debug.Assert(string.Equals(Path.GetDirectoryName(relocated.Folder), aclBase, StringComparison.OrdinalIgnoreCase)
+                         && ParentalControl.Domain.DataFolder.DataFolderLocation.IsFallbackName(Path.GetFileName(relocated.Folder!)),
+                "The new folder should be <root>\\ParentalControl-<32 hex digits>: " + relocated.Folder);
+            AssertSecuredRoot(relocated.Folder!, "New random folder");
+            Debug.Assert(Directory.GetFileSystemEntries(relocated.Folder!).Length == 0, "The new folder should be empty (a new database)");
+            Debug.Assert(relocated.RelocationReason is not null && relocated.RegistryError is null, "The result should give the reason and no registry error");
+            Debug.Assert(File.ReadAllText(Path.Combine(aclRoot, "data.db")) == "planted", "The held folder should stay as it is");
+            Debug.Assert(testKey.ReadLocation(aclBase).Folder == relocated.Folder, "The registry value should name the new folder");
+            DataFolderGuard.EnsureSafeToOpen(relocated.Folder!, "data.db"); // the Admin app can open the new folder
+            using (var hklm = Microsoft.Win32.RegistryKey.OpenBaseKey(Microsoft.Win32.RegistryHive.LocalMachine, Microsoft.Win32.RegistryView.Registry64))
+            using (var key = hklm.OpenSubKey(testKey.KeyPath)!)
+            {
+                Debug.Assert(DataFolderRegistry.CheckKey(key) is null, "The registry key should be trusted");
+                var keySec = key.GetAccessControl();
+                Debug.Assert(keySec.AreAccessRulesProtected, "The registry key should have a protected DACL");
+                var keyRules = keySec.GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier))
+                    .Cast<System.Security.AccessControl.RegistryAccessRule>().ToList();
+                Debug.Assert(keyRules.Where(r => r.IdentityReference.Equals(usersSid))
+                        .All(r => (r.RegistryRights & ~(System.Security.AccessControl.RegistryRights.ReadKey)) == 0),
+                    "Users should only read the registry key");
+                Debug.Assert(keyRules.All(r => r.IdentityReference.Equals(usersSid) || r.IdentityReference.Equals(systemSid) || r.IdentityReference.Equals(adminsSid)),
+                    "Only SYSTEM, Administrators and Users should be in the DACL of the registry key");
+            }
+
+            // The next start uses the stored folder again, also while the old folder is still held.
+            var second = DataFolderCoordinator.Prepare(testKey, aclBase, sleep: _ => { });
+            Debug.Assert(second.Folder == relocated.Folder && !second.Relocated && second.Warning is null, "The next start should use the same new folder");
+        }
+
+        // A name that exists already is never used: the service picks another random name.
+        {
+            var taken = Enumerable.Repeat((byte)0xAB, 16).ToArray();
+            var fresh = Enumerable.Repeat((byte)0xCD, 16).ToArray();
+            var takenFolder = ParentalControl.Domain.DataFolder.DataFolderLocation.FallbackFolder(aclBase, taken);
+            Directory.CreateDirectory(takenFolder);
+            File.WriteAllText(Path.Combine(takenFolder, "data.db"), "planted");
+            testKey.WriteLocation(@"C:\Windows"); // a value that is not accepted: the service never uses it
+            var names = new Queue<byte[]>(new[] { taken, fresh });
+            var collision = DataFolderCoordinator.Prepare(testKey, aclBase, random: () => names.Dequeue(), sleep: _ => { });
+            Debug.Assert(collision.Folder == ParentalControl.Domain.DataFolder.DataFolderLocation.FallbackFolder(aclBase, fresh),
+                "An existing name should give the next random name: " + collision.Folder);
+            Debug.Assert(File.ReadAllText(Path.Combine(takenFolder, "data.db")) == "planted", "The existing folder should not change");
+            AssertSecuredRoot(collision.Folder!, "Second random folder");
+        }
+
+        // No folder can be made (the parent folder does not exist): the result is a lockdown, not an exception.
+        {
+            var missingRoot = Path.Combine(aclBase, "missing", "deeper");
+            var lockdownKey = new DataFolderRegistry(testKey.KeyPath + "-lockdown");
+            try
+            {
+                var lockdown = DataFolderCoordinator.Prepare(lockdownKey, missingRoot, sleep: _ => { });
+                Debug.Assert(lockdown.IsLockdown && lockdown.Error is not null, "No usable folder should give a lockdown");
+                Debug.Assert(!Directory.Exists(missingRoot), "The lockdown should not create a folder");
+            }
+            finally { lockdownKey.DeleteKey(); }
+        }
+
+        // The lockdown spares a session of an administrator (the UAC-filtered token has Administrators as deny-only).
+        using (var me = System.Security.Principal.WindowsIdentity.GetCurrent())
+            Debug.Assert(SessionAdminCheck.ForToken(me.Token) == ParentalControl.Domain.DataFolder.SessionAdminStatus.Administrator,
+                "The token of the elevated test run should count as an administrator");
+
+        var plantedResult = DataFolderGuard.Secure(aclRoot);
+        Debug.Assert(plantedResult.QuarantinedTo is { } moved && Directory.Exists(moved) && Path.GetFileName(moved).StartsWith("ParentalControl.untrusted-"),
+            "The untrusted folder should be moved to ParentalControl.untrusted-<guid>");
+        Debug.Assert(File.ReadAllText(Path.Combine(plantedResult.QuarantinedTo!, "data.db")) == "planted", "The moved folder should keep its content");
+        Debug.Assert(plantedResult.QuarantineReason!.Contains(usersSid.Value), "The reason should name the account with write rights: " + plantedResult.QuarantineReason);
+        AssertSecuredRoot(aclRoot, "Planted folder");
+        Debug.Assert(!File.Exists(Path.Combine(aclRoot, "data.db")), "The service should start with a new, empty folder");
+        AssertSecuredRoot(plantedResult.QuarantinedTo!, "Moved folder");
+
+        // 4. A missing folder is created with its final rules.
+        Directory.Delete(aclRoot, true);
+        Debug.Assert(DataFolderGuard.Secure(aclRoot).Repairs.Count == 0, "A new folder needs no repair");
+        AssertSecuredRoot(aclRoot, "New folder");
+
+        // 5. CB1 b, the fast path: the last start secured this folder and its rules did not change, so no walk runs.
+        Directory.CreateDirectory(Path.Combine(aclRoot, "captures", "1"));
+        File.WriteAllText(Path.Combine(aclRoot, "data.db"), "db");
+        File.WriteAllText(Path.Combine(aclRoot, "captures", "1", "a.jpg"), "jpg");
+        var walkedOnce = DataFolderGuard.Secure(aclRoot);
+        Debug.Assert(walkedOnce.Walked, "A start without a last secured folder should walk");
+        var fast = DataFolderGuard.Secure(aclRoot, new ParentalControl.Domain.DataFolder.WalkBudget(TimeSpan.FromHours(1), maxItems: 0), lastSecuredFolder: aclRoot);
+        Debug.Assert(!fast.Walked && fast.QuarantinedTo is null && fast.Repairs.Count == 0, "The fast path should skip the walk (a budget of 0 items would stop a walk)");
+        var otherFolder = DataFolderGuard.Secure(aclRoot, lastSecuredFolder: aclRoot + "-0123456789abcdef0123456789abcdef");
+        Debug.Assert(otherFolder.Walked, "The fast path is only for the folder that the last start secured");
+        SetSddl(new DirectoryInfo(aclRoot), trustedWithUsersRead);
+        var changedRules = DataFolderGuard.Secure(aclRoot, lastSecuredFolder: aclRoot);
+        Debug.Assert(changedRules.Walked, "Changed rules of the folder should give a walk");
+        AssertSecuredRoot(aclRoot, "After the walk of changed rules");
+        Debug.Assert(TestNative.CreateHardLinkW(Path.Combine(aclOutside, "db-link"), Path.Combine(aclRoot, "data.db"), IntPtr.Zero), "The test hard link to data.db should be created");
+        Debug.Assert(DataFolderGuard.Secure(aclRoot, lastSecuredFolder: aclRoot).Walked, "A data.db with two names should give a walk");
+        Debug.Assert(TestNative.LinkCount(Path.Combine(aclRoot, "data.db")) == 1, "The walk should replace the hard-linked data.db");
+
+        // 6. CB1 c, the walk time limit: the step stops the walk and never makes a new folder because of it.
+        for (var i = 0; i < 20; i++)
+            File.WriteAllText(Path.Combine(aclRoot, "captures", "1", $"flood{i}.jpg"), "x");
+        var timedOutThrown = false;
+        try { DataFolderGuard.Secure(aclRoot, new ParentalControl.Domain.DataFolder.WalkBudget(TimeSpan.FromHours(1), maxItems: 5)); }
+        catch (DataFolderWalkTimeoutException) { timedOutThrown = true; }
+        Debug.Assert(timedOutThrown, "A walk over the item budget should stop with a time-limit error");
+        var walkKey = new DataFolderRegistry(testKey.KeyPath + "-walk");
+        var foldersBefore = Directory.GetDirectories(aclBase).OrderBy(d => d).ToList();
+        try
+        {
+            var limited = DataFolderCoordinator.Prepare(walkKey, aclBase, sleep: _ => { },
+                budget: new ParentalControl.Domain.DataFolder.WalkBudget(TimeSpan.FromHours(1), maxItems: 5));
+            Debug.Assert(!limited.IsLockdown && !limited.Relocated && string.Equals(limited.Folder, aclRoot, StringComparison.OrdinalIgnoreCase),
+                "A slow walk of a trusted folder should keep the folder: " + limited.Folder + " " + limited.Error);
+            Debug.Assert(limited.Warning is not null && limited.Warning.Contains("time limit"), "The result should report the time limit as a warning: " + limited.Warning);
+            Debug.Assert(File.Exists(Path.Combine(aclRoot, "data.db")), "The database should stay");
+            Debug.Assert(Directory.GetDirectories(aclBase).OrderBy(d => d).SequenceEqual(foldersBefore), "A slow walk should not make a new folder");
+        }
+        finally { walkKey.DeleteKey(); }
+
+        // 7. S1 of the second review: a file (here a hard link to a file outside) in the place of the data folder is only
+        // renamed. The service must not write an owner or a DACL on it, because that would change the other file too.
+        Directory.Delete(aclRoot, true);
+        var outsideFile = Path.Combine(aclOutside, "system-file.txt");
+        File.WriteAllText(outsideFile, "system");
+        const string outsideFileSddl = "O:BAD:PAI(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)";
+        SetSddl(new FileInfo(outsideFile), outsideFileSddl);
+        string SddlOf(string path) => new FileInfo(path).GetAccessControl().GetSecurityDescriptorSddlForm(
+            System.Security.AccessControl.AccessControlSections.Owner | System.Security.AccessControl.AccessControlSections.Access);
+        var outsideBefore = SddlOf(outsideFile);
+        Debug.Assert(TestNative.CreateHardLinkW(aclRoot, outsideFile, IntPtr.Zero), "The test hard link in the place of the data folder should be created");
+        var fileResult = DataFolderGuard.Secure(aclRoot);
+        Debug.Assert(fileResult.QuarantinedTo is { } movedFile && File.Exists(movedFile), "The file should be renamed to ParentalControl.untrusted-<guid>");
+        Debug.Assert(SddlOf(outsideFile) == outsideBefore, $"The rules of the other name should not change: {outsideBefore} -> {SddlOf(outsideFile)}");
+        Debug.Assert(File.ReadAllText(outsideFile) == "system", "The other file should keep its content");
+        AssertSecuredRoot(aclRoot, "Folder after a file in its place");
+        File.Delete(fileResult.QuarantinedTo!);
+    }
+    finally
+    {
+        try { Directory.Delete(aclRoot); } catch { } // a junction: delete the link only
+        try { Directory.Delete(aclBase, true); } catch { }
+        try { testKey.DeleteKey(); } catch { }
+    }
+}
+Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
+
+// Admin gate over HTTP (require-admin-sign-in, group 4): the real routes on a free local port.
+{
+    var gateLogger = new Serilog.LoggerConfiguration().CreateLogger();
+    var gateTelegram = new TelegramBotService(gateLogger);
+    var gateTracker = new ParentalControl.Service.SessionTracker(gateLogger);
+    var gateHistory = new ForegroundHistory();
+    var webHost = new ParentalControl.Service.Web.WebServerHost(gateTracker, gateTelegram, gateLogger, gateHistory,
+        new ParentalControl.Service.CategoryEnforcer(gateTracker, gateHistory, gateTelegram, gateLogger));
+    var webBuilder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder();
+    Microsoft.AspNetCore.Hosting.HostingAbstractionsWebHostBuilderExtensions.UseUrls(webBuilder.WebHost, "http://127.0.0.1:0");
+    var webApp = webBuilder.Build();
+    webHost.ConfigureApp(webApp);
+
+    // Deny by default (D4): each route is a child-facing route, /admin, or classified as Admin, Login or Logout.
+    var routeTemplates = ((Microsoft.AspNetCore.Routing.IEndpointRouteBuilder)webApp).DataSources
+        .SelectMany(d => d.Endpoints).OfType<Microsoft.AspNetCore.Routing.RouteEndpoint>()
+        .Select(e => e.RoutePattern.RawText ?? "").ToList();
+    Debug.Assert(routeTemplates.Count > 30, "The routes should be mapped");
+    foreach (var template in routeTemplates)
+    {
+        var isOpen = template is "/" or "/request" or "/api/request" or "/admin" || template.StartsWith("/api/agent/", StringComparison.Ordinal);
+        Debug.Assert(isOpen || AdminRoutePolicy.Classify(template) != AdminRouteClass.Open, $"Route {template} is neither a child route nor behind the admin gate");
+    }
+
+    await webApp.StartAsync();
+    var baseUrl = webApp.Urls.First().TrimEnd('/');
+    using var http = new HttpClient(new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false });
+
+    async Task<HttpResponseMessage> Send(HttpMethod method, string path, string? cookie = null, string? origin = null, HttpContent? content = null)
+    {
+        var request = new HttpRequestMessage(method, baseUrl + path) { Content = content };
+        if (cookie != null) request.Headers.Add("Cookie", "pc_admin_session=" + cookie);
+        if (origin != null) request.Headers.Add("Origin", origin);
+        return await http.SendAsync(request);
+    }
+    HttpContent Json(string json) => new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+    HttpContent CodeForm(string code) => new FormUrlEncodedContent(new Dictionary<string, string> { ["code"] = code });
+    string? CookieOf(HttpResponseMessage response) =>
+        response.Headers.TryGetValues("Set-Cookie", out var values)
+            ? values.Select(v => v.Split(';')[0]).Where(v => v.StartsWith("pc_admin_session=") && v.Length > "pc_admin_session=".Length)
+                    .Select(v => v["pc_admin_session=".Length..]).FirstOrDefault()
+            : null;
+    int BonusToday() => UsageRepository.GetUsage(user.Id, DateOnly.FromDateTime(DateTime.Now))?.BonusMinutes ?? 0;
+    var grantBody = $$"""{"userId":{{user.Id}},"minutes":30}""";
+
+    try
+    {
+        // Before the setup: setup text, no form, the login refuses each code, admin routes give 401.
+        SettingsRepository.Set(SettingsRepository.KeyTotpEnabled, "false");
+        var setupPage = await (await Send(HttpMethod.Get, "/admin")).Content.ReadAsStringAsync();
+        Debug.Assert(setupPage.Contains("Web-Verwaltung ist gesperrt") && !setupPage.Contains("<form"), "/admin should show the setup text and no form before the setup");
+        foreach (var anyCode in new[] { "000000", "" })
+        {
+            var notSetUp = await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(anyCode));
+            Debug.Assert((int)notSetUp.StatusCode == 401 && CookieOf(notSetUp) is null, "The login should refuse each code before the setup");
+        }
+        var bonusBefore = BonusToday();
+        Debug.Assert((int)(await Send(HttpMethod.Post, "/api/admin/grant", content: Json(grantBody))).StatusCode == 401, "Grant without a session should give 401");
+        foreach (var variant in new[] { "//api/admin/grant", "/api//admin/grant", "/api/admin/grant/", "/API/ADMIN/GRANT", "/api/admin/%67rant", "/api/admin/unknown" })
+        {
+            var status = (int)(await Send(HttpMethod.Post, variant, content: Json(grantBody))).StatusCode;
+            Debug.Assert(status == 401 || status == 404, $"Path variant {variant} should give 401 or 404, not {status}");
+        }
+        Debug.Assert(BonusToday() == bonusBefore, "Bonus Minutes should not change without a session");
+
+        // Child-facing routes stay open.
+        var requestStatus = (int)(await Send(HttpMethod.Get, "/request")).StatusCode;
+        Debug.Assert(requestStatus != 401 && requestStatus != 403, "/request should work without a session");
+        var agentStatus = (int)(await Send(HttpMethod.Get, "/api/agent/status?user=TestBrother")).StatusCode;
+        Debug.Assert(agentStatus == 200, "/api/agent/status should work without a session");
+
+        // Setup, then login with a valid code one time only.
+        var gateSecret = TotpService.GenerateSecret();
+        TotpSecret.TryDecode(gateSecret, out var gateKey);
+        var step = Totp.StepAt(DateTimeOffset.UtcNow);
+        AdminAccessRepository.CompleteSetup(gateSecret, step - 2, DateTimeOffset.UtcNow);
+        var loginPage = await (await Send(HttpMethod.Get, "/admin")).Content.ReadAsStringAsync();
+        Debug.Assert(loginPage.Contains("action=\"/api/admin/login\""), "/admin should show the login form after the setup");
+        string WrongCode()
+        {
+            var now = Totp.StepAt(DateTimeOffset.UtcNow);
+            var valid = Enumerable.Range(-2, 5).Select(d => Totp.ComputeCode(gateKey, now + d)).ToHashSet();
+            return Enumerable.Range(0, 1000).Select(i => i.ToString("D6")).First(c => !valid.Contains(c));
+        }
+        string CurrentCode() => Totp.ComputeCode(gateKey, Totp.StepAt(DateTimeOffset.UtcNow));
+
+        var code = CurrentCode();
+        var login = await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(code));
+        var cookie = CookieOf(login);
+        Debug.Assert((int)login.StatusCode == 302 && cookie != null, "A valid code should give an Admin Session");
+        Debug.Assert(login.Headers.GetValues("Set-Cookie").All(v => !v.Contains("expires=", StringComparison.OrdinalIgnoreCase) && !v.Contains("max-age", StringComparison.OrdinalIgnoreCase)),
+            "The admin cookie should be a session cookie (no Expires)");
+        var replay = await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(code));
+        Debug.Assert((int)replay.StatusCode == 401 && CookieOf(replay) is null, "The same code a second time should fail");
+        Debug.Assert((int)(await Send(HttpMethod.Post, "/api/admin/login", content: Json("{}"))).StatusCode == 401, "A JSON login without a code should fail, not crash");
+
+        var settings = await Send(HttpMethod.Get, "/api/admin/settings", cookie);
+        Debug.Assert((int)settings.StatusCode == 200, "A valid session should read the settings");
+        Debug.Assert(!(await settings.Content.ReadAsStringAsync()).Contains(gateSecret), "No route should show the secret");
+        Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/settings")).StatusCode == 401, "No cookie should give 401");
+        Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/settings", "0123456789ABCDEF")).StatusCode == 401, "An unknown token should give 401");
+
+        // Origin check.
+        var foreign = await Send(HttpMethod.Post, "/api/admin/grant", cookie, "http://localhost:8000", Json(grantBody));
+        Debug.Assert((int)foreign.StatusCode == 403 && BonusToday() == bonusBefore, "A POST from another origin should give 403 and change nothing");
+        var sameOrigin = await Send(HttpMethod.Post, "/api/admin/settings", cookie, baseUrl, Json("{}"));
+        Debug.Assert((int)sameOrigin.StatusCode == 200, "A POST from the same origin should work");
+        Debug.Assert((int)(await Send(HttpMethod.Post, "/api/admin/login", origin: "http://localhost:8000", content: CodeForm(WrongCode()))).StatusCode == 403, "A login from another origin should give 403");
+
+        // S4: a login and an Admin Session from a process of a Restricted User on this PC are refused.
+        // The test process is the client; for this check its own account becomes a Restricted User.
+        var selfSid = System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value;
+        Debug.Assert(TcpConnectionOwner.ReadProcess(Environment.ProcessId).UserSid == selfSid, "The owner lookup should read the user of this process");
+        UserRepository.Upsert(selfSid, "SelfAsChild", true);
+        try
+        {
+            AdminAccessRepository.SetLastUsedStep(Totp.StepAt(DateTimeOffset.UtcNow) - 2);
+            var failuresBefore = AdminAccessRepository.GetRecentFailures(DateTimeOffset.UtcNow).Count;
+            var childLogin = await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(CurrentCode()));
+            Debug.Assert((int)childLogin.StatusCode == 403 && CookieOf(childLogin) is null, "A login from a process of a Restricted User should give 403 and no session");
+            Debug.Assert((await childLogin.Content.ReadAsStringAsync()).Contains("Windows-Konto"), "The page should tell the parent to use another account or device");
+            Debug.Assert(AdminAccessRepository.GetRecentFailures(DateTimeOffset.UtcNow).Count == failuresBefore, "A refused client should not count as a failed login");
+            Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/settings", cookie)).StatusCode == 401, "An Admin Session used from a process of a Restricted User should give 401");
+            Debug.Assert((int)(await Send(HttpMethod.Get, "/admin", cookie)).StatusCode == 403, "/admin should refuse a process of a Restricted User");
+        }
+        finally
+        {
+            UserRepository.DeleteBySid(selfSid);
+        }
+        Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/settings", cookie)).StatusCode == 200, "The session should work again from a process of the parent");
+
+        // Logout is a POST and ends the session.
+        Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/logout", cookie)).StatusCode == 405, "GET logout should give 405");
+        Debug.Assert((int)(await Send(HttpMethod.Post, "/api/admin/logout", cookie)).StatusCode == 302, "POST logout should redirect");
+        Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/settings", cookie)).StatusCode == 401, "The old cookie should give 401 after the logout");
+
+        // A new session epoch ("Sign out all web sessions") and an epoch that is not a number end the session.
+        AdminAccessRepository.SetLastUsedStep(Totp.StepAt(DateTimeOffset.UtcNow) - 2);
+        var cookie2 = CookieOf(await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(CurrentCode())));
+        Debug.Assert(cookie2 != null && (int)(await Send(HttpMethod.Get, "/api/admin/settings", cookie2)).StatusCode == 200, "A second login should work");
+        AdminAccessRepository.SignOutAllSessions();
+        Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/settings", cookie2)).StatusCode == 401, "A new epoch should end all sessions");
+
+        // Login limit: 10 wrong codes from this PC block the 11th code, also a valid one.
+        AdminAccessRepository.DeleteAllFailures();
+        AdminAccessRepository.SetLastUsedStep(Totp.StepAt(DateTimeOffset.UtcNow) - 2);
+        for (var i = 0; i < LoginThrottle.MaxPerSource; i++)
+            Debug.Assert((int)(await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(WrongCode()))).StatusCode == 401, "A wrong code should give 401");
+        var blocked = await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(CurrentCode()));
+        Debug.Assert((int)blocked.StatusCode == 429 && CookieOf(blocked) is null, "The 11th code should be refused without a check");
+        Debug.Assert((await blocked.Content.ReadAsStringAsync()).Contains("Zu viele falsche Codes"), "The page should show the block message");
+        Debug.Assert(AdminAccessRepository.GetRecentFailures(DateTimeOffset.UtcNow).Count == LoginThrottle.MaxPerSource, "A refused login should not count as a failure");
+        // The counts are in SQLite: a new service instance (a restart) still blocks this PC, but not a LAN source.
+        var restarted = new ParentalControl.Service.Web.AdminAccessService(gateTelegram, gateLogger);
+        Debug.Assert(restarted.TryLogin(CurrentCode(), System.Net.IPAddress.Loopback).Outcome == ParentalControl.Service.Web.AdminLoginOutcome.Blocked, "The block should survive a restart");
+        Debug.Assert(restarted.TryLogin(CurrentCode(), System.Net.IPAddress.Parse("192.0.2.10")).Outcome == ParentalControl.Service.Web.AdminLoginOutcome.Success, "A LAN source should still sign in");
+        // "Clear login limit" in the Admin app.
+        AdminAccessRepository.DeleteAllFailures();
+        AdminAccessRepository.SetLastUsedStep(Totp.StepAt(DateTimeOffset.UtcNow) - 2);
+        Debug.Assert(CookieOf(await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(CurrentCode()))) != null, "After the limit is cleared, this PC should sign in");
+
+        // An install that turns TOTP off again is locked at once.
+        SettingsRepository.Set(SettingsRepository.KeyTotpEnabled, "false");
+        Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/settings", cookie2)).StatusCode == 401, "No session is valid while the sign-in is not set up");
+    }
+    finally
+    {
+        await webApp.StopAsync();
+        SettingsRepository.Set(SettingsRepository.KeyTotpEnabled, "false");
+        SettingsRepository.Set(SettingsRepository.KeyTotpSecret, "");
+        AdminAccessRepository.DeleteAllFailures();
+    }
+}
+Console.WriteLine("✅ Admin Gate over HTTP Passed.");
+
+// Second security review of require-admin-sign-in: the start gate (CB2, S5), the bind retry (S3) and the capture quota (CB1 d).
+{
+    var svcLogger = new Serilog.LoggerConfiguration().CreateLogger();
+    var svcTelegram = new TelegramBotService(svcLogger);
+    var svcTracker = new ParentalControl.Service.SessionTracker(svcLogger);
+    var svcHistory = new ForegroundHistory();
+    var svcEnforcer = new ParentalControl.Service.CategoryEnforcer(svcTracker, svcHistory, svcTelegram, svcLogger);
+    var noEvents = new List<int>();
+    var fakePrep = new DataFolderPreparation(tempDir, tempDir, null, null, null, null, null);
+
+    // CB2: the log file does not open after the folder step (for example a full disk). The gate stays closed.
+    var failedGate = new ParentalControl.Service.ServiceStartup();
+    var logError = failedGate.TryOpen(fakePrep, _ => throw new IOException("There is not enough space on the disk."));
+    Debug.Assert(logError is not null && logError.Contains("not enough space") && !failedGate.IsReady, "A failed log should give an error and a closed gate: " + logError);
+
+    // CB2, S5: an open that fails after the folder step gives the lockdown (with the lock). A retry whose database
+    // still fails stays in the lockdown. Only a full success opens the gate, in this process.
+    var gate = new ParentalControl.Service.ServiceStartup();
+    var opens = 0;
+    var recordedFailures = 0;
+    var lockCalls = 0;
+    var worker = new ParentalControl.Service.StartupWorker(gate, svcTracker, svcTelegram, svcLogger,
+        new Microsoft.Extensions.Hosting.Internal.ApplicationLifetime(
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<Microsoft.Extensions.Hosting.Internal.ApplicationLifetime>.Instance))
+    {
+        PrepareStep = _ => fakePrep,
+        OpenStep = _ => ++opens < 3 ? "SqliteException: SQLite Error 13: 'database or disk is full'." : null,
+        LockStep = () => { Interlocked.Increment(ref lockCalls); return Array.Empty<int>(); },
+        RecordOpenFailure = (_, _, _) => recordedFailures++,
+        WriteEvent = (_, id, _) => { lock (noEvents) noEvents.Add(id); },
+        LockInterval = TimeSpan.FromMilliseconds(50),
+        RetryInterval = TimeSpan.FromMilliseconds(200),
+        RunReadyActions = false,
+        ReadSetupLockPending = () => false,
+        ClearSetupLockPending = () => true,
+        RecordStartRecovered = _ => { },
+        WebBindWait = TimeSpan.Zero,
+    };
+    using (var workerCts = new CancellationTokenSource(TimeSpan.FromSeconds(60)))
+    {
+        await worker.StartAsync(workerCts.Token);
+        var sawLockdown = false;
+        var waited = Stopwatch.StartNew();
+        while (!gate.IsReady && waited.Elapsed < TimeSpan.FromSeconds(20))
+        {
+            if (worker.Phase == ParentalControl.Domain.DataFolder.StartupPhase.Lockdown) sawLockdown = true;
+            await Task.Delay(10);
+        }
+        Debug.Assert(sawLockdown, "A failed open of the database should give the lockdown");
+        Debug.Assert(gate.IsReady && worker.Phase == ParentalControl.Domain.DataFolder.StartupPhase.Ready, "The gate should open after a full success");
+        Debug.Assert(opens == 3 && recordedFailures == 2, $"Each failed open should be recorded and tried again (opens {opens}, records {recordedFailures})");
+        Debug.Assert(lockCalls > 0, "The lockdown should lock the sessions");
+        lock (noEvents) Debug.Assert(noEvents.Contains(1007), "The end of the lockdown should be written to the event log");
+        await worker.StopAsync(CancellationToken.None);
+    }
+
+    var appLifetime = new Microsoft.Extensions.Hosting.Internal.ApplicationLifetime(
+        Microsoft.Extensions.Logging.Abstractions.NullLogger<Microsoft.Extensions.Hosting.Internal.ApplicationLifetime>.Instance);
+    var relocatedPrep = new DataFolderPreparation(tempDir, tempDir + "-old", null, null, "The process cannot access the file", null, null);
+    async Task<ParentalControl.Service.StartupWorker> RunWorkerUntilReady(ParentalControl.Service.ServiceStartup startGate,
+        Func<bool, DataFolderPreparation> prepare, Func<DataFolderPreparation, string?> open, Action writeLock,
+        Func<bool> readPending, Func<bool> clearPending, Action<DataFolderPreparation> recovered, Action<int> onLock)
+    {
+        var w = new ParentalControl.Service.StartupWorker(startGate, svcTracker, svcTelegram, svcLogger, appLifetime)
+        {
+            PrepareStep = prepare,
+            OpenStep = open,
+            LockStep = () => { onLock(1); return Array.Empty<int>(); },
+            RecordOpenFailure = (_, _, _) => { },
+            RecordStartRecovered = recovered,
+            WriteEvent = (_, _, _) => { },
+            WriteSetupLockSetting = writeLock,
+            ReadSetupLockPending = readPending,
+            ClearSetupLockPending = clearPending,
+            LockInterval = TimeSpan.FromMilliseconds(50),
+            RetryInterval = TimeSpan.FromMilliseconds(200),
+            RunReadyActions = false,
+            WebBindWait = TimeSpan.Zero,
+        };
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await w.StartAsync(cts.Token);
+        var waitReady = Stopwatch.StartNew();
+        while (!startGate.IsReady && waitReady.Elapsed < TimeSpan.FromSeconds(20))
+            await Task.Delay(10);
+        await w.StopAsync(CancellationToken.None);
+        return w;
+    }
+
+    // Third review, SF1: a relocation at the first try, then a failed open (the lockdown), then a retry without a
+    // relocation. The setup lock must be set in the database that the retry opens, and the registry value cleared after it.
+    {
+        SettingsRepository.Set(SettingsRepository.KeyDataFolderSetupLock, string.Empty);
+        var sf1Gate = new ParentalControl.Service.ServiceStartup();
+        var prepares = 0;
+        var sf1Opens = 0;
+        var cleared = 0;
+        await RunWorkerUntilReady(sf1Gate,
+            prepare: _ => ++prepares == 1 ? relocatedPrep : fakePrep,
+            open: _ => ++sf1Opens == 1 ? "SqliteException: SQLite Error 13: 'database or disk is full'." : null,
+            writeLock: () => SettingsRepository.Set(SettingsRepository.KeyDataFolderSetupLock, DateTimeOffset.UtcNow.ToString("O")),
+            readPending: () => false, // the registry write failed too: only the flags of the run remain
+            clearPending: () => { cleared++; return true; },
+            recovered: _ => { }, onLock: _ => { });
+        Debug.Assert(sf1Gate.IsReady && prepares == 2 && sf1Opens == 2, $"The retry should open the database (prepares {prepares}, opens {sf1Opens})");
+        Debug.Assert(!string.IsNullOrEmpty(SettingsRepository.Get(SettingsRepository.KeyDataFolderSetupLock)),
+            "SF1: the setup lock should be set after a relocation, an open failure and a retry without a relocation");
+        Debug.Assert(cleared == 1, "The registry value should be cleared only after the database write");
+
+        // A run without a move, but with the registry value of an earlier run (a power cut or an exit), sets the lock too.
+        SettingsRepository.Set(SettingsRepository.KeyDataFolderSetupLock, string.Empty);
+        var sf1bGate = new ParentalControl.Service.ServiceStartup();
+        await RunWorkerUntilReady(sf1bGate, _ => fakePrep, _ => null,
+            () => SettingsRepository.Set(SettingsRepository.KeyDataFolderSetupLock, DateTimeOffset.UtcNow.ToString("O")),
+            readPending: () => true, clearPending: () => true, recovered: _ => { }, onLock: _ => { });
+        Debug.Assert(!string.IsNullOrEmpty(SettingsRepository.Get(SettingsRepository.KeyDataFolderSetupLock)),
+            "SF1: the registry value should set the setup lock after a restart");
+        SettingsRepository.Set(SettingsRepository.KeyDataFolderSetupLock, string.Empty);
+        Console.WriteLine("✅ Setup Lock across Retries and Restarts Passed.");
+    }
+
+    // Third review, SF2: the write of the setup lock fails before the gate (a full disk). No exit: the lockdown locks,
+    // and a retry of the start actions only (no second open of the database) opens the gate.
+    {
+        var exitCodeBefore = Environment.ExitCode;
+        var sf2Gate = new ParentalControl.Service.ServiceStartup();
+        var writes = 0;
+        var sf2Opens = 0;
+        var sf2Locks = 0;
+        var recoveredCount = 0;
+        var cleared = 0;
+        await RunWorkerUntilReady(sf2Gate, _ => relocatedPrep, _ => { sf2Opens++; return null; },
+            () =>
+            {
+                if (++writes == 1) throw new IOException("There is not enough space on the disk.");
+                SettingsRepository.Set(SettingsRepository.KeyDataFolderSetupLock, DateTimeOffset.UtcNow.ToString("O"));
+            },
+            readPending: () => true, clearPending: () => { cleared++; return true; },
+            recovered: _ => recoveredCount++, onLock: _ => Interlocked.Increment(ref sf2Locks));
+        Debug.Assert(sf2Gate.IsReady, "SF2: a retry should open the gate after a failed start action");
+        Debug.Assert(writes == 2 && sf2Opens == 1, $"SF2: only the start actions should run again, not the open (writes {writes}, opens {sf2Opens})");
+        Debug.Assert(sf2Locks > 0, "SF2: the lockdown should lock while the start action fails");
+        Debug.Assert(recoveredCount == 1, "SF2: the Secured state should be written again after the retry");
+        Debug.Assert(cleared == 1, "SF2: the registry value should be cleared only after the successful write");
+        Debug.Assert(Environment.ExitCode == exitCodeBefore && !appLifetime.ApplicationStopping.IsCancellationRequested,
+            "SF2: an error before the gate must not end the process");
+        SettingsRepository.Set(SettingsRepository.KeyDataFolderSetupLock, string.Empty);
+        Console.WriteLine("✅ Lockdown after a Failed Start Action Passed.");
+    }
+
+    // N-e: a failed read of the session user is not "no user".
+    Debug.Assert(!SessionManager.TryGetSessionUsername(65000, out _), "N-e: an unknown session should give a failure");
+    Debug.Assert(SessionManager.TryGetSessionUsername(0, out var session0User) && session0User is null, "N-e: session 0 should have no user: " + session0User);
+
+    // N-f: the web server starts again when it ends without an error while the service runs.
+    {
+        var nfHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, svcHistory, svcEnforcer)
+        {
+            RetryDelay = _ => TimeSpan.FromMilliseconds(20),
+        };
+        using var nfCts = new CancellationTokenSource();
+        var runs = 0;
+        var nfRun = nfHost.RunWithRetryAsync(async ct => { if (Interlocked.Increment(ref runs) >= 3) await Task.Delay(Timeout.Infinite, ct); }, nfCts.Token);
+        var waitRuns = Stopwatch.StartNew();
+        while (Volatile.Read(ref runs) < 3 && waitRuns.Elapsed < TimeSpan.FromSeconds(10))
+            await Task.Delay(10);
+        Debug.Assert(Volatile.Read(ref runs) == 3 && !nfRun.IsCompleted, "N-f: an end without an error should start the web server again: " + runs);
+        nfCts.Cancel();
+        await nfRun;
+        Debug.Assert(nfRun.IsCompletedSuccessfully, "N-f: the stop of the service should end the loop");
+    }
+
+    // SF3: after the start gate opened, a program on the port gives one Telegram alert, not one per retry. (A host
+    // without a gate counts as a host whose gate is open.)
+    {
+        var alertHolder = new System.Net.Sockets.TcpListener(System.Net.IPAddress.IPv6Any, 0);
+        alertHolder.Server.DualMode = true;
+        alertHolder.ExclusiveAddressUse = true;
+        alertHolder.Start();
+        var alerts = 0;
+        var alertHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, svcHistory, svcEnforcer)
+        {
+            Port = ((System.Net.IPEndPoint)alertHolder.LocalEndpoint).Port,
+            RetryDelay = _ => TimeSpan.FromMilliseconds(100),
+            ServicePid = -1, // the holder is this test process
+            RecordPortBlocked = _ => { },
+            SendPortAlert = _ => { Interlocked.Increment(ref alerts); return Task.CompletedTask; },
+        };
+        using var alertCts = new CancellationTokenSource();
+        var alertRun = alertHost.RunServerAsync(alertCts.Token);
+        var waitAlert = Stopwatch.StartNew();
+        while (alertHost.FailedStarts < 4 && waitAlert.Elapsed < TimeSpan.FromSeconds(20))
+            await Task.Delay(20);
+        Debug.Assert(alertHost.FailedStarts >= 4 && Volatile.Read(ref alerts) == 1, $"SF3: one alert per squat (fails {alertHost.FailedStarts}, alerts {alerts})");
+        alertCts.Cancel();
+        try { await alertRun; } catch { }
+        alertHolder.Stop();
+    }
+
+    // S3: a program holds the port. The web server tries again and does not stop; after the port is free, it answers.
+    var holder = new System.Net.Sockets.TcpListener(System.Net.IPAddress.IPv6Any, 0);
+    holder.Server.DualMode = true;
+    holder.ExclusiveAddressUse = true;
+    holder.Start();
+    var busyPort = ((System.Net.IPEndPoint)holder.LocalEndpoint).Port;
+    // SF3: the web server of a starting service (closed gate). The listener lookup reads the real TCP table; the own
+    // process id is mapped to another id while the holder (this test process) holds the port, so the host sees a squat.
+    var squatGate = new ParentalControl.Service.ServiceStartup();
+    var holderActive = true;
+    IReadOnlyList<int> lastRealOwners = Array.Empty<int>();
+    var portRecords = new List<string?>();
+    var squatAlerts = 0;
+    var retryHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, svcHistory, svcEnforcer, squatGate)
+    {
+        Port = busyPort,
+        RetryDelay = _ => TimeSpan.FromMilliseconds(200),
+        FindPortOwners = port =>
+        {
+            var real = TcpConnectionOwner.FindListenerPids(port);
+            if (!Volatile.Read(ref holderActive))
+                return real;
+            lastRealOwners = real;
+            return real.Select(pid => pid == Environment.ProcessId ? 42424242 : pid).ToList();
+        },
+        RecordPortBlocked = owner => { lock (portRecords) portRecords.Add(owner); },
+        SendPortAlert = _ => { Interlocked.Increment(ref squatAlerts); return Task.CompletedTask; },
+    };
+    using var webCts = new CancellationTokenSource();
+    var serverRun = retryHost.RunServerAsync(webCts.Token);
+    using var svcHttp = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(5) };
+    try
+    {
+        var waitFail = Stopwatch.StartNew();
+        while (retryHost.FailedStarts < 2 && waitFail.Elapsed < TimeSpan.FromSeconds(20))
+            await Task.Delay(50);
+        Debug.Assert(retryHost.FailedStarts >= 2, "The web server should fail to start while the port is taken: " + retryHost.FailedStarts);
+        Debug.Assert(!serverRun.IsCompleted, "A failed start must not end the web server task");
+        Debug.Assert(lastRealOwners.Contains(Environment.ProcessId), "SF3: the listener table should name the holder: " + string.Join(",", lastRealOwners));
+        Debug.Assert(retryHost.LastPortOwner is { } squatter && squatter.Contains("process 42424242"), "SF3: the owner should be logged: " + retryHost.LastPortOwner);
+        lock (portRecords) Debug.Assert(portRecords.LastOrDefault() is not null, "SF3: the owner should be recorded for the Admin app");
+        Debug.Assert(Volatile.Read(ref squatAlerts) == 0, "SF3: no Telegram alert before the gate opens (no settings yet)");
+        var bindWait = Stopwatch.StartNew();
+        await squatGate.WaitWebBindTriedAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+        Debug.Assert(bindWait.Elapsed < TimeSpan.FromSeconds(2), "SF3: the first bind try should release the data folder step");
+        Volatile.Write(ref holderActive, false);
+        holder.Stop();
+
+        var svcBase = $"http://127.0.0.1:{busyPort}";
+        HttpResponseMessage? first = null;
+        var waitUp = Stopwatch.StartNew();
+        while (first is null && waitUp.Elapsed < TimeSpan.FromSeconds(20))
+        {
+            try { first = await svcHttp.GetAsync(svcBase + "/"); }
+            catch (HttpRequestException) { await Task.Delay(100); }
+            catch (TaskCanceledException) { await Task.Delay(100); }
+        }
+        Debug.Assert(first is not null && (int)first.StatusCode == 503, "SF3: before the gate opens, the web server should answer 503: " + first?.StatusCode);
+        foreach (var path in new[] { "/request", "/api/agent/status?user=TestBrother", "/admin", "/api/admin/settings" })
+            Debug.Assert((int)(await svcHttp.GetAsync(svcBase + path)).StatusCode == 503, "SF3: each route should answer 503 before the gate: " + path);
+        var waitClear = Stopwatch.StartNew();
+        while (waitClear.Elapsed < TimeSpan.FromSeconds(5))
+        {
+            lock (portRecords) if (portRecords.LastOrDefault() is null) break;
+            await Task.Delay(20);
+        }
+        lock (portRecords) Debug.Assert(portRecords.LastOrDefault() is null, "SF3: a successful bind should clear the warning");
+
+        // SF3: the exclusive bind. No other socket can take 127.0.0.1 or [::1] on the port of the web server.
+        foreach (var loopback in new[] { System.Net.IPAddress.Loopback, System.Net.IPAddress.IPv6Loopback })
+        {
+            using var squat = new System.Net.Sockets.Socket(loopback.AddressFamily, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp);
+            var bound = true;
+            try { squat.Bind(new System.Net.IPEndPoint(loopback, busyPort)); }
+            catch (System.Net.Sockets.SocketException) { bound = false; }
+            Debug.Assert(!bound, $"SF3: a program should not bind {loopback}:{busyPort} while the web server listens");
+        }
+
+        squatGate.Open();
+        Debug.Assert((int)(await svcHttp.GetAsync(svcBase + "/")).StatusCode == 302, "After the gate opens, the web server should answer as normal");
+        Debug.Assert(Volatile.Read(ref squatAlerts) == 0, "SF3: no alert for a squat that ended before the gate opened");
+        Console.WriteLine("✅ Web Server Bind Retry Passed.");
+
+        // CB1 d: the capture quota of the unauthenticated capture route.
+        async Task<int> Upload(int bytes)
+        {
+            var request = new HttpRequestMessage(HttpMethod.Post, svcBase + "/api/agent/capture") { Content = new ByteArrayContent(new byte[bytes]) };
+            request.Headers.Add("X-User", user.Username);
+            request.Headers.Add("X-Trigger", "WATCH");
+            return (int)(await svcHttp.SendAsync(request)).StatusCode;
+        }
+        int CaptureFiles()
+        {
+            var dir = Path.Combine(DatabaseManager.CapturesDirectory, user.Id.ToString());
+            return Directory.Exists(dir) ? Directory.GetFiles(dir).Length : 0;
+        }
+        Debug.Assert(await Upload(1000) == 200, "A normal capture should be accepted");
+        var filesBefore = CaptureFiles();
+        Debug.Assert(await Upload((int)ParentalControl.Domain.Captures.CaptureQuota.MaxBytesPerCapture + 1) == 413, "A capture above the size limit should be refused");
+        Debug.Assert(CaptureFiles() == filesBefore, "A refused capture should leave no file");
+        var (filesToday, _) = ScreenCaptureRepository.GetDayTotals(user.Id, DateTime.Today);
+        for (var i = filesToday; i < ParentalControl.Domain.Captures.CaptureQuota.MaxFilesPerDay; i++)
+            ScreenCaptureRepository.Add(new ScreenCaptureRecord { UserId = user.Id, Timestamp = DateTime.Now, FilePath = "quota-test", Width = 1, Height = 1, FileSizeBytes = 1, TriggerType = "WATCH" });
+        Debug.Assert(await Upload(1000) == 429, "A capture above the daily file limit should be refused");
+        Debug.Assert(await Upload(1000) == 429, "A second refusal should also be refused");
+        Debug.Assert(CaptureFiles() == filesBefore, "A refused capture should leave no file");
+        Debug.Assert(ScreenCaptureRepository.GetDayTotals(user.Id, DateTime.Today).Files == ParentalControl.Domain.Captures.CaptureQuota.MaxFilesPerDay,
+            "A refused capture should add no row");
+        Console.WriteLine("✅ Capture Quota Passed.");
+    }
+    finally
+    {
+        try { holder.Stop(); } catch { }
+        webCts.Cancel();
+        try { await serverRun; } catch { }
+    }
+}
+Console.WriteLine("✅ Start Gate & Lockdown after a Failed Open Passed.");
+
+// The owner of a loopback connection (finding S4): the row of the TCP table gives the process of the client end.
+{
+    var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+    listener.Start();
+    try
+    {
+        using var client = new System.Net.Sockets.TcpClient();
+        await client.ConnectAsync(System.Net.IPAddress.Loopback, ((System.Net.IPEndPoint)listener.LocalEndpoint).Port);
+        using var accepted = await listener.AcceptTcpClientAsync();
+        var serverSide = (System.Net.IPEndPoint)accepted.Client.LocalEndPoint!;
+        var clientSide = (System.Net.IPEndPoint)accepted.Client.RemoteEndPoint!;
+        Debug.Assert(TcpConnectionOwner.FindOwnerPid(clientSide, serverSide) == Environment.ProcessId, "The client end should belong to this process");
+        var owner = TcpConnectionOwner.Find(clientSide, serverSide);
+        Debug.Assert(owner is not null && owner.ProcessId == Environment.ProcessId && owner.UserSid == System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value,
+            "The owner should be this process and its user");
+        // N2: the create time of the connection and the start time of the process.
+        var processStart = Process.GetCurrentProcess().StartTime.ToUniversalTime();
+        Debug.Assert(owner!.ProcessStartUtc is { } ps && Math.Abs((ps - processStart).TotalSeconds) < 2, "The start time of this process should be read: " + owner.ProcessStartUtc);
+        Console.WriteLine($"   Connection create time from the TCP table: {(owner.ConnectionCreatedUtc?.ToString("O") ?? "not given")}");
+        if (owner.ConnectionCreatedUtc is { } connCreated)
+            Debug.Assert(connCreated >= processStart.AddSeconds(-2) && connCreated <= DateTime.UtcNow.AddSeconds(2),
+                $"The create time of the connection should be after the process start: {connCreated:O}, process {processStart:O}");
+        Debug.Assert(owner.SessionUserKnown, "The session user of this process should be known");
+        Debug.Assert(LocalClientPolicy.Decide(LoginSource.Local, owner, new HashSet<string>()) == LocalClientDecision.Allow,
+            "The policy should allow this process (an administrator, not a Restricted User): " + LocalClientPolicy.Decide(LoginSource.Local, owner, new HashSet<string>()));
+        Debug.Assert(TcpConnectionOwner.FindOwnerPid(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 1), serverSide) is null, "An unknown connection should have no owner");
+    }
+    finally
+    {
+        listener.Stop();
+    }
+}
+// The service listens with ListenAnyIP: a dual-mode IPv6 socket. A request to 127.0.0.1 then shows
+// ::ffff:127.0.0.1 for both ends, and the client row is in the IPv4 table.
+{
+    var dual = new System.Net.Sockets.TcpListener(System.Net.IPAddress.IPv6Any, 0);
+    dual.Server.DualMode = true;
+    dual.Start();
+    try
+    {
+        var port = ((System.Net.IPEndPoint)dual.LocalEndpoint).Port;
+        foreach (var target in new[] { System.Net.IPAddress.Loopback, System.Net.IPAddress.IPv6Loopback })
+        {
+            using var client = new System.Net.Sockets.TcpClient(target.AddressFamily);
+            await client.ConnectAsync(target, port);
+            using var accepted = await dual.AcceptTcpClientAsync();
+            var serverSide = (System.Net.IPEndPoint)accepted.Client.LocalEndPoint!;
+            var clientSide = (System.Net.IPEndPoint)accepted.Client.RemoteEndPoint!;
+            Debug.Assert(TcpConnectionOwner.FindOwnerPid(clientSide, serverSide) == Environment.ProcessId,
+                $"The owner of a connection to {target} on a dual-mode socket should be this process ({clientSide} -> {serverSide})");
+        }
+    }
+    finally
+    {
+        dual.Stop();
+    }
+}
+Console.WriteLine("✅ Loopback Connection Owner Passed.");
+
 // Cleanup test user
 UserRepository.DeleteBySid(testSid);
 ScheduleRepository.DeleteForUser(user.Id);
@@ -682,4 +1585,36 @@ finally
         }
     }
     catch { }
+}
+
+static class TestNative
+{
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    public static extern bool CreateHardLinkW(string newLink, string existing, IntPtr reserved);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle file, out ByHandleInfo info);
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct ByHandleInfo
+    {
+        public uint Attributes;
+        public uint CreationLow, CreationHigh, AccessLow, AccessHigh, WriteLow, WriteHigh; // FILETIME: 4-byte alignment
+        public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+    }
+
+    /// <summary>A handle to a folder with read and write sharing but without delete sharing, as a process of the child could hold it.</summary>
+    public static Microsoft.Win32.SafeHandles.SafeFileHandle OpenDirectoryWithoutDeleteSharing(string path) =>
+        CreateFileW(path, 0x80 /* FILE_READ_ATTRIBUTES */ | 0x1 /* FILE_LIST_DIRECTORY */, 0x1 | 0x2, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
+
+    public static uint LinkCount(string path)
+    {
+        using var handle = CreateFileW(path, 0x80, 0x7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
+        return GetFileInformationByHandle(handle, out var info) ? info.Links : 0;
+    }
 }

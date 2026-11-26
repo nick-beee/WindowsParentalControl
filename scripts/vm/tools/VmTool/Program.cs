@@ -3,6 +3,7 @@ using System.Security.Principal;
 using ParentalControl.Core.Data;
 using ParentalControl.Core.Models;
 using ParentalControl.Domain.Categories;
+using ParentalControl.Domain.AdminAccess;
 
 var cmd = args.ElementAtOrDefault(0) ?? "";
 var today = DateOnly.FromDateTime(DateTime.Now);
@@ -53,16 +54,36 @@ switch (cmd)
         foreach (var (c, l) in CategoryRepository.GetLimits()) Console.WriteLine($"{c}: {l.WeekdayMinutes?.ToString() ?? "-"}/{l.WeekendMinutes?.ToString() ?? "-"}");
         foreach (var r in AppRuleRepository.GetAllRows()) Console.WriteLine($"rule {r.Rule.Id} {r.Rule.MatchType} {r.Rule.Pattern} -> {r.Rule.Category} {r.Rule.AppLimit} default={r.IsDefault}");
         break;
-    case "totp":
-        if (args[1] == "on" && string.IsNullOrEmpty(SettingsRepository.Get(SettingsRepository.KeyTotpSecret)))
-            SettingsRepository.Set(SettingsRepository.KeyTotpSecret, ParentalControl.Core.Security.TotpService.GenerateSecret());
-        SettingsRepository.Set(SettingsRepository.KeyTotpEnabled, args[1] == "on" ? "true" : "false");
-        Console.WriteLine("totp_enabled=" + SettingsRepository.Get(SettingsRepository.KeyTotpEnabled));
+    case "totp" when args.ElementAtOrDefault(1) == "setup":
+    {
+        // Like a confirmed setup in the Admin app: one transaction, a new session epoch, no login limit.
+        // The saved step is 2 below now, so that `totp code` gives a code that logs in at once.
+        var secret = args.ElementAtOrDefault(2) ?? TestTotpSecret;
+        AdminAccessRepository.CompleteSetup(secret, Totp.StepAt(DateTimeOffset.UtcNow) - 2, DateTimeOffset.UtcNow);
+        Console.WriteLine($"admin sign-in set up, secret={TotpSecret.Normalize(secret)}, epoch={AdminAccessRepository.GetSessionEpoch()}");
         break;
+    }
+    case "totp" when args.ElementAtOrDefault(1) == "code":
+    {
+        // The next code that the login accepts (the replay guard refuses a used step).
+        var secret = SettingsRepository.Get(SettingsRepository.KeyTotpSecret);
+        if (!TotpSecret.TryDecode(secret, out var key)) { Console.Error.WriteLine("no valid secret: run `totp setup` first"); Environment.Exit(1); }
+        var now = Totp.StepAt(DateTimeOffset.UtcNow);
+        var step = Math.Max(now, AdminAccessRepository.GetLastUsedStep() + 1);
+        if (step > now + Totp.AllowedDrift) { Console.Error.WriteLine("all current codes are used: wait 30 s"); Environment.Exit(1); }
+        Console.WriteLine(Totp.ComputeCode(key, step));
+        break;
+    }
     case "msg":
         Console.WriteLine(SettingsRepository.Get(args[1]));
         break;
     default:
-        Console.WriteLine("restrict <user> [min] | usage <user> | set-usage <user> <category> <min> | records | limits | totp on|off | msg <key>");
+        Console.WriteLine("restrict <user> [min] | usage <user> | set-usage <user> <category> <min> | records | limits | totp setup [secret] | totp code | msg <key>");
         break;
+}
+
+partial class Program
+{
+    // A fixed test secret (20 bytes), so that an authenticator app on the Mac can show the same codes.
+    private const string TestTotpSecret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
 }

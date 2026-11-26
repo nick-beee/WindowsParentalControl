@@ -1055,6 +1055,133 @@ public sealed class TelegramBotService
         return success;
     }
 
+    /// <summary>
+    /// Tells the parent that a source or all sources reached the limit on failed admin logins.
+    /// Returns false without a Telegram configuration; the caller then writes the event to the log only.
+    /// Returns true when the message is sent, or when it waits in the Offline Notification Queue.
+    /// </summary>
+    public async Task<bool> SendAdminLoginBlockedAlertAsync(string source, DateTime blockedUntilLocal, bool allSources)
+    {
+        var token = SettingsRepository.Get(SettingsRepository.KeyTelegramBotToken);
+        var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
+        if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
+
+        var payload = new AdminLoginBlockedPayload
+        {
+            MachineName = Environment.MachineName,
+            Source = source,
+            AllSources = allSources,
+            BlockedUntilLocal = blockedUntilLocal
+        };
+        var success = await SendWithRetryAsync(() => SendTextMessageAsync(chatId, BuildAdminLoginBlockedText(payload)));
+        if (!success)
+        {
+            PendingNotificationRepository.Enqueue("ADMIN_LOGIN_BLOCKED", JsonSerializer.Serialize(payload), DateTime.Now);
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Tells the parent one time that the Remote Admin Interface is locked until the setup in the Admin app.
+    /// Returns false without a Telegram configuration. Returns true when the message is sent, or when it waits in the
+    /// Offline Notification Queue because the PC is offline.
+    /// </summary>
+    public async Task<bool> SendAdminSetupNeededNoticeAsync()
+    {
+        var token = SettingsRepository.Get(SettingsRepository.KeyTelegramBotToken);
+        var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
+        if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
+
+        var payload = new AdminSetupNeededPayload { MachineName = Environment.MachineName };
+        var success = await SendWithRetryAsync(() => SendTextMessageAsync(chatId, BuildAdminSetupNeededText(payload)));
+        if (!success)
+        {
+            PendingNotificationRepository.Enqueue("ADMIN_SETUP_NEEDED", JsonSerializer.Serialize(payload), DateTime.Now);
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Tells the parent that the service moved an untrusted data folder away and started with a new database.
+    /// Returns false without a Telegram configuration. Returns true when the message is sent, or when it waits in the
+    /// Offline Notification Queue because the PC is offline.
+    /// </summary>
+    public async Task<bool> SendDataFolderQuarantinedAlertAsync(string movedTo, DateTime whenLocal)
+    {
+        var token = SettingsRepository.Get(SettingsRepository.KeyTelegramBotToken);
+        var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
+        if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
+
+        var payload = new DataFolderQuarantinedPayload { MachineName = Environment.MachineName, MovedTo = movedTo, WhenLocal = whenLocal };
+        var success = await SendWithRetryAsync(() => SendTextMessageAsync(chatId, BuildDataFolderQuarantinedText(payload)));
+        if (!success)
+        {
+            PendingNotificationRepository.Enqueue("DATA_FOLDER_QUARANTINED", JsonSerializer.Serialize(payload), DateTime.Now);
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Tells the parent that the service made a new data folder with a new database, because the old folder was not
+    /// usable (require-admin-sign-in, D14). Returns false without a Telegram configuration. Returns true when the message
+    /// is sent, or when it waits in the Offline Notification Queue because the PC is offline.
+    /// </summary>
+    public async Task<bool> SendDataFolderRelocatedAlertAsync(string from, string to, DateTime whenLocal)
+    {
+        var token = SettingsRepository.Get(SettingsRepository.KeyTelegramBotToken);
+        var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
+        if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
+
+        var payload = new DataFolderRelocatedPayload { MachineName = Environment.MachineName, From = from, To = to, WhenLocal = whenLocal };
+        var success = await SendWithRetryAsync(() => SendTextMessageAsync(chatId, BuildDataFolderRelocatedText(payload)));
+        if (!success)
+        {
+            PendingNotificationRepository.Enqueue("DATA_FOLDER_RELOCATED", JsonSerializer.Serialize(payload), DateTime.Now);
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Tells the parent that another program holds port 5050 of the web server (require-admin-sign-in, third review
+    /// SF3). The owner text comes from an exe (untrusted): it is escaped and sent only as data.
+    /// </summary>
+    public async Task<bool> SendWebPortBlockedAlertAsync(string owner, DateTime whenLocal)
+    {
+        var token = SettingsRepository.Get(SettingsRepository.KeyTelegramBotToken);
+        var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
+        if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
+
+        var payload = new WebPortBlockedPayload { MachineName = Environment.MachineName, Owner = owner, WhenLocal = whenLocal };
+        var success = await SendWithRetryAsync(() => SendTextMessageAsync(chatId, BuildWebPortBlockedText(payload)));
+        if (!success)
+        {
+            PendingNotificationRepository.Enqueue("WEB_PORT_BLOCKED", JsonSerializer.Serialize(payload), DateTime.Now);
+        }
+        return true;
+    }
+
+    private static string BuildWebPortBlockedText(WebPortBlockedPayload payload) =>
+        ParentalControl.Domain.AdminAccess.AdminAccessTexts.TelegramWebPortBlocked(
+            EscapeMarkdown(payload.MachineName), EscapeMarkdown(payload.Owner), payload.WhenLocal);
+
+    private static string BuildDataFolderRelocatedText(DataFolderRelocatedPayload payload) =>
+        ParentalControl.Domain.AdminAccess.AdminAccessTexts.TelegramDataFolderRelocated(
+            EscapeMarkdown(payload.MachineName), EscapeMarkdown(payload.From), EscapeMarkdown(payload.To), payload.WhenLocal);
+
+    private static string BuildDataFolderQuarantinedText(DataFolderQuarantinedPayload payload) =>
+        ParentalControl.Domain.AdminAccess.AdminAccessTexts.TelegramDataFolderQuarantined(
+            EscapeMarkdown(payload.MachineName), EscapeMarkdown(payload.MovedTo), payload.WhenLocal);
+
+    private static string BuildAdminLoginBlockedText(AdminLoginBlockedPayload payload) =>
+        ParentalControl.Domain.AdminAccess.AdminAccessTexts.TelegramLoginBlocked(
+            EscapeMarkdown(payload.MachineName),
+            EscapeMarkdown(ParentalControl.Domain.AdminAccess.AdminAccessTexts.SourceName(payload.Source)),
+            payload.AllSources ? ParentalControl.Domain.AdminAccess.LoginLimitScope.AllSources : ParentalControl.Domain.AdminAccess.LoginLimitScope.Source,
+            payload.BlockedUntilLocal);
+
+    private static string BuildAdminSetupNeededText(AdminSetupNeededPayload payload) =>
+        ParentalControl.Domain.AdminAccess.AdminAccessTexts.TelegramSetupNeeded(EscapeMarkdown(payload.MachineName));
+
     public async Task<bool> SendPromptResponseAlertAsync(SessionPrompt prompt, int? sessionId = null)
     {
         var token = SettingsRepository.Get(SettingsRepository.KeyTelegramBotToken);
@@ -1174,6 +1301,47 @@ public sealed class TelegramBotService
                     {
                         var (text, keyboard) = BuildAdminSignInAlert(payload.SessionId, payload.Username, payload.MachineName, item.EventTime, lang);
                         sent = await SendTextMessageWithKeyboardAsync(chatId, text, keyboard);
+                    }
+                }
+
+                else if (item.NotificationType == "ADMIN_LOGIN_BLOCKED")
+                {
+                    var payload = JsonSerializer.Deserialize<AdminLoginBlockedPayload>(item.PayloadJson);
+                    if (payload != null)
+                    {
+                        sent = await SendTextMessageAsync(chatId, BuildAdminLoginBlockedText(payload));
+                    }
+                }
+                else if (item.NotificationType == "DATA_FOLDER_RELOCATED")
+                {
+                    var payload = JsonSerializer.Deserialize<DataFolderRelocatedPayload>(item.PayloadJson);
+                    if (payload != null)
+                    {
+                        sent = await SendTextMessageAsync(chatId, BuildDataFolderRelocatedText(payload));
+                    }
+                }
+                else if (item.NotificationType == "WEB_PORT_BLOCKED")
+                {
+                    var payload = JsonSerializer.Deserialize<WebPortBlockedPayload>(item.PayloadJson);
+                    if (payload != null)
+                    {
+                        sent = await SendTextMessageAsync(chatId, BuildWebPortBlockedText(payload));
+                    }
+                }
+                else if (item.NotificationType == "DATA_FOLDER_QUARANTINED")
+                {
+                    var payload = JsonSerializer.Deserialize<DataFolderQuarantinedPayload>(item.PayloadJson);
+                    if (payload != null)
+                    {
+                        sent = await SendTextMessageAsync(chatId, BuildDataFolderQuarantinedText(payload));
+                    }
+                }
+                else if (item.NotificationType == "ADMIN_SETUP_NEEDED")
+                {
+                    var payload = JsonSerializer.Deserialize<AdminSetupNeededPayload>(item.PayloadJson);
+                    if (payload != null)
+                    {
+                        sent = await SendTextMessageAsync(chatId, BuildAdminSetupNeededText(payload));
                     }
                 }
 

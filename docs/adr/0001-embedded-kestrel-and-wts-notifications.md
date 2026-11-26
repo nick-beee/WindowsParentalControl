@@ -14,6 +14,7 @@ Existing solutions like Windows Action Center toasts can be muted or suppressed 
    - Serves `http://localhost:5050/request` for users to submit grace time requests with reasons. Form is disabled if the PC is offline.
    - Serves an Admin Web UI for remote monitoring over Tailscale.
 3. **Authenticator TOTP Security**: Protect the Web Admin Interface with an RFC 6238 Time-based One-Time Password (TOTP) QR setup (matching the design pattern in OpenTerm), verifiable via Google Authenticator, Microsoft Authenticator, or 1Password.
+   - *Superseded by [ADR 0010](0010-web-admin-always-requires-totp.md):* TOTP is no longer optional. The Web Admin Interface always requires it, and the parent sets it up only in the Admin app.
 4. **Telegram Bot Alert Channel**: Dispatch grace time requests via Telegram Bot API with inline interactive buttons (`[Approve 15m]`, `[Approve 30m]`, `[Decline]`), allowing 1-tap administrative adjudication directly from a mobile device without port forwarding or custom mobile apps.
 5. **Bonus Minutes Accounting**: Grace time extensions are tracked via a `BonusMinutes` column on the current day's usage record rather than modifying the user's permanent limit configuration.
 

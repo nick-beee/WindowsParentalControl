@@ -10,13 +10,18 @@ public sealed class UsageMonitorWorker : BackgroundService
     private readonly SessionTracker _sessionTracker;
     private readonly CategoryEnforcer _categoryEnforcer;
     private readonly Serilog.ILogger _logger;
+    private readonly ServiceStartup _startup;
+    private readonly IHostApplicationLifetime _lifetime;
     private static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(60);
     private DateOnly _lastCleanupDate = DateOnly.MinValue;
     private readonly ConcurrentDictionary<int, HashSet<int>> _sentAlerts = new();
     private long _lastMonotonicTick = Environment.TickCount64;
     private DateTime _lastWallTime = DateTime.UtcNow;
-    public UsageMonitorWorker(SessionTracker sessionTracker, CategoryEnforcer categoryEnforcer, Serilog.ILogger logger)
+    public UsageMonitorWorker(SessionTracker sessionTracker, CategoryEnforcer categoryEnforcer, Serilog.ILogger logger,
+        ServiceStartup startup, IHostApplicationLifetime lifetime)
     {
+        _startup = startup;
+        _lifetime = lifetime;
         _sessionTracker = sessionTracker;
         _categoryEnforcer = categoryEnforcer;
         _logger = logger;
@@ -38,6 +43,28 @@ public sealed class UsageMonitorWorker : BackgroundService
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            // No limit work before the data folder, the database and the log are safe (require-admin-sign-in, CB1).
+            await _startup.WaitReadyAsync(stoppingToken);
+            await RunAsync(stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            // S3: the host ignores a failed worker, but without this worker no limit is enforced. The Service Control
+            // Manager starts the service again.
+            _logger.Fatal(ex, "The usage monitor worker failed. The service restarts.");
+            DataFolderStartup.WriteEvent(System.Diagnostics.EventLogEntryType.Error, 1014,
+                $"The usage monitor of Parental Control failed ({ex.GetType().Name}: {ex.Message}). The service restarts.");
+            DataFolderLockdown.RestartService(_lifetime);
+        }
+    }
+
+    private async Task RunAsync(CancellationToken stoppingToken)
     {
         _logger.Information("Usage monitor worker started");
 

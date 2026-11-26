@@ -14,7 +14,11 @@ using ParentalControl.Core.Services;
 using ParentalControl.Service.Web.Pages;
 using ParentalControl.Core;
 using ParentalControl.Domain.Categories;
+using ParentalControl.Domain.Web;
+using ParentalControl.Domain.Captures;
 using ParentalControl.Domain.Messages;
+using ParentalControl.Domain.AdminAccess;
+using Microsoft.AspNetCore.Routing;
 
 namespace ParentalControl.Service.Web;
 
@@ -25,33 +29,88 @@ public sealed class WebServerHost : BackgroundService
     private readonly Serilog.ILogger _logger;
     private readonly ForegroundHistory _foregroundHistory;
     private readonly CategoryEnforcer _categoryEnforcer;
-    private readonly HashSet<string> _validAdminTokens = new();
+    private readonly AdminAccessService _adminAccess;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string ProcessName, string WindowTitle, DateTime LastSeen)> _liveActivities = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CaptureCommandState> _captureStates = new(StringComparer.OrdinalIgnoreCase);
     public static event Action<ScreenCaptureRecord>? OnCaptureReceived;
-    public WebServerHost(SessionTracker sessionTracker, TelegramBotService telegramBotService, Serilog.ILogger logger,
-        ForegroundHistory foregroundHistory, CategoryEnforcer categoryEnforcer)
+    private readonly Dictionary<int, (int Files, long Bytes)> _captureReservations = new();
+    private readonly CaptureRefusalLog _captureRefusals = new();
+
+    /// <summary>Copies at most <paramref name="limit"/> bytes. Returns the number of bytes copied.</summary>
+    private static async Task<long> CopyAtMostAsync(Stream source, Stream target, long limit)
     {
+        var buffer = new byte[81920];
+        long total = 0;
+        while (total < limit)
+        {
+            var read = await source.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, limit - total)));
+            if (read == 0)
+                break;
+            await target.WriteAsync(buffer.AsMemory(0, read));
+            total += read;
+        }
+        return total;
+    }
+    private readonly ServiceStartup? _startup;
+
+    /// <summary>The port of the web server. Tests use another port.</summary>
+    public int Port { get; init; } = 5050;
+
+    /// <summary>The wait after a failed start of the web server (S3). Tests use a short wait.</summary>
+    public Func<int, TimeSpan> RetryDelay { get; init; } = WebServerRetry.Delay;
+
+    /// <summary>The number of starts that failed, for example because another program uses the port.</summary>
+    public int FailedStarts => _failedStarts;
+    private int _failedStarts;
+
+    /// <summary>Finds the processes that listen on a port (SF3). Tests replace it.</summary>
+    public Func<int, IReadOnlyList<int>> FindPortOwners { get; init; } = TcpConnectionOwner.FindListenerPids;
+
+    /// <summary>The process id of the service. A listener of this process is no squat. Tests use another value.</summary>
+    public int ServicePid { get; init; } = Environment.ProcessId;
+
+    /// <summary>
+    /// Writes the program that holds the port to the admin-only registry key, or clears it with null (SF3). The Admin
+    /// app shows it as a banner. Tests replace it, so a test does not change the state of an installed service.
+    /// </summary>
+    public Action<string?> RecordPortBlocked { get; init; } = owner => DataFolderStatusStore.TryWriteWebPortBlocked(owner, DateTimeOffset.UtcNow);
+
+    /// <summary>Sends the Telegram alert about the program that holds the port (SF3). Tests replace it.</summary>
+    public Func<string, Task>? SendPortAlert { get; init; }
+
+    /// <summary>The program that held the port at the last failed bind, or null. For the tests.</summary>
+    public string? LastPortOwner { get; private set; }
+
+    private readonly PortSquatAlert _squatAlert = new();
+
+    /// <param name="startup">The start gate of the service, or null in a test (the database is ready then).</param>
+    public WebServerHost(SessionTracker sessionTracker, TelegramBotService telegramBotService, Serilog.ILogger logger,
+        ForegroundHistory foregroundHistory, CategoryEnforcer categoryEnforcer, ServiceStartup? startup = null)
+    {
+        _startup = startup;
         _sessionTracker = sessionTracker;
         _telegramBotService = telegramBotService;
         _logger = logger;
         _foregroundHistory = foregroundHistory;
         _categoryEnforcer = categoryEnforcer;
+        _adminAccess = new AdminAccessService(telegramBotService, logger);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var builder = WebApplication.CreateBuilder();
+        // Third review, SF3: bind the port at once, before the data folder step, so a program of the child cannot take
+        // it while the step runs. Until the start gate opens, each route answers 503 (StartGateAsync): the routes read
+        // the database, which is not safe before the gate.
+        await RunServerAsync(stoppingToken);
+    }
 
-        builder.WebHost.ConfigureKestrel(options =>
-        {
-            options.ListenAnyIP(5050);
-        });
-
-        builder.Services.AddRouting();
-
-        var app = builder.Build();
-
+    /// <summary>
+    /// Runs the web server until <paramref name="stoppingToken"/> ends. If the start fails, for example because a
+    /// program of the child took the port first, it logs the error and tries again after <see cref="RetryDelay"/>
+    /// (require-admin-sign-in, S3). It never ends the service: the limits do not depend on the web server.
+    /// </summary>
+    public async Task RunServerAsync(CancellationToken stoppingToken)
+    {
         // Setup Telegram Bot command hooks
         TelegramBotService.OnCaptureRequested = async (userArg) =>
         {
@@ -170,6 +229,197 @@ public sealed class WebServerHost : BackgroundService
                 .ToList();
             return Task.FromResult(list);
         };
+
+        await RunWithRetryAsync(async ct =>
+        {
+            var builder = WebApplication.CreateBuilder();
+            // SF3: one listen socket on [::] (dual mode) with SO_EXCLUSIVEADDRUSE. No fallback to 0.0.0.0, so a program
+            // that holds [::1]:5050 cannot keep the IPv6 loopback, and no program can bind 127.0.0.1:5050 after us.
+            builder.WebHost.UseSockets(o => o.CreateBoundListenSocket = CreateExclusiveListenSocket);
+            builder.WebHost.ConfigureKestrel(options => options.Listen(System.Net.IPAddress.IPv6Any, Port));
+            builder.Services.AddRouting();
+            await using var app = builder.Build();
+            ConfigureApp(app);
+            try
+            {
+                await app.StartAsync(ct);
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                await OnBindFailedAsync(ex);
+                throw;
+            }
+            _startup?.MarkWebBindTried();
+            await OnBoundAsync();
+            _logger.Information("Starting embedded WebServer on http://[::]:{Port}", Port);
+            await app.WaitForShutdownAsync(ct);
+        }, stoppingToken);
+    }
+
+    /// <summary>
+    /// A listen socket with SO_EXCLUSIVEADDRUSE on Windows (SF3): the bind fails while another socket uses the port,
+    /// and no other socket can bind the port (also not a specific address such as 127.0.0.1) while it is open.
+    /// </summary>
+    private static System.Net.Sockets.Socket CreateExclusiveListenSocket(System.Net.EndPoint endPoint)
+    {
+        if (endPoint is not System.Net.IPEndPoint ip)
+            return Microsoft.AspNetCore.Server.Kestrel.Transport.Sockets.SocketTransportOptions.CreateDefaultBoundListenSocket(endPoint);
+        var socket = new System.Net.Sockets.Socket(ip.AddressFamily, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp);
+        try
+        {
+            if (ip.Address.Equals(System.Net.IPAddress.IPv6Any))
+                socket.DualMode = true;
+            if (OperatingSystem.IsWindows())
+                socket.ExclusiveAddressUse = true;
+            socket.Bind(ip);
+            return socket;
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// A failed bind (SF3): find the program that holds the port, log it, show it in the Admin app (registry) and, after
+    /// the start gate opened, send one Telegram alert. The service never closes that program (the hard rule).
+    /// </summary>
+    private async Task OnBindFailedAsync(Exception error)
+    {
+        _startup?.MarkWebBindTried();
+        IReadOnlyList<int> owners;
+        try { owners = FindPortOwners(Port); }
+        catch { owners = Array.Empty<int>(); }
+        var foreign = WebServerRetry.IsForeignOwner(owners, ServicePid);
+        if (!foreign)
+        {
+            _logger.Warning("The web server could not bind port {Port} ({Error}), and no other program listens on it", Port, error.Message);
+            return;
+        }
+        await ReportSquatAsync(owners);
+    }
+
+    /// <summary>After a successful bind: a program that still listens on the port is a squat too, else the squat ended.</summary>
+    private async Task OnBoundAsync()
+    {
+        IReadOnlyList<int> owners;
+        try { owners = FindPortOwners(Port); }
+        catch { owners = Array.Empty<int>(); }
+        if (WebServerRetry.IsForeignOwner(owners, ServicePid))
+        {
+            await ReportSquatAsync(owners);
+            return;
+        }
+        if (_squatAlert.OnBound())
+        {
+            _logger.Information("The web server listens on port {Port} again. No other program holds the port.", Port);
+            LastPortOwner = null;
+        }
+        RecordPortBlockedSafe(null);
+    }
+
+    private async Task ReportSquatAsync(IReadOnlyList<int> owners)
+    {
+        var owner = string.Join("; ", owners.Where(pid => pid != ServicePid).Select(DescribeProcess));
+        LastPortOwner = owner;
+        // The owner text comes from an exe: it is untrusted data, only logged and shown.
+        _logger.Warning("Another program holds port {Port} of the web server: {Owner}. Parental Control does not close it. " +
+                        "The limits stay on, but /api/agent/activity of the Session Agent does not reach the service.", Port, owner);
+        RecordPortBlockedSafe(owner);
+        if (!_squatAlert.OnBindFailed(foreignOwner: true, gateOpen: _startup?.IsReady ?? true))
+            return;
+        try
+        {
+            await (SendPortAlert is { } send ? send(owner) : _telegramBotService.SendWebPortBlockedAlertAsync(owner, DateTime.Now));
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Could not send the Telegram alert about the program on port {Port}", Port);
+        }
+    }
+
+    private void RecordPortBlockedSafe(string? owner)
+    {
+        try { RecordPortBlocked(owner); }
+        catch (Exception ex) { _logger.Warning(ex, "Could not record the state of port {Port} in the registry", Port); }
+    }
+
+    /// <summary>"name (process 123, user PC\Kid)". Each part that Windows does not give is left out.</summary>
+    private static string DescribeProcess(int pid)
+    {
+        string name;
+        try { using var process = System.Diagnostics.Process.GetProcessById(pid); name = process.ProcessName; }
+        catch { name = "unknown program"; }
+        string? user = null;
+        try
+        {
+            var sid = TcpConnectionOwner.ReadProcess(pid).UserSid;
+            if (sid is not null)
+            {
+                try { user = new System.Security.Principal.SecurityIdentifier(sid).Translate(typeof(System.Security.Principal.NTAccount)).Value; }
+                catch { user = sid; }
+            }
+        }
+        catch { }
+        return user is null ? $"{name} (process {pid})" : $"{name} (process {pid}, user {user})";
+    }
+
+    /// <summary>
+    /// Runs <paramref name="runOnce"/> until <paramref name="stoppingToken"/> ends. After an error, and also when
+    /// <paramref name="runOnce"/> ends without an error while the service still runs (third review, N-f), it waits
+    /// <see cref="RetryDelay"/> and runs it again. Public for the tests.
+    /// </summary>
+    public async Task RunWithRetryAsync(Func<CancellationToken, Task> runOnce, CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            Exception? error = null;
+            try
+            {
+                await runOnce(stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                error = ex;
+            }
+            if (stoppingToken.IsCancellationRequested)
+                return;
+            {
+                var failed = Interlocked.Increment(ref _failedStarts);
+                var delay = RetryDelay(failed);
+                if (error is null)
+                    _logger.Error("The web server on port {Port} stopped while the service runs (try {Try}). It starts again in {Delay}.",
+                        Port, failed, delay);
+                else
+                    _logger.Error(error, "The web server could not start on port {Port} (try {Try}). It tries again in {Delay}. The limits are still enforced.",
+                        Port, failed, delay);
+                try
+                {
+                    await Task.Delay(delay, stoppingToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Adds the admin gate and maps all routes. A test can call it on its own <see cref="WebApplication"/>.
+    /// </summary>
+    public void ConfigureApp(WebApplication app)
+    {
+        // SF3: until the start gate opens, each route answers 503 and reads nothing from the database.
+        app.Use(StartGateAsync);
+        // The gate runs after routing, so it sees the selected endpoint, and before the endpoints.
+        app.UseRouting();
+        app.Use(AdminGateAsync);
 
         app.MapGet("/", () => Results.Redirect("/request"));
 
@@ -794,112 +1044,149 @@ public sealed class WebServerHost : BackgroundService
                 return Results.NotFound(new { error = "User not found." });
             }
 
-            var userCapturesDir = Path.Combine(DatabaseManager.CapturesDirectory, user.Id.ToString());
-            if (!Directory.Exists(userCapturesDir))
+            // CB1 d: a daily quota per user. The route needs no sign-in (#6), so the child can send many files: each
+            // file makes the walk at the service start longer, and each byte fills the disk. An upload reserves one
+            // file and its largest size under a lock, so parallel uploads cannot pass the quota. A slow upload does
+            // not hold the lock.
+            CaptureQuotaDecision quota;
+            int filesToday;
+            long bytesToday;
+            lock (_captureReservations)
             {
-                Directory.CreateDirectory(userCapturesDir);
+                (filesToday, bytesToday) = ScreenCaptureRepository.GetDayTotals(user.Id, DateTime.Today);
+                _captureReservations.TryGetValue(user.Id, out var reserved);
+                quota = CaptureQuota.Check(filesToday + reserved.Files, bytesToday + reserved.Bytes);
+                if (quota.Allowed)
+                    _captureReservations[user.Id] = (reserved.Files + 1, reserved.Bytes + quota.MaxBytes);
             }
-
-            var fileName = $"{DateTime.Now:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.jpg";
-            var filePath = Path.Combine(userCapturesDir, fileName);
-
-            using (var fs = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None))
+            try
             {
-                await ctx.Request.Body.CopyToAsync(fs);
+                if (!quota.Allowed)
+                {
+                    if (_captureRefusals.Count(user.Id, DateOnly.FromDateTime(DateTime.Today)))
+                        _logger.Warning("Capture refused for {Username}: the daily quota is used ({Outcome}: {Files} files, {Bytes} bytes). " +
+                                        "Later refusals today are not logged.", user.Username, quota.Outcome, filesToday, bytesToday);
+                    return Results.StatusCode(StatusCodes.Status429TooManyRequests);
+                }
+
+                var userCapturesDir = Path.Combine(DatabaseManager.CapturesDirectory, user.Id.ToString());
+                if (!Directory.Exists(userCapturesDir))
+                {
+                    Directory.CreateDirectory(userCapturesDir);
+                }
+
+                var fileName = $"{DateTime.Now:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.jpg";
+                var filePath = Path.Combine(userCapturesDir, fileName);
+
+                long written;
+                using (var fs = new FileStream(filePath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                    written = await CopyAtMostAsync(ctx.Request.Body, fs, quota.MaxBytes + 1);
+                }
+                if (written > quota.MaxBytes || written == 0)
+                {
+                    try { File.Delete(filePath); } catch { /* the cleanup removes it later */ }
+                    if (written == 0)
+                        return Results.BadRequest(new { error = "Empty capture." });
+                    if (_captureRefusals.Count(user.Id, DateOnly.FromDateTime(DateTime.Today)))
+                        _logger.Warning("Capture refused for {Username}: the body is larger than {Max} bytes. Later refusals today are not logged.",
+                            user.Username, quota.MaxBytes);
+                    return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+                }
+
+                var fi = new FileInfo(filePath);
+                var record = new ScreenCaptureRecord
+                {
+                    UserId = user.Id,
+                    Timestamp = DateTime.Now,
+                    FilePath = filePath,
+                    Width = width > 0 ? width : 1920,
+                    Height = height > 0 ? height : 1080,
+                    FileSizeBytes = fi.Length,
+                    TriggerType = trigger,
+                    AdminIp = ctx.Connection.RemoteIpAddress?.ToString()
+                };
+
+                record = ScreenCaptureRepository.Add(record);
+                _logger.Information("Screen capture recorded for {Username} ({Width}x{Height}, {Bytes} bytes, Trigger: {Trigger})",
+                    user.Username, record.Width, record.Height, record.FileSizeBytes, record.TriggerType);
+
+                OnCaptureReceived?.Invoke(record);
+
+                return Results.Ok(new { id = record.Id, path = record.FilePath });
             }
-
-            var fi = new FileInfo(filePath);
-            var record = new ScreenCaptureRecord
+            finally
             {
-                UserId = user.Id,
-                Timestamp = DateTime.Now,
-                FilePath = filePath,
-                Width = width > 0 ? width : 1920,
-                Height = height > 0 ? height : 1080,
-                FileSizeBytes = fi.Length,
-                TriggerType = trigger,
-                AdminIp = ctx.Connection.RemoteIpAddress?.ToString()
-            };
-
-            record = ScreenCaptureRepository.Add(record);
-            _logger.Information("Screen capture recorded for {Username} ({Width}x{Height}, {Bytes} bytes, Trigger: {Trigger})",
-                user.Username, record.Width, record.Height, record.FileSizeBytes, record.TriggerType);
-
-            OnCaptureReceived?.Invoke(record);
-
-            return Results.Ok(new { id = record.Id, path = record.FilePath });
+                if (quota.Allowed)
+                {
+                    lock (_captureReservations)
+                    {
+                        var reserved = _captureReservations[user.Id];
+                        reserved = (reserved.Files - 1, reserved.Bytes - quota.MaxBytes);
+                        if (reserved.Files <= 0)
+                            _captureReservations.Remove(user.Id);
+                        else
+                            _captureReservations[user.Id] = reserved;
+                    }
+                }
+            }
         });
 
-        // Web Admin Page
+        // Web Admin Page: the setup text before the setup, else the login form or the dashboard.
         app.MapGet("/admin", (HttpContext ctx) =>
         {
-            var isTotpEnabled = SettingsRepository.Get(SettingsRepository.KeyTotpEnabled, "false") == "true";
-
-            if (isTotpEnabled && !IsAdminAuthenticated(ctx))
-            {
-                return Results.Content(AdminPage.RenderLogin(), "text/html");
-            }
-
-            return Results.Content(AdminPage.RenderDashboard(), "text/html");
+            if (!_adminAccess.IsSetUp)
+                return Results.Content(AdminPage.RenderSetupNeeded(), "text/html; charset=utf-8");
+            if (_adminAccess.CheckClient(ctx.Connection) != LocalClientDecision.Allow)
+                return Results.Content(AdminPage.RenderLogin(AdminAccessTexts.LocalClientRefused), "text/html; charset=utf-8",
+                    statusCode: StatusCodes.Status403Forbidden);
+            if (!_adminAccess.IsSessionValid(ctx))
+                return Results.Content(AdminPage.RenderLogin(), "text/html; charset=utf-8");
+            return Results.Content(AdminPage.RenderDashboard(), "text/html; charset=utf-8");
         });
 
-        // Web Admin Login API
+        // Web Admin Login API. The gate has checked the Origin.
         app.MapPost("/api/admin/login", async (HttpContext ctx) =>
         {
-            string? code = null;
-            if (ctx.Request.HasFormContentType)
+            var code = await ReadLoginCodeAsync(ctx);
+            var result = _adminAccess.TryLogin(code, ctx.Connection);
+            switch (result.Outcome)
             {
-                var form = await ctx.Request.ReadFormAsync();
-                code = form["code"].ToString();
+                case AdminLoginOutcome.Success:
+                    // A session cookie (no Expires): the browser drops it when it closes. The server ends the Admin
+                    // Session after 12 hours in any case (AdminSessionStore).
+                    ctx.Response.Cookies.Append(AdminAccessService.CookieName, result.Token!, new CookieOptions
+                    {
+                        HttpOnly = true,
+                        SameSite = SameSiteMode.Strict
+                    });
+                    return Results.Redirect("/admin");
+                case AdminLoginOutcome.NotSetUp:
+                    return Results.Content(AdminPage.RenderSetupNeeded(), "text/html; charset=utf-8", statusCode: StatusCodes.Status401Unauthorized);
+                case AdminLoginOutcome.RefusedClient:
+                    return Results.Content(AdminPage.RenderLogin(AdminAccessTexts.LocalClientRefused), "text/html; charset=utf-8",
+                        statusCode: StatusCodes.Status403Forbidden);
+                case AdminLoginOutcome.Blocked:
+                    var until = (result.Limit!.BlockedUntilUtc ?? DateTimeOffset.UtcNow).ToLocalTime().DateTime;
+                    return Results.Content(AdminPage.RenderLogin(AdminAccessTexts.Blocked(result.Limit.Scope, until)), "text/html; charset=utf-8",
+                        statusCode: StatusCodes.Status429TooManyRequests);
+                default:
+                    return Results.Content(AdminPage.RenderLogin(AdminAccessTexts.InvalidCode), "text/html; charset=utf-8",
+                        statusCode: StatusCodes.Status401Unauthorized);
             }
-            else
-            {
-                using var reader = new StreamReader(ctx.Request.Body);
-                var doc = JsonDocument.Parse(await reader.ReadToEndAsync());
-                code = doc.RootElement.GetProperty("code").GetString();
-            }
-
-            var secret = SettingsRepository.Get(SettingsRepository.KeyTotpSecret);
-
-            if (string.IsNullOrWhiteSpace(secret) || TotpService.VerifyCode(secret, code ?? ""))
-            {
-                var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
-                lock (_validAdminTokens)
-                {
-                    _validAdminTokens.Add(token);
-                }
-
-                ctx.Response.Cookies.Append("pc_admin_session", token, new CookieOptions
-                {
-                    HttpOnly = true,
-                    SameSite = SameSiteMode.Strict,
-                    Expires = DateTimeOffset.UtcNow.AddHours(12)
-                });
-
-                return Results.Redirect("/admin");
-            }
-
-            return Results.Content(AdminPage.RenderLogin("Invalid code. Please try again."), "text/html");
         });
 
-        app.MapGet("/api/admin/logout", (HttpContext ctx) =>
+        // Logout is a POST (a GET gets 405). The gate has checked the Origin.
+        app.MapPost("/api/admin/logout", (HttpContext ctx) =>
         {
-            if (ctx.Request.Cookies.TryGetValue("pc_admin_session", out var token))
-            {
-                lock (_validAdminTokens)
-                {
-                    _validAdminTokens.Remove(token);
-                }
-            }
-            ctx.Response.Cookies.Delete("pc_admin_session");
+            _adminAccess.Logout(ctx);
+            ctx.Response.Cookies.Delete(AdminAccessService.CookieName);
             return Results.Redirect("/admin");
         });
 
         // Web Admin Dashboard JSON API
         app.MapGet("/api/admin/dashboard", (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
-
             var today = DateOnly.FromDateTime(DateTime.Now);
             var dayOfWeek = DateTime.Now.DayOfWeek;
             var users = UserRepository.GetAll().ToDictionary(u => u.Id, u => u);
@@ -1034,8 +1321,6 @@ public sealed class WebServerHost : BackgroundService
         // Web Admin Grant Time API
         app.MapPost("/api/admin/grant", async (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
-
             using var reader = new StreamReader(ctx.Request.Body);
             var doc = JsonDocument.Parse(await reader.ReadToEndAsync());
             var userId = doc.RootElement.GetProperty("userId").GetInt32();
@@ -1064,8 +1349,6 @@ public sealed class WebServerHost : BackgroundService
         // Web Admin Force Logoff API
         app.MapPost("/api/admin/force-logoff", async (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
-
             using var reader = new StreamReader(ctx.Request.Body);
             var doc = JsonDocument.Parse(await reader.ReadToEndAsync());
             var sessionId = doc.RootElement.GetProperty("sessionId").GetInt32();
@@ -1087,8 +1370,6 @@ public sealed class WebServerHost : BackgroundService
         // Web Admin Lock Session with Pre-Warning API
         app.MapPost("/api/admin/lock-session", async (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
-
             try
             {
                 using var reader = new StreamReader(ctx.Request.Body);
@@ -1135,8 +1416,6 @@ public sealed class WebServerHost : BackgroundService
         // Web Admin Dispatch Interactive Prompt API
         app.MapPost("/api/admin/prompt/send", async (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
-
             try
             {
                 using var reader = new StreamReader(ctx.Request.Body);
@@ -1187,14 +1466,11 @@ public sealed class WebServerHost : BackgroundService
         // Web Admin Prompt History API
         app.MapGet("/api/admin/prompts", (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
             return Results.Ok(SessionPromptRepository.GetHistory(20));
         });
         // Web Admin Resolve Request API
         app.MapPost("/api/admin/resolve-request", async (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
-
             using var reader = new StreamReader(ctx.Request.Body);
             var doc = JsonDocument.Parse(await reader.ReadToEndAsync());
             var requestId = doc.RootElement.GetProperty("requestId").GetInt32();
@@ -1239,8 +1515,6 @@ public sealed class WebServerHost : BackgroundService
         // Admin Trigger Capture API (Single-shot or Watch mode)
         app.MapPost("/api/admin/capture/request", async (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
-
             using var reader = new StreamReader(ctx.Request.Body);
             var body = await reader.ReadToEndAsync();
             var doc = JsonDocument.Parse(body);
@@ -1280,7 +1554,6 @@ public sealed class WebServerHost : BackgroundService
         // Admin Heartbeat for Watch Mode (extends timeout)
         app.MapPost("/api/admin/capture/heartbeat", (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
             var username = ctx.Request.Query["user"].ToString();
             if (!string.IsNullOrWhiteSpace(username) && _captureStates.TryGetValue(username, out var cs) && cs.WatchMode)
             {
@@ -1292,7 +1565,6 @@ public sealed class WebServerHost : BackgroundService
         // Admin Get Latest Capture API
         app.MapGet("/api/admin/captures/latest", (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
             var username = ctx.Request.Query["user"].ToString();
             if (string.IsNullOrWhiteSpace(username) || username == "all")
             {
@@ -1327,7 +1599,6 @@ public sealed class WebServerHost : BackgroundService
         // Admin Get Recent Captures API
         app.MapGet("/api/admin/captures/recent", (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
             var username = ctx.Request.Query["user"].ToString();
             int.TryParse(ctx.Request.Query["limit"], out var limit);
             if (limit <= 0) limit = 10;
@@ -1363,8 +1634,6 @@ public sealed class WebServerHost : BackgroundService
         // Admin Serve Capture JPEG Image
         app.MapGet("/api/admin/captures/{id:int}", (HttpContext ctx, int id) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
-
             var record = ScreenCaptureRepository.GetById(id);
             if (record == null || !File.Exists(record.FilePath))
             {
@@ -1377,8 +1646,6 @@ public sealed class WebServerHost : BackgroundService
         // Admin Push Capture to Telegram
         app.MapPost("/api/admin/capture/telegram", async (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
-
             int.TryParse(ctx.Request.Query["id"], out var id);
             var record = ScreenCaptureRepository.GetById(id);
             if (record == null || !File.Exists(record.FilePath))
@@ -1403,7 +1670,6 @@ public sealed class WebServerHost : BackgroundService
         // Admin Schedule Management GET API
         app.MapGet("/api/admin/schedule", (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
             var userIdStr = ctx.Request.Query["userId"].ToString();
             if (!int.TryParse(userIdStr, out var userId))
             {
@@ -1473,7 +1739,6 @@ public sealed class WebServerHost : BackgroundService
         // Admin Schedule Exception Add/Upsert POST API
         app.MapPost("/api/admin/schedule-exception", async (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
             try
             {
                 using var reader = new StreamReader(ctx.Request.Body);
@@ -1514,7 +1779,6 @@ public sealed class WebServerHost : BackgroundService
         // Admin Schedule Exception Delete API
         app.MapDelete("/api/admin/schedule-exception", (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
             var idStr = ctx.Request.Query["id"].ToString();
             if (!int.TryParse(idStr, out var id))
                 return Results.BadRequest(new { error = "ID tidak valid." });
@@ -1527,7 +1791,6 @@ public sealed class WebServerHost : BackgroundService
         // Admin Schedule Management POST API
         app.MapPost("/api/admin/schedule", async (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
             try
             {
                 using var reader = new StreamReader(ctx.Request.Body);
@@ -1600,7 +1863,6 @@ public sealed class WebServerHost : BackgroundService
         // Admin Check Updates API
         app.MapGet("/api/admin/update/check", async (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
             var res = await UpdateService.CheckForUpdatesAsync();
             return Results.Ok(new
             {
@@ -1619,7 +1881,6 @@ public sealed class WebServerHost : BackgroundService
         // latest release of AppVersion.GitHubRepo itself and runs only a checked installer (issue #8).
         app.MapPost("/api/admin/update/apply", async (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
             var (success, msg) = await UpdateService.ApplyLatestUpdateAsync();
             return Results.Ok(new { success, message = msg });
         });
@@ -1627,7 +1888,6 @@ public sealed class WebServerHost : BackgroundService
         // Admin Settings GET API
         app.MapGet("/api/admin/settings", (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
             return Results.Ok(new
             {
                 telegramConfigured = !string.IsNullOrWhiteSpace(SettingsRepository.Get(SettingsRepository.KeyTelegramBotToken)) &&
@@ -1644,7 +1904,6 @@ public sealed class WebServerHost : BackgroundService
         // Admin Settings POST API
         app.MapPost("/api/admin/settings", async (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
             try
             {
                 using var reader = new StreamReader(ctx.Request.Body);
@@ -1688,7 +1947,6 @@ public sealed class WebServerHost : BackgroundService
         // ═══ App Categories: Category Limits and App Rules (admin only) ═══
         app.MapGet("/api/admin/categories", (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
             var limits = CategoryRepository.GetLimits();
             var today = DateOnly.FromDateTime(DateTime.Now);
             var usageToday = UserRepository.GetAll().Where(u => u.IsRestricted).SelectMany(u =>
@@ -1714,7 +1972,6 @@ public sealed class WebServerHost : BackgroundService
 
         app.MapPut("/api/admin/categories", async (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
             JsonElement root;
             try { root = (await JsonDocument.ParseAsync(ctx.Request.Body)).RootElement.Clone(); }
             catch (JsonException) { return Results.BadRequest(new { error = "Invalid JSON." }); }
@@ -1740,7 +1997,6 @@ public sealed class WebServerHost : BackgroundService
 
         app.MapGet("/api/admin/app-rules", (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
             return Results.Ok(new
             {
                 rules = AppRuleRepository.GetAllRows().Select(r => new
@@ -1758,7 +2014,6 @@ public sealed class WebServerHost : BackgroundService
 
         app.MapPost("/api/admin/app-rules", async (HttpContext ctx) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
             var (rule, error) = await ReadRuleAsync(ctx);
             if (rule is null) return Results.BadRequest(new { error });
             try
@@ -1773,7 +2028,6 @@ public sealed class WebServerHost : BackgroundService
 
         app.MapPut("/api/admin/app-rules/{id:long}", async (HttpContext ctx, long id) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
             var (rule, error) = await ReadRuleAsync(ctx);
             if (rule is null) return Results.BadRequest(new { error });
             try
@@ -1789,15 +2043,12 @@ public sealed class WebServerHost : BackgroundService
 
         app.MapDelete("/api/admin/app-rules/{id:long}", (HttpContext ctx, long id) =>
         {
-            if (!CheckAuth(ctx)) return Results.Unauthorized();
             if (!AppRuleRepository.Delete(id))
                 return Results.NotFound(new { error = "Rule not found." });
             _logger.Information("Web Admin deleted App Rule {Id}", id);
             return Results.Ok(new { success = true });
         });
 
-        _logger.Information("Starting embedded WebServer on http://0.0.0.0:5050");
-        await app.RunAsync(stoppingToken);
     }
 
     /// <summary>
@@ -1849,23 +2100,76 @@ public sealed class WebServerHost : BackgroundService
         return error is null ? ((matchType.Value, pattern, category, appLimit), null) : (null, error);
     }
 
-    private bool CheckAuth(HttpContext ctx)
+    /// <summary>
+    /// The one gate for all routes below <c>/api/admin/</c> (require-admin-sign-in D4). Deny by default: each admin
+    /// route needs an Admin Session, and a state-changing request from another origin is refused (D8).
+    /// </summary>
+    /// <summary>
+    /// Answers 503 on each route until the start gate opens (third review, SF3). The web server binds its port before
+    /// the data folder step, but the database is not safe to use before the gate. Without a gate (a test) it passes.
+    /// </summary>
+    private async Task StartGateAsync(HttpContext ctx, Func<Task> next)
     {
-        var isTotpEnabled = SettingsRepository.Get(SettingsRepository.KeyTotpEnabled, "false") == "true";
-        if (!isTotpEnabled) return true;
-        return IsAdminAuthenticated(ctx);
+        if (_startup is null || _startup.IsReady)
+        {
+            await next();
+            return;
+        }
+        ctx.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+        ctx.Response.Headers.RetryAfter = "10";
+        ctx.Response.ContentType = "text/plain; charset=utf-8";
+        await ctx.Response.WriteAsync("Parental Control startet noch. Bitte versuche es gleich noch einmal.");
     }
 
-    private bool IsAdminAuthenticated(HttpContext ctx)
+    private async Task AdminGateAsync(HttpContext ctx, Func<Task> next)
     {
-        if (ctx.Request.Cookies.TryGetValue("pc_admin_session", out var token) && !string.IsNullOrEmpty(token))
+        var template = (ctx.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText;
+        var routeClass = AdminRoutePolicy.Classify(ctx.Request.Path.Value, template);
+        if (routeClass == AdminRouteClass.Open)
         {
-            lock (_validAdminTokens)
-            {
-                return _validAdminTokens.Contains(token);
-            }
+            await next();
+            return;
         }
-        return false;
+
+        var sessionValid = routeClass == AdminRouteClass.Admin && _adminAccess.IsSessionValid(ctx);
+        var result = AdminRoutePolicy.Decide(routeClass, ctx.Request.Method, ctx.Request.Headers.Origin.ToString(), ctx.Request.Host.Value, sessionValid);
+        switch (result)
+        {
+            case AdminGateResult.Forbidden:
+                _logger.Warning("Admin gate refused {Method} {Path} from origin {Origin}", ctx.Request.Method, ctx.Request.Path.Value, ctx.Request.Headers.Origin.ToString());
+                ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return;
+            case AdminGateResult.Unauthorized:
+                ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return;
+            default:
+                await next();
+                return;
+        }
+    }
+
+    /// <summary>Reads the code of a login from a form or a JSON body. A body without a code gives null.</summary>
+    private static async Task<string?> ReadLoginCodeAsync(HttpContext ctx)
+    {
+        try
+        {
+            if (ctx.Request.HasFormContentType)
+            {
+                var form = await ctx.Request.ReadFormAsync();
+                return form["code"].ToString();
+            }
+
+            using var doc = await JsonDocument.ParseAsync(ctx.Request.Body);
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                   && doc.RootElement.TryGetProperty("code", out var code)
+                   && code.ValueKind == JsonValueKind.String
+                ? code.GetString()
+                : null;
+        }
+        catch (Exception ex) when (ex is JsonException or InvalidDataException or IOException or BadHttpRequestException)
+        {
+            return null;
+        }
     }
 
     private async Task<ScreenCaptureRecord?> TriggerCaptureAndWaitAsync(string username, string trigger, int timeoutSeconds = 15)

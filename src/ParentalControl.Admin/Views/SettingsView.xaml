@@ -234,9 +234,9 @@
                     </StackPanel>
                 </md:Card>
 
-                <!-- ═══ Authenticator TOTP Security ═══ -->
+                <!-- ═══ Web admin sign-in (Authenticator TOTP) ═══ -->
                 <md:ColorZone Mode="PrimaryMid" Padding="10,8" CornerRadius="4" Margin="0,0,0,8">
-                    <TextBlock Text="🔐 Web Admin Authenticator 2FA (RFC 6238 TOTP)"
+                    <TextBlock Text="🔐 Web admin sign-in"
                                FontSize="14" FontWeight="DemiBold"
                                Foreground="{DynamicResource MaterialDesign.Brush.Primary.Foreground}"
                                VerticalAlignment="Center" />
@@ -244,40 +244,65 @@
 
                 <md:Card Padding="20" Margin="0,0,0,24" md:ElevationAssist.Elevation="Dp2">
                     <StackPanel>
-                        <TextBlock Text="Protect the embedded Kestrel Web Admin portal (http://localhost:5050/admin) with two-factor authentication. Requires 6-digit dynamic code from Google Authenticator, Microsoft Authenticator, or 1Password to access the dashboard."
+                        <TextBlock Text="The web admin (http://localhost:5050/admin) always needs a 6-digit code from an authenticator app (Google Authenticator, Microsoft Authenticator or 1Password). You can set up the sign-in only here, on this PC. Sign in from your own Windows account on this PC, or from a phone or laptop on the home network: the web admin refuses a sign-in from the account of a child. Sign in only while the state below shows &quot;Set up on&quot;: if it shows that another program holds port 5050, a page on localhost:5050 can come from that program, so do not type a code there."
                                    TextWrapping="Wrap" Opacity="0.8" Margin="0,0,0,16" LineHeight="20" />
 
-                        <CheckBox Content="Enable Authenticator 2FA for Web Admin (port 5050)"
-                                  IsChecked="{Binding IsTotpEnabled}"
-                                  FontWeight="SemiBold"
-                                  Margin="0,0,0,16" />
+                        <TextBlock Text="{Binding SignInStatusText}" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,16" />
 
-                        <Button Content="Generate New Authenticator Secret"
-                                Command="{Binding GenerateTotpSecretCommand}"
-                                HorizontalAlignment="Left"
-                                Style="{StaticResource MaterialDesignOutlinedButton}"
-                                Margin="0,0,0,12" />
+                        <Border Visibility="{Binding HasDataFolderWarning, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                Background="#FEF3C7" BorderBrush="#F59E0B" BorderThickness="1" CornerRadius="6" Padding="12,10" Margin="0,0,0,16">
+                            <TextBlock Text="{Binding DataFolderWarningText}" Foreground="#78350F" TextWrapping="Wrap" />
+                        </Border>
 
-                        <TextBox md:HintAssist.Hint="Secret Key (Base32)"
-                                 md:HintAssist.IsFloating="True"
-                                 Text="{Binding TotpSecret, UpdateSourceTrigger=PropertyChanged}"
-                                 Style="{StaticResource MaterialDesignOutlinedTextBox}"
-                                 Margin="0,0,0,12" />
+                        <WrapPanel Margin="0,0,0,8">
+                            <Button Content="{Binding SetupButtonText}"
+                                    Command="{Binding StartSignInSetupCommand}"
+                                    Style="{StaticResource MaterialDesignRaisedButton}"
+                                    Margin="0,0,12,8" />
+                            <Button Content="Sign out all web sessions"
+                                    Command="{Binding SignOutAllWebSessionsCommand}"
+                                    Style="{StaticResource MaterialDesignOutlinedButton}"
+                                    Margin="0,0,12,8" />
+                            <Button Content="Clear login limit"
+                                    Command="{Binding ClearLoginLimitCommand}"
+                                    Style="{StaticResource MaterialDesignOutlinedButton}"
+                                    Margin="0,0,12,8" />
+                        </WrapPanel>
 
-                        <TextBox md:HintAssist.Hint="Authenticator Setup URI (otpauth://...)"
-                                 md:HintAssist.IsFloating="True"
-                                 Text="{Binding TotpUri}"
-                                 IsReadOnly="True"
-                                 Style="{StaticResource MaterialDesignOutlinedTextBox}"
-                                 Margin="0,0,0,16" />
+                        <TextBlock Text="{Binding SignInActionStatus}" TextWrapping="Wrap" Opacity="0.85" Margin="0,0,0,8" />
 
-                        <StackPanel Visibility="{Binding HasQrCode, Converter={StaticResource BooleanToVisibilityConverter}}">
-                            <TextBlock Text="Scan this QR code with Google Authenticator, Microsoft Authenticator, or 1Password:"
-                                       FontWeight="Medium" Opacity="0.8" Margin="0,0,0,8" />
-                            <Border Background="White" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="8" Padding="12" HorizontalAlignment="Left">
-                                <Image Source="{Binding TotpQrImage}" Width="160" Height="160" RenderOptions.BitmapScalingMode="NearestNeighbor" />
-                            </Border>
-                        </StackPanel>
+                        <!-- The setup: shown only until the parent confirms or cancels. -->
+                        <Border Visibility="{Binding IsSetupInProgress, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="8" Padding="16" Margin="0,8,0,0">
+                            <StackPanel>
+                                <TextBlock Text="1. Scan this QR code with the authenticator app on your phone:"
+                                           FontWeight="Medium" Opacity="0.8" Margin="0,0,0,8" />
+                                <Border Background="White" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="8" Padding="12" HorizontalAlignment="Left"
+                                        Visibility="{Binding HasQrCode, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    <Image Source="{Binding TotpQrImage}" Width="160" Height="160" RenderOptions.BitmapScalingMode="NearestNeighbor" />
+                                </Border>
+                                <TextBlock Text="Or type this key into the app:" Opacity="0.8" Margin="0,12,0,4" />
+                                <TextBox Text="{Binding PendingSecretText, Mode=OneWay}" IsReadOnly="True" FontFamily="Consolas" FontSize="14"
+                                         Style="{StaticResource MaterialDesignOutlinedTextBox}" Margin="0,0,0,16" />
+                                <TextBlock Text="2. Enter the current 6-digit code from the app:" FontWeight="Medium" Opacity="0.8" Margin="0,0,0,8" />
+                                <TextBox md:HintAssist.Hint="Code"
+                                         Text="{Binding SetupCode, UpdateSourceTrigger=PropertyChanged}"
+                                         MaxLength="6" Width="160" HorizontalAlignment="Left" FontSize="18"
+                                         Style="{StaticResource MaterialDesignOutlinedTextBox}" Margin="0,0,0,8" />
+                                <TextBlock Text="{Binding SetupError}" Foreground="#B91C1C" TextWrapping="Wrap" Margin="0,0,0,8" />
+                                <TextBlock Text="The new secret is saved only after a valid code. Then all web sessions are signed out and codes of an old secret stop working. This key is not shown again."
+                                           TextWrapping="Wrap" Opacity="0.7" Margin="0,0,0,12" />
+                                <StackPanel Orientation="Horizontal">
+                                    <Button Content="Confirm and save"
+                                            Command="{Binding ConfirmSignInSetupCommand}"
+                                            Style="{StaticResource MaterialDesignRaisedButton}"
+                                            Margin="0,0,12,0" />
+                                    <Button Content="Cancel"
+                                            Command="{Binding CancelSignInSetupCommand}"
+                                            Style="{StaticResource MaterialDesignOutlinedButton}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </md:Card>
 

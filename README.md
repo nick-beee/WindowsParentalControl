@@ -28,7 +28,7 @@ An enhanced screen time, application telemetry, and schedule curfew management s
 
 ### 4. Embedded Web Admin & ActivityWatch Visual Telemetry
 - Embedded Kestrel web host at `http://0.0.0.0:5050` accessible over LAN or Tailscale VPN.
-- Protected by RFC 6238 Authenticator TOTP (Google Authenticator, Microsoft Authenticator, 1Password) with constant-time equality checks and setup QR code generator.
+- Always protected by RFC 6238 Authenticator TOTP (Google Authenticator, Microsoft Authenticator, 1Password). Set up the sign-in in the desktop Admin app (Settings → Web admin sign-in): scan the QR code and confirm one code. Until then, `/admin` shows only a setup text and each admin route answers 401. A code works one time only, and failed codes have a limit (10 per device, 30 in total in 24 hours). The desktop Admin app can set up a new secret, clear the login limit and sign out all web sessions.
 - **ActivityWatch-Style Dashboard**:
   - **24-Hour Visual Timeline**: Interactive hourly distribution bar chart highlighting active gaming/browsing hours.
   - **Live App Pulse**: Real-time foreground app indicator displaying active window titles and process names.

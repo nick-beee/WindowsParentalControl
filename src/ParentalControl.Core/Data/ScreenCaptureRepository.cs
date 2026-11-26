@@ -191,6 +191,23 @@ public static class ScreenCaptureRepository
         return deletedCount;
     }
 
+    /// <summary>
+    /// The number and the bytes of the captures of a user since <paramref name="dayStartLocal"/> (local midnight), for
+    /// the daily quota of the capture route (require-admin-sign-in, CB1 d). The timestamps are stored in local time
+    /// in round-trip form, so a text compare is a time compare.
+    /// </summary>
+    public static (int Files, long Bytes) GetDayTotals(int userId, DateTime dayStartLocal)
+    {
+        using var connection = DatabaseManager.CreateConnection();
+        using var cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*), COALESCE(SUM(file_size_bytes), 0) FROM screen_captures WHERE user_id = @userId AND timestamp >= @dayStart;";
+        cmd.Parameters.AddWithValue("@userId", userId);
+        cmd.Parameters.AddWithValue("@dayStart", dayStartLocal.ToString("o"));
+        using var reader = cmd.ExecuteReader();
+        reader.Read();
+        return (reader.GetInt32(0), reader.GetInt64(1));
+    }
+
     public static long GetTotalStorageBytes()
     {
         using var connection = DatabaseManager.CreateConnection();

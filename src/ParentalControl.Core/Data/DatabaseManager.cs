@@ -1,53 +1,123 @@
-using System.Security.AccessControl;
-using System.Security.Principal;
 using Microsoft.Data.Sqlite;
 
 namespace ParentalControl.Core.Data;
 
 public static class DatabaseManager
 {
-    private static string DataDirectory => Environment.GetEnvironmentVariable("PARENTAL_CONTROL_DATA_DIR") ?? @"C:\ProgramData\ParentalControl";
     private const string DatabaseFileName = "data.db";
     public const int RetentionDays = 30;
     public const int CapturesRetentionDays = 7;
     public const long MaxCapturesStorageBytes = 500L * 1024 * 1024; // 500 MB
+
+    private static readonly object Gate = new();
+    private static string? _checkedDirectory;
+    private static bool _serviceStepRequired;
+
+    /// <summary>
+    /// The service only, at its start (require-admin-sign-in, CB1): until <see cref="InitializeSecured"/> runs, each use
+    /// of <see cref="DataDirectory"/> throws. So no code of the service can open a database in a folder that its own
+    /// data folder step did not secure yet (the path of the Admin app, which does not change the rules, is not used).
+    /// </summary>
+    public static void RequireServiceStep()
+    {
+        lock (Gate)
+            _serviceStepRequired = true;
+    }
+
+    /// <summary>
+    /// The data folder. The tests set <c>PARENTAL_CONTROL_DATA_DIR</c>. Else the location comes from the admin-only
+    /// registry value (<see cref="Platform.DataFolderRegistry"/>, default <c>C:\ProgramData\ParentalControl</c>), and
+    /// this process checks the folder with <see cref="Platform.DataFolderGuard.EnsureSafeToOpen"/> before the first use
+    /// (require-admin-sign-in, D14). The service sets the folder after its own step (<see cref="InitializeSecured"/>).
+    /// </summary>
+    /// <exception cref="Platform.DataFolderUnsafeException">The location or the folder is not safe.</exception>
+    public static string DataDirectory => CustomDataDirectory ?? EnsureCheckedDirectory();
 
     public static string DatabasePath => Path.Combine(DataDirectory, DatabaseFileName);
     public static string CapturesDirectory => Path.Combine(DataDirectory, "captures");
 
     public static string ConnectionString => $"Data Source={DatabasePath}";
 
+    /// <summary>The folder of the log files. It is in the data folder, so it has the same owner and rules.</summary>
+    public static string LogsDirectory => Path.Combine(DataDirectory, "logs");
+
+    /// <summary>
+    /// True when the owner and the access rules of the data folder are known to be safe: the service set them
+    /// at this start, or the tests use their own folder (<c>PARENTAL_CONTROL_DATA_DIR</c>). While it is false,
+    /// the Remote Admin Interface is not set up (fail closed).
+    /// </summary>
+    public static bool DataFolderSecured { get; private set; }
+
+    /// <summary>The result of the data folder step of the service at this start, or null.</summary>
+    public static Platform.DataFolderResult? DataFolderResult { get; private set; }
+
+    private static string? CustomDataDirectory
+    {
+        get
+        {
+            var custom = Environment.GetEnvironmentVariable("PARENTAL_CONTROL_DATA_DIR");
+            return string.IsNullOrEmpty(custom) ? null : custom;
+        }
+    }
+
+    /// <summary>
+    /// The data folder of this process after the trust check. The Admin app, the test tools and each other process
+    /// that is not the service read the location from the registry and run the same check as the Admin app.
+    /// </summary>
+    private static string EnsureCheckedDirectory()
+    {
+        lock (Gate)
+        {
+            if (_checkedDirectory is not null)
+                return _checkedDirectory;
+            if (_serviceStepRequired)
+                throw new Platform.DataFolderUnsafeException("The data folder step of the service has not finished.");
+            var reading = Platform.DataFolderRegistry.Default.ReadLocation(Platform.DataFolderRegistry.ProgramDataRoot);
+            if (!reading.IsUsable)
+                throw new Platform.DataFolderUnsafeException(reading.Error ?? "The location of the data folder is not usable.");
+            Platform.DataFolderGuard.EnsureSafeToOpen(reading.Folder!, DatabaseFileName);
+            _checkedDirectory = reading.Folder!;
+            return _checkedDirectory;
+        }
+    }
+
+    /// <summary>
+    /// The service only: use the folder of its data folder step (<see cref="Platform.DataFolderCoordinator"/>) and
+    /// create or migrate the database in it.
+    /// </summary>
+    /// <param name="secured">
+    /// False if the service uses a trusted folder whose rules it could not reset (D14). The limits work, but the Remote
+    /// Admin Interface stays locked, because another account can still have read access to the secret.
+    /// </param>
+    public static void InitializeSecured(string folder, Platform.DataFolderResult? result, bool secured = true)
+    {
+        lock (Gate)
+        {
+            _checkedDirectory = folder;
+            DataFolderResult = result;
+            DataFolderSecured = secured;
+        }
+        Initialize();
+    }
+
+    /// <summary>
+    /// Creates or migrates the database. In a process that is not the service, the first use of
+    /// <see cref="DataDirectory"/> reads the location from the registry and checks the folder: it creates a missing
+    /// folder with the final rules, but it never changes the rules of an existing one.
+    /// </summary>
+    /// <exception cref="Platform.DataFolderUnsafeException">
+    /// The data folder is not safe. The method then does not open the database (fail closed).
+    /// </exception>
     public static void Initialize()
     {
-        var dirInfo = new DirectoryInfo(DataDirectory);
-        if (!dirInfo.Exists)
+        if (CustomDataDirectory is { } custom)
         {
-            Directory.CreateDirectory(DataDirectory);
-            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("PARENTAL_CONTROL_DATA_DIR")))
-            {
-                try
-                {
-                    var security = dirInfo.GetAccessControl();
-                    security.SetAccessRuleProtection(true, false);
-                    security.AddAccessRule(new FileSystemAccessRule(
-                        new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
-                        FileSystemRights.FullControl,
-                        InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                        PropagationFlags.None,
-                        AccessControlType.Allow));
-                    security.AddAccessRule(new FileSystemAccessRule(
-                        new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
-                        FileSystemRights.FullControl,
-                        InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                        PropagationFlags.None,
-                        AccessControlType.Allow));
-                    dirInfo.SetAccessControl(security);
-                }
-                catch
-                {
-                    // Best-effort ACL for environments without elevation
-                }
-            }
+            Directory.CreateDirectory(custom);
+            DataFolderSecured = true;
+        }
+        else
+        {
+            _ = DataDirectory; // reads the location and runs the trust check once
         }
 
         if (!Directory.Exists(CapturesDirectory))
@@ -237,6 +307,13 @@ public static class DatabaseManager
                 PRIMARY KEY (pid, start_time_utc)
             );
 
+            CREATE TABLE IF NOT EXISTS admin_login_failures (
+                id INTEGER PRIMARY KEY,
+                source TEXT NOT NULL,
+                failed_at_utc TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_admin_login_failures_time ON admin_login_failures (failed_at_utc);
             CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events (timestamp);
             CREATE INDEX IF NOT EXISTS idx_events_user_timestamp ON events (user_sid, timestamp);
             CREATE INDEX IF NOT EXISTS idx_grace_user_date ON grace_requests (user_id, date);

@@ -19,7 +19,7 @@ Each change of behaviour goes through OpenSpec (`openspec/`, commands `/opsx:*`)
 3. `/opsx:verify` checks the code against the spec. For Windows behaviour, the proof is a run on the test VM (see below), not the build on the Mac.
 4. `/opsx:archive` moves the delta into `openspec/specs/`.
 
-An architecture decision that is hard to reverse gets an ADR in `docs/adr/` (next number 0010), in the style of the existing ADRs.
+An architecture decision that is hard to reverse gets an ADR in `docs/adr/` (next number 0011), in the style of the existing ADRs.
 
 The `openspec` command on this Mac is a wrapper in `~/.local/bin` pinned to 1.14.1, the version that generated the skills in `.claude/skills/openspec-*`. Keep the two versions the same.
 

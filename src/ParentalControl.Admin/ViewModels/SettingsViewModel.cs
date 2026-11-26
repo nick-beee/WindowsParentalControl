@@ -7,6 +7,8 @@ using ParentalControl.Core.Data;
 using ParentalControl.Core.Security;
 using ParentalControl.Core.Services;
 using ParentalControl.Core;
+using ParentalControl.Domain.AdminAccess;
+using ParentalControl.Domain.DataFolder;
 
 namespace ParentalControl.Admin.ViewModels;
 
@@ -26,20 +28,45 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private int _maxDailyRequests = 1;
 
+    // Web admin sign-in (require-admin-sign-in D11). The secret shows only during a setup, never after it.
     [ObservableProperty]
-    private bool _isTotpEnabled;
+    private bool _isSignInSetUp;
 
     [ObservableProperty]
-    private string _totpSecret = string.Empty;
+    private string _signInStatusText = string.Empty;
+
+    /// <summary>The warning about a data folder that the service moved away, or empty (finding B2).</summary>
+    [ObservableProperty]
+    private string _dataFolderWarningText = string.Empty;
 
     [ObservableProperty]
-    private string _totpUri = string.Empty;
+    private bool _hasDataFolderWarning;
+
+    [ObservableProperty]
+    private string _setupButtonText = "Set up sign-in";
+
+    [ObservableProperty]
+    private bool _isSetupInProgress;
+
+    [ObservableProperty]
+    private string _pendingSecretText = string.Empty;
 
     [ObservableProperty]
     private BitmapSource? _totpQrImage;
 
     [ObservableProperty]
     private bool _hasQrCode;
+
+    [ObservableProperty]
+    private string _setupCode = string.Empty;
+
+    [ObservableProperty]
+    private string _setupError = string.Empty;
+
+    [ObservableProperty]
+    private string _signInActionStatus = string.Empty;
+
+    private string _pendingSecret = string.Empty;
 
     [ObservableProperty]
     private string _testStatus = string.Empty;
@@ -141,14 +168,7 @@ public partial class SettingsViewModel : ObservableObject
         TelegramNotifyAdminLogon = SettingsRepository.IsTelegramNotifyAdminLogonEnabled();
         AlertIntervals = SettingsRepository.Get(SettingsRepository.KeyAlertIntervals, "15,5,1");
         MaxDailyRequests = SettingsRepository.GetMaxDailyRequests();
-        IsTotpEnabled = SettingsRepository.Get(SettingsRepository.KeyTotpEnabled, "false") == "true";
-        TotpSecret = SettingsRepository.Get(SettingsRepository.KeyTotpSecret);
-
-        if (!string.IsNullOrWhiteSpace(TotpSecret))
-        {
-            TotpUri = TotpService.GenerateOtpauthUri("ParentalControl", Environment.MachineName, TotpSecret);
-            RefreshQrCode();
-        }
+        RefreshSignInState();
 
         // Load message templates
         LanguagePreset = SettingsRepository.GetLanguagePreset();
@@ -187,50 +207,122 @@ public partial class SettingsViewModel : ObservableObject
         _navigateBack();
     }
 
-    partial void OnTotpSecretChanged(string value)
+    private void RefreshSignInState()
     {
-        if (!string.IsNullOrWhiteSpace(value))
+        IsSignInSetUp = AdminAccessRepository.IsCredentialSetUp();
+        // The state of the data folder step comes from the service (registry), so the text shows the real state of
+        // the web admin and not only the saved setup (finding S3).
+        var folder = Core.Platform.DataFolderStatusStore.Read();
+        SignInStatusText = AdminSignInStatus.Describe(IsSignInSetUp, AdminAccessRepository.GetSetupTime(), folder, TimeZoneInfo.Local,
+            Services.ServiceState.IsRunning());
+        // A warning shows while the old folder still exists, so the parent knows what to delete.
+        var warnings = new[]
         {
-            TotpUri = TotpService.GenerateOtpauthUri("ParentalControl", Environment.MachineName, value.Trim());
-        }
-        else
+            folder.QuarantinedTo is { } moved && Directory.Exists(moved) ? AdminSignInStatus.QuarantineWarning(folder, TimeZoneInfo.Local) : null,
+            folder.RelocatedFrom is { } old && Directory.Exists(old) ? AdminSignInStatus.RelocationWarning(folder, TimeZoneInfo.Local) : null,
+            AdminSignInStatus.StepWarning(folder),
+        }.Where(w => w is not null).ToList();
+        DataFolderWarningText = string.Join(Environment.NewLine + Environment.NewLine, warnings);
+        HasDataFolderWarning = warnings.Count > 0;
+        SetupButtonText = IsSignInSetUp ? "Set up a new secret" : "Set up sign-in";
+    }
+
+    /// <summary>Starts a setup with a new secret. Nothing is saved until the parent confirms a code.</summary>
+    [RelayCommand]
+    private void StartSignInSetup()
+    {
+        _pendingSecret = TotpService.GenerateSecret();
+        PendingSecretText = string.Join(" ", _pendingSecret.Chunk(4).Select(c => new string(c)));
+        SetupCode = string.Empty;
+        SetupError = string.Empty;
+        SignInActionStatus = string.Empty;
+        RefreshQrCode(TotpService.GenerateOtpauthUri("ParentalControl", Environment.MachineName, _pendingSecret));
+        IsSetupInProgress = true;
+    }
+
+    /// <summary>
+    /// Saves the new secret only for a valid current code. The save also ends all web sessions and clears the
+    /// login limit, and the confirmation code cannot log in on the web.
+    /// </summary>
+    [RelayCommand]
+    private void ConfirmSignInSetup()
+    {
+        if (!IsSetupInProgress || string.IsNullOrEmpty(_pendingSecret))
+            return;
+
+        var now = DateTimeOffset.UtcNow;
+        if (!Totp.TryVerify(_pendingSecret, SetupCode, now, Totp.NoStepUsed, out var step))
         {
-            TotpUri = string.Empty;
+            SetupError = "The code does not match. Check that the time on the phone is correct and enter the current code.";
+            return;
         }
-        RefreshQrCode();
+
+        try
+        {
+            AdminAccessRepository.CompleteSetup(_pendingSecret, step, now);
+        }
+        catch (Exception ex)
+        {
+            SetupError = "The sign-in could not be saved: " + ex.Message;
+            return;
+        }
+
+        EndSetup();
+        RefreshSignInState();
+        SignInActionStatus = "✅ The sign-in is set up. All earlier web sessions are signed out.";
     }
 
     [RelayCommand]
-    private void GenerateTotpSecret()
+    private void CancelSignInSetup()
     {
-        TotpSecret = TotpService.GenerateSecret();
+        EndSetup();
     }
 
-    private void RefreshQrCode()
+    private void EndSetup()
     {
-        if (!string.IsNullOrWhiteSpace(TotpUri))
-        {
-            try
-            {
-                var pngBytes = TotpService.GenerateQrCodePng(TotpUri, 6);
-                var image = new BitmapImage();
-                using var ms = new MemoryStream(pngBytes);
-                image.BeginInit();
-                image.CacheOption = BitmapCacheOption.OnLoad;
-                image.StreamSource = ms;
-                image.EndInit();
-                image.Freeze();
-                TotpQrImage = image;
-                HasQrCode = true;
-                return;
-            }
-            catch
-            {
-            }
-        }
-
+        _pendingSecret = string.Empty;
+        PendingSecretText = string.Empty;
+        SetupCode = string.Empty;
+        SetupError = string.Empty;
         TotpQrImage = null;
         HasQrCode = false;
+        IsSetupInProgress = false;
+    }
+
+    [RelayCommand]
+    private void SignOutAllWebSessions()
+    {
+        AdminAccessRepository.SignOutAllSessions();
+        SignInActionStatus = "✅ All web sessions are signed out.";
+    }
+
+    [RelayCommand]
+    private void ClearLoginLimit()
+    {
+        var count = AdminAccessRepository.DeleteAllFailures();
+        SignInActionStatus = $"✅ The login limit is cleared ({count} failed codes removed).";
+    }
+
+    private void RefreshQrCode(string uri)
+    {
+        try
+        {
+            var pngBytes = TotpService.GenerateQrCodePng(uri, 6);
+            var image = new BitmapImage();
+            using var ms = new MemoryStream(pngBytes);
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.StreamSource = ms;
+            image.EndInit();
+            image.Freeze();
+            TotpQrImage = image;
+            HasQrCode = true;
+        }
+        catch
+        {
+            TotpQrImage = null;
+            HasQrCode = false;
+        }
     }
 
     [RelayCommand]
@@ -343,8 +435,7 @@ public partial class SettingsViewModel : ObservableObject
         SettingsRepository.Set(SettingsRepository.KeyTelegramNotifyAdminLogon, TelegramNotifyAdminLogon ? "true" : "false");
         SettingsRepository.Set(SettingsRepository.KeyAlertIntervals, AlertIntervals.Trim());
         SettingsRepository.Set(SettingsRepository.KeyMaxDailyRequests, MaxDailyRequests.ToString());
-        SettingsRepository.Set(SettingsRepository.KeyTotpEnabled, IsTotpEnabled ? "true" : "false");
-        SettingsRepository.Set(SettingsRepository.KeyTotpSecret, TotpSecret.Trim());
+        // The sign-in settings are not saved here: only a confirmed setup writes them.
 
         // Save customizable messages
         SettingsRepository.Set(SettingsRepository.KeyMsgLimitWarn, MsgLimitWarn.Trim());

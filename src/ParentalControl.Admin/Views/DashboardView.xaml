@@ -2,9 +2,35 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:md="http://materialdesigninxaml.net/winfx/xaml/themes">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+    </UserControl.Resources>
 
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <StackPanel Margin="16,4,16,16">
+
+            <!-- ═══ Web admin locked (require-admin-sign-in D11) ═══ -->
+            <Border Visibility="{Binding IsWebAdminLocked, Converter={StaticResource BooleanToVisibilityConverter}}"
+                    Background="#FEF3C7" BorderBrush="#F59E0B" BorderThickness="1" CornerRadius="6" Padding="12,10" Margin="0,0,0,12">
+                <StackPanel>
+                    <TextBlock Text="🔒 The web admin is locked."
+                               FontWeight="SemiBold" Foreground="#78350F" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding WebAdminLockedHint}"
+                               Foreground="#78350F" TextWrapping="Wrap" Margin="0,4,0,0" />
+                </StackPanel>
+            </Border>
+
+            <!-- ═══ Setup lock after a move of the data folder (require-admin-sign-in S2) ═══ -->
+            <Border Visibility="{Binding IsSetupLockActive, Converter={StaticResource BooleanToVisibilityConverter}}"
+                    Background="#FEE2E2" BorderBrush="#EF4444" BorderThickness="1" CornerRadius="6" Padding="12,10" Margin="0,0,0,12">
+                <StackPanel>
+                    <TextBlock Text="🔒 Parental Control locks each session of a user who is not an administrator."
+                               FontWeight="SemiBold" Foreground="#7F1D1D" TextWrapping="Wrap" />
+                    <TextBlock Foreground="#7F1D1D" TextWrapping="Wrap" Margin="0,4,0,0"
+                               Text="The service moved the data folder and started with a new database, so it knows no child. Open the child in the user list below and mark it as restricted. The lock then ends. If no user needs limits, select &quot;Finish setup&quot;." />
+                    <Button Content="Finish setup" Command="{Binding FinishSetupCommand}" HorizontalAlignment="Left" Margin="0,8,0,0" />
+                </StackPanel>
+            </Border>
 
             <!-- ═══ Standard Users ═══ -->
             <md:ColorZone Mode="PrimaryMid" Padding="8,6" CornerRadius="4" Margin="0,0,0,8">

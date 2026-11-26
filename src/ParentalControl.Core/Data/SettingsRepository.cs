@@ -11,7 +11,16 @@ public static class SettingsRepository
     public const string KeyTelegramNotifySignOut = "telegram_notify_sign_out";
     public const string KeyTelegramNotifyAdminLogon = "telegram_notify_admin_logon";
     public const string KeyTotpSecret = "totp_secret";
-    public const string KeyTotpEnabled = "totp_enabled";
+    public const string KeyTotpEnabled = "totp_enabled"; // "true" = the setup of the admin sign-in is complete
+    public const string KeyTotpLastStep = "totp_last_step"; // the TOTP time step of the last used code (replay guard)
+    public const string KeyTotpSetupAt = "totp_setup_at"; // UTC time of the last setup, ISO 8601
+    public const string KeyAdminSessionEpoch = "admin_session_epoch"; // Admin Sessions of an earlier epoch are not valid
+    public const string KeyAdminSetupNoticeSent = "admin_setup_notice_sent"; // "true" after the one-time setup notice
+    public const string KeyDataFolderQuarantineNotified = "data_folder_quarantine_notified"; // the moved folder of the last Telegram alert
+    public const string KeyDataFolderRelocationNotified = "data_folder_relocation_notified"; // the new data folder of the last Telegram alert
+    // The setup lock after a quarantine or a relocation (require-admin-sign-in S2): the UTC time of the move, or empty.
+    // While it is set and no Restricted User exists, the service locks each session of a user who is not an administrator.
+    public const string KeyDataFolderSetupLock = "data_folder_setup_lock";
     public const string KeyAlertIntervals = "alert_intervals"; // e.g. "15,5,1"
     public const string KeyMaxDailyRequests = "max_daily_requests"; // default: 1
     public const string KeyLanguagePreset = "language_preset"; // a Language Preset: "de", "en" or "id"
@@ -78,6 +87,30 @@ public static class SettingsRepository
     {
         using var connection = DatabaseManager.CreateConnection();
         using var cmd = connection.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO app_settings (key, value)
+            VALUES (@key, @value)
+            ON CONFLICT(key) DO UPDATE SET value = @value
+            """;
+        cmd.Parameters.AddWithValue("@key", key);
+        cmd.Parameters.AddWithValue("@value", value ?? string.Empty);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Writes all keys in one transaction: all keys or none.</summary>
+    public static void SetMany(IEnumerable<KeyValuePair<string, string>> values)
+    {
+        using var connection = DatabaseManager.CreateConnection();
+        using var transaction = connection.BeginTransaction();
+        foreach (var (key, value) in values)
+            Set(connection, transaction, key, value);
+        transaction.Commit();
+    }
+
+    internal static void Set(SqliteConnection connection, SqliteTransaction transaction, string key, string value)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
         cmd.CommandText = """
             INSERT INTO app_settings (key, value)
             VALUES (@key, @value)

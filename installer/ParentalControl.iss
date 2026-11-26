@@ -43,6 +43,8 @@ Source: "..\publish\agent\*"; DestDir: "{app}\agent"; Flags: ignoreversion recur
 
 [Registry]
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "ParentalControlAgent"; ValueData: """{app}\agent\{#AgentExeName}"""; Flags: uninsdeletevalue
+; The service writes the state of the data folder here (require-admin-sign-in). Remove it at uninstall.
+Root: HKLM; Subkey: "Software\ParentalControl"; Flags: uninsdeletekey dontcreatekey
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\admin\{#MyAppExeName}"; \
@@ -65,8 +67,8 @@ Filename: "sc"; Parameters: "delete {#ServiceName}"; \
 [UninstallDelete]
 ; Remove desktop shortcut
 Type: files; Name: "{commondesktop}\{#MyAppName}.lnk"
-; Remove ProgramData folder on uninstall (logs, database)
-Type: filesandordirs; Name: "C:\ProgramData\ParentalControl"
+; The data folder (logs, database) is deleted in [Code] (CurUninstallStepChanged), only after a check that it is a
+; real folder that SYSTEM or Administrators owns (require-admin-sign-in, S4 of the second review).
 ; Remove entire install directory (Program Files\ParentalControl)
 Type: filesandordirs; Name: "{app}"
 
@@ -102,6 +104,9 @@ begin
     Exec('sc', ExpandConstant('failure {#ServiceName}')
          + ' reset= 86400 actions= restart/10000/restart/30000/restart/60000',
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // require-admin-sign-in SF2: run the restart actions also when the service reports a stop with an error code.
+    Exec('sc', ExpandConstant('failureflag {#ServiceName} 1'),
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
 procedure CreateService();
@@ -126,6 +131,9 @@ begin
     // Configure service to restart on failure (10s, 30s, 60s)
     Exec('sc', ExpandConstant('failure {#ServiceName}')
          + ' reset= 86400 actions= restart/10000/restart/30000/restart/60000',
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // require-admin-sign-in SF2: run the restart actions also when the service reports a stop with an error code.
+    Exec('sc', ExpandConstant('failureflag {#ServiceName} 1'),
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
@@ -201,5 +209,93 @@ begin
         else
             UpdateService();
         StartService();
+    end;
+end;
+
+// The service can make a new data folder with a random name (require-admin-sign-in D14) and stores its location in
+// HKLM\Software\ParentalControl\DataFolderPath. Read it before the uninstall removes the key, and delete the folder
+// after the service is gone. Only a name of the form {commonappdata}\ParentalControl-<32 hex digits> is deleted.
+// S4: the uninstaller deletes a data folder (the default one or a random one) only if it is a real folder, not a
+// junction or a symbolic link, and SYSTEM or Administrators owns it. A standard user can make a folder or a link with
+// the name before the install; the uninstaller then leaves it alone.
+var
+    RelocatedDataFolder: String;
+
+function GetFileAttributesW(lpFileName: String): Cardinal;
+    external 'GetFileAttributesW@kernel32.dll stdcall';
+
+function IsServiceDataFolder(Path: String): Boolean;
+var
+    Prefix: String;
+    I: Integer;
+    C: Char;
+begin
+    Prefix := ExpandConstant('{commonappdata}\ParentalControl-');
+    Result := (Length(Path) = Length(Prefix) + 32) and (CompareText(Copy(Path, 1, Length(Prefix)), Prefix) = 0);
+    if Result then
+        for I := Length(Prefix) + 1 to Length(Path) do
+        begin
+            C := Path[I];
+            if not (((C >= '0') and (C <= '9')) or ((C >= 'a') and (C <= 'f')) or ((C >= 'A') and (C <= 'F'))) then
+                Result := False;
+        end;
+end;
+
+// True only if Path is a real folder (no reparse point) and its owner is SYSTEM (S-1-5-18) or Administrators
+// (S-1-5-32-544). Each error gives False: the folder then stays.
+function IsSafeToDelete(Path: String): Boolean;
+var
+    Attributes: Cardinal;
+    ResultCode: Integer;
+    Command: String;
+begin
+    Result := False;
+    Attributes := GetFileAttributesW(Path);
+    if Attributes = $FFFFFFFF then
+        Exit; // missing
+    if (Attributes and $10) = 0 then
+    begin
+        Log('Uninstall: ' + Path + ' is not a folder. It stays.');
+        Exit;
+    end;
+    if (Attributes and $400) <> 0 then
+    begin
+        Log('Uninstall: ' + Path + ' is a junction or a symbolic link. It stays.');
+        Exit;
+    end;
+    if Pos('''', Path) > 0 then
+        Exit;
+    Command := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' +
+        '$p=''' + Path + '''; $i=Get-Item -LiteralPath $p -Force -ErrorAction Stop; ' +
+        'if ((($i.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or (-not $i.PSIsContainer)) { exit 3 }; ' +
+        '$o=(Get-Acl -LiteralPath $p -ErrorAction Stop).GetOwner([Security.Principal.SecurityIdentifier]).Value; ' +
+        'if (($o -eq ''S-1-5-18'') -or ($o -eq ''S-1-5-32-544'')) { exit 0 } else { exit 4 }"';
+    if Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Command, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+       and (ResultCode = 0) then
+        Result := True
+    else
+        Log(Format('Uninstall: the owner check of %s failed (code %d). It stays.', [Path, ResultCode]));
+end;
+
+procedure DeleteDataFolder(Path: String);
+begin
+    if (Path <> '') and IsSafeToDelete(Path) then
+        DelTree(Path, True, True, True);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+    Value: String;
+begin
+    if CurUninstallStep = usUninstall then
+    begin
+        RelocatedDataFolder := '';
+        if RegQueryStringValue(HKLM64, 'Software\ParentalControl', 'DataFolderPath', Value) and IsServiceDataFolder(Value) then
+            RelocatedDataFolder := Value;
+    end
+    else if CurUninstallStep = usPostUninstall then
+    begin
+        DeleteDataFolder(ExpandConstant('{commonappdata}\ParentalControl'));
+        DeleteDataFolder(RelocatedDataFolder);
     end;
 end;
