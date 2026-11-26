@@ -268,6 +268,12 @@ public sealed class CategoryEnforcer : IDisposable
                     ["minutes"] = status.RemainingMinutes.ToString(),
                 });
                 var sent = SendToUser(userId, message);
+                if (sent == 0)
+                {
+                    // All sessions of the user are locked. Try again at the next tick (also the tick after an unlock).
+                    _sentToday.Remove($"warn:{userId}:{status.Key}:{status.DueWarning}");
+                    continue;
+                }
                 _logger.Information("Category warning {Key} ({Remaining} min left) to {Username}: sent to {Sessions} session(s)",
                     status.Key, status.RemainingMinutes, users[userId].Username, sent);
             }

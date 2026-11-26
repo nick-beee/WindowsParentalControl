@@ -48,7 +48,7 @@
 
 ## 9. Integration check
 
-- [ ] 9.1 Full run on the VM from the snapshot `clean-before-parental`: install the build, Kid logs on, a whole day flow with a Games limit of 3 minutes, an App Limit of 5 minutes on one game, and a session Allowance Time of 30 minutes (warning, suspension of the other games at 3 minutes, the App Limit game at 5 minutes, bonus, resume, Allowance Time lock still works); verify each step and record the results in the PR.
+- [x] 9.1 Full run on the VM from the snapshot `clean-before-parental`: install the build, Kid logs on, a whole day flow with a Games limit of 3 minutes, an App Limit of 5 minutes on one game, and a session Allowance Time of 30 minutes (warning, suspension of the other games at 3 minutes, the App Limit game at 5 minutes, bonus, resume, Allowance Time lock still works); verify each step and record the results in the PR.
 - [ ] 9.2 Update `docs/HANDOFF.md` (stage 1 done, problems found) and README "Key Features"; verify the text matches the merged behavior.
 
 ## Workflow follow-up

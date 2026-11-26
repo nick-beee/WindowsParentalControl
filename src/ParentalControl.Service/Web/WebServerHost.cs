@@ -701,10 +701,16 @@ public sealed class WebServerHost : BackgroundService
                         ? resolver.ResolveFileName(processName)
                         : resolver.Resolve(exePath);
                     _foregroundHistory.Record(user.Id, today, resolution.CanonicalPath);
-                    CategoryUsageRepository.AddSeconds(user.Id, today, resolution.Category, durationSeconds);
+
+                    // A Suspended App in front is not use: its frozen window must not take time from the category.
+                    var suspended = SuspensionRepository.GetForUser(user.Id);
+                    var isSuspendedExe = resolution.CanonicalPath is not null && suspended.Any(r =>
+                        string.Equals(WindowsPath.Canonicalize(r.ExePath), resolution.CanonicalPath, StringComparison.OrdinalIgnoreCase));
+                    if (!isSuspendedExe)
+                        CategoryUsageRepository.AddSeconds(user.Id, today, resolution.Category, durationSeconds);
 
                     // The agent mutes the audio of these processes.
-                    var suspendedPids = SuspensionRepository.GetForUser(user.Id).Select(r => r.Pid).Distinct().ToArray();
+                    var suspendedPids = suspended.Select(r => r.Pid).Distinct().ToArray();
                     return Results.Ok(new { success = true, suspendedPids });
                 }
 

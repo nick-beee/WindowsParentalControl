@@ -7,7 +7,7 @@ Counts how long a Restricted User uses each App Category per day and pauses the 
 ## ADDED Requirements
 
 ### Requirement: Count Category Usage from the Foreground Window
-The system SHALL count Category Usage per Restricted User, App Category and day from the Foreground Window samples of the Session Agent. It SHALL add the sample time to the category of the sampled exe, and SHALL store whole minutes. For a Store app, the sampled exe SHALL be the exe of the app, not the window host `ApplicationFrameHost.exe`. It SHALL NOT count System, and SHALL NOT count while the session is locked.
+The system SHALL count Category Usage per Restricted User, App Category and day from the Foreground Window samples of the Session Agent. It SHALL add the sample time to the category of the sampled exe, and SHALL store whole minutes. For a Store app, the sampled exe SHALL be the exe of the app, not the window host `ApplicationFrameHost.exe`. It SHALL NOT count System, SHALL NOT count while the session is locked, and SHALL NOT count a sample of an exe that it suspended for this user.
 
 #### Scenario: Three samples of a game
 - **WHEN** the agent reports a Games exe as Foreground Window in three samples of 20 seconds each, in an unlocked session
@@ -19,6 +19,10 @@ The system SHALL count Category Usage per Restricted User, App Category and day 
 
 #### Scenario: System program
 - **WHEN** the agent reports `C:\Windows\explorer.exe` as Foreground Window
+- **THEN** no Category Usage increases
+
+#### Scenario: Suspended game in front
+- **WHEN** the system suspended a game and its frozen window stays the Foreground Window
 - **THEN** no Category Usage increases
 
 #### Scenario: Store app
