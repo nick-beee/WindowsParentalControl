@@ -44,7 +44,7 @@ All VM checks run on test VM 102 as `Kid` in the Proxmox console (noVNC or SPICE
 
 ## 5. Documentation
 
-- [ ] 5.1 Add the terms Session End Hold and Pending Suspension to `GLOSSARY.md`, and add the resume at the end of a session to the term Suspended App; verify the terms match their use in the spec delta.
+- [x] 5.1 Add the terms Session End Hold and Pending Suspension to `GLOSSARY.md`, and add the resume at the end of a session to the term Suspended App; verify the terms match their use in the spec delta.
 
 ## 6. End-to-end check on the VM
 
