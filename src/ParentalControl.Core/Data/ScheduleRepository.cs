@@ -5,9 +5,13 @@ namespace ParentalControl.Core.Data;
 
 public static class ScheduleRepository
 {
-    public static LimitConfig? GetEffectiveLimit(int userId, DayOfWeek day, DateOnly? date = null)
+    /// <summary>
+    /// The limit of a user on a day. The caller gives the day and its weekday from the Control Time Zone
+    /// (<c>ControlTime.Current</c>), never from the system time zone (control-clock D2).
+    /// </summary>
+    public static LimitConfig? GetEffectiveLimit(int userId, DayOfWeek day, DateOnly date)
     {
-        var targetDate = date ?? DateOnly.FromDateTime(DateTime.Now);
+        var targetDate = date;
 
         // 1. Highest priority: single-day schedule exception
         var exc = ScheduleExceptionRepository.GetForDate(userId, targetDate);

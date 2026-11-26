@@ -624,7 +624,7 @@ public sealed class TelegramBotService
         }
 
         var now = DateTime.UtcNow;
-        var lines = items.Select(s => BreakTelegramTexts.Line(s, EscapeMarkdown(s.Username), now, TimeZoneInfo.Local, lang));
+        var lines = items.Select(s => BreakTelegramTexts.Line(s, EscapeMarkdown(s.Username), now, ControlTime.Zone, lang));
         var text = BreakTelegramTexts.Header(lang) + "\n" + string.Join("\n", lines);
         var buttons = items
             .Where(s => s.BreakStartedUtc is not null && s.BreakEndsUtc is { } end && now < end)
@@ -645,7 +645,7 @@ public sealed class TelegramBotService
         if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
 
         var lang = LanguagePreset.ParentLanguage(SettingsRepository.GetLanguagePreset());
-        var text = BreakTelegramTexts.Notice(EscapeMarkdown(username), startUtc, endUtc, TimeZoneInfo.Local, lang);
+        var text = BreakTelegramTexts.Notice(EscapeMarkdown(username), startUtc, endUtc, ControlTime.Zone, lang);
         var keyboard = new
         {
             inline_keyboard = new object[][]

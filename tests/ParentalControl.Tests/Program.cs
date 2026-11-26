@@ -82,12 +82,12 @@ ScheduleRepository.SaveDaySchedule(new DaySchedule
     ScheduleStart = new TimeOnly(9, 0),
     ScheduleEnd = new TimeOnly(23, 0)
 });
-var saturdayLimit = ScheduleRepository.GetEffectiveLimit(user.Id, DayOfWeek.Saturday);
+var saturdayLimit = ScheduleRepository.GetEffectiveLimit(user.Id, DayOfWeek.Saturday, today);
 Debug.Assert(saturdayLimit != null, "Saturday limit should not be null");
 Debug.Assert(saturdayLimit!.DailyMinutes == 180, "Saturday limit should be 180");
 
 // Sunday has no specific day schedule, should fallback
-var sundayLimit = ScheduleRepository.GetEffectiveLimit(user.Id, DayOfWeek.Sunday);
+var sundayLimit = ScheduleRepository.GetEffectiveLimit(user.Id, DayOfWeek.Sunday, today);
 Console.WriteLine("✅ Weekly Schedule & Fallback Verification Passed.");
 
 // 7. Test Session Lock/Unlock Event Types
@@ -281,16 +281,16 @@ ScheduleRepository.SaveDaySchedule(new DaySchedule
     ScheduleEnd = new TimeOnly(20, 0)
 });
 
-var monLimit = ScheduleRepository.GetEffectiveLimit(user.Id, DayOfWeek.Monday);
+var monLimit = ScheduleRepository.GetEffectiveLimit(user.Id, DayOfWeek.Monday, today);
 Debug.Assert(monLimit != null && monLimit.DailyMinutes == 90, "Monday custom limit should be 90m");
 Debug.Assert(monLimit.ScheduleStart == new TimeOnly(15, 0), "Monday custom start should be 15:00");
 
-var tueLimit = ScheduleRepository.GetEffectiveLimit(user.Id, DayOfWeek.Tuesday);
+var tueLimit = ScheduleRepository.GetEffectiveLimit(user.Id, DayOfWeek.Tuesday, today);
 Debug.Assert(tueLimit != null && tueLimit.DailyMinutes == 120, "Tuesday should fall back to baseline 120m");
 
 // Delete custom schedule for Monday -> should fall back to baseline
 ScheduleRepository.DeleteDaySchedule(user.Id, DayOfWeek.Monday);
-var monLimitAfterDelete = ScheduleRepository.GetEffectiveLimit(user.Id, DayOfWeek.Monday);
+var monLimitAfterDelete = ScheduleRepository.GetEffectiveLimit(user.Id, DayOfWeek.Monday, today);
 Debug.Assert(monLimitAfterDelete != null && monLimitAfterDelete.DailyMinutes == 120, "Monday should fall back to 120m baseline after deletion");
 Console.WriteLine("✅ Sparse Weekly Schedule & Baseline Fallback Verification Passed.");
 
@@ -1734,6 +1734,9 @@ Debug.Assert(SettingsRepository.IsTelegramNotifyBreakEnabled() == false, "telegr
 Console.WriteLine("✅ Break Repository Passed.");
 
 BlockedProgramChecks.RunData();
+
+// harden-clock-and-disk: the write switch, the usage ledger, the Control Time Zone.
+ClockAndStorageChecks.Run(user);
 
 // Cleanup test user
 UserRepository.DeleteBySid(testSid);

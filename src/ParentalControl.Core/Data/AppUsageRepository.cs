@@ -50,7 +50,8 @@ public static class AppUsageRepository
     public static void AddMinutes(int userId, DateOnly date, string processName, string windowTitle, int minutes, int hour = -1)
     {
         if (string.IsNullOrWhiteSpace(processName) || minutes <= 0) return;
-        if (hour < 0 || hour > 23) hour = DateTime.Now.Hour;
+        // The hour bucket of the Control Time Zone, the same clock as the date (control-clock D2).
+        if (hour < 0 || hour > 23) hour = ControlTime.Current.TimeOfDay.Hour;
 
         using var connection = DatabaseManager.CreateConnection();
         using var transaction = connection.BeginTransaction();

@@ -22,6 +22,18 @@ public static class CategoryUsageRepository
     /// <summary>Adds seconds of usage. System is never counted. Returns the whole minutes written now.</summary>
     public static int AddSeconds(int userId, DateOnly date, AppCategory category, int seconds)
     {
+        var minutes = CollectMinutes(userId, date, category, seconds);
+        if (minutes > 0)
+            AddMinutes(userId, date, category, minutes);
+        return minutes;
+    }
+
+    /// <summary>
+    /// Adds seconds to the accumulator and takes out the whole minutes, without a write. The service gives them to its
+    /// usage ledger, so a failed write keeps them in the Pending Usage (storage-failure D6). System is never counted.
+    /// </summary>
+    public static int CollectMinutes(int userId, DateOnly date, AppCategory category, int seconds)
+    {
         if (category == AppCategory.System || seconds <= 0)
             return 0;
 
@@ -40,8 +52,6 @@ public static class CategoryUsageRepository
             acc.Seconds %= 60;
         }
 
-        if (minutes > 0)
-            AddMinutes(userId, date, category, minutes);
         return minutes;
     }
 

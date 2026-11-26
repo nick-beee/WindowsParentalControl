@@ -105,7 +105,8 @@ public static class ScreenCaptureRepository
     public static int PruneOldCaptures(int retentionDays = 7, long maxTotalBytes = 500L * 1024 * 1024)
     {
         int deletedCount = 0;
-        var cutoff = DateTime.Now.AddDays(-retentionDays);
+        // The capture rows store the time of the Control Time Zone (control-clock D2), so the cutoff uses it too.
+        var cutoff = ControlTime.Current.Now.AddDays(-retentionDays);
 
         // 1. Prune by retention days
         using (var connection = DatabaseManager.CreateConnection())
@@ -192,17 +193,18 @@ public static class ScreenCaptureRepository
     }
 
     /// <summary>
-    /// The number and the bytes of the captures of a user since <paramref name="dayStartLocal"/> (local midnight), for
-    /// the daily quota of the capture route (require-admin-sign-in, CB1 d). The timestamps are stored in local time
-    /// in round-trip form, so a text compare is a time compare.
+    /// The number and the bytes of the captures of a user since <paramref name="dayStartControl"/> (midnight of the
+    /// Control Time Zone), for the daily quota of the capture route (require-admin-sign-in, CB1 d; control-clock D2).
+    /// The service stores the timestamps in the time of the Control Time Zone in round-trip form, so a text compare is
+    /// a time compare.
     /// </summary>
-    public static (int Files, long Bytes) GetDayTotals(int userId, DateTime dayStartLocal)
+    public static (int Files, long Bytes) GetDayTotals(int userId, DateTime dayStartControl)
     {
         using var connection = DatabaseManager.CreateConnection();
         using var cmd = connection.CreateCommand();
         cmd.CommandText = "SELECT COUNT(*), COALESCE(SUM(file_size_bytes), 0) FROM screen_captures WHERE user_id = @userId AND timestamp >= @dayStart;";
         cmd.Parameters.AddWithValue("@userId", userId);
-        cmd.Parameters.AddWithValue("@dayStart", dayStartLocal.ToString("o"));
+        cmd.Parameters.AddWithValue("@dayStart", dayStartControl.ToString("o"));
         using var reader = cmd.ExecuteReader();
         reader.Read();
         return (reader.GetInt32(0), reader.GetInt64(1));

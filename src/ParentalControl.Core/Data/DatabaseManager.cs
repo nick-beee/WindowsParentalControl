@@ -452,13 +452,30 @@ public static class DatabaseManager
         CategoryRepository.SeedBlockedBrowsersIfNeeded(connection);
     }
 
+    /// <summary>
+    /// Test switch for the Storage Lockdown (harden-clock-and-disk, task 4.5): the path of a file. While that file
+    /// exists, each database write fails and each read works, as on a full disk. Only an administrator can set the
+    /// environment of the service. Set it only on a test machine.
+    /// </summary>
+    public const string TestWriteFailEnv = "PARENTAL_CONTROL_TEST_WRITE_FAIL";
+
+    private static readonly string? TestWriteFailFile = Environment.GetEnvironmentVariable(TestWriteFailEnv);
+
+    /// <summary>The console tests set this to make each database write fail (<c>SQLITE_READONLY</c>).</summary>
+    public static volatile bool TestBlockWrites;
+
+    /// <summary>True while the test switch blocks the writes.</summary>
+    public static bool WritesBlockedForTest =>
+        TestBlockWrites || (!string.IsNullOrWhiteSpace(TestWriteFailFile) && File.Exists(TestWriteFailFile));
+
     public static SqliteConnection CreateConnection()
     {
         var connection = new SqliteConnection(ConnectionString);
         connection.Open();
 
         using var pragmaCmd = connection.CreateCommand();
-        pragmaCmd.CommandText = "PRAGMA busy_timeout=5000;";
+        // query_only: the test switch. Each INSERT, UPDATE or DELETE then fails, and each read works.
+        pragmaCmd.CommandText = WritesBlockedForTest ? "PRAGMA busy_timeout=5000; PRAGMA query_only=1;" : "PRAGMA busy_timeout=5000;";
         pragmaCmd.ExecuteNonQuery();
 
         return connection;
