@@ -4,6 +4,7 @@
     Publishes the ParentalControl projects and builds the Inno Setup installer.
 .DESCRIPTION
     1. Publishes ParentalControl.Service and ParentalControl.Admin as self-contained win-x64.
+       The Service build runs npm to build the web admin (web/admin), so Node.js 22.12 or later must be installed.
     2. Invokes the Inno Setup compiler to produce ParentalControlSetup.exe.
 .PARAMETER InnoSetupPath
     Path to iscc.exe. Defaults to the standard Inno Setup 6 install location.
@@ -49,6 +50,14 @@ if ([string]::IsNullOrWhiteSpace($InnoSetupPath) -or -not (Test-Path $InnoSetupP
     exit 1
 }
 Write-Host "Using Inno Setup compiler: $InnoSetupPath" -ForegroundColor DarkCyan
+
+# The Service build runs "npm ci" and "npm run build" in web/admin (ParentalControl.Service.csproj).
+$npm = Get-Command npm -ErrorAction SilentlyContinue
+if (-not $npm) {
+    Write-Error "npm not found. Install Node.js 22.12 or later (https://nodejs.org): the Service build needs it for the web admin."
+    exit 1
+}
+Write-Host "Using Node.js $(node --version)" -ForegroundColor DarkCyan
 # Clean previous publish output
 if (Test-Path $publishDir) {
     Write-Host "Cleaning previous publish output..." -ForegroundColor Yellow

@@ -29,6 +29,14 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
+      # The service build runs npm for the web admin (web/admin, ADR 0009).
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/admin/package-lock.json
+
       - name: Install Inno Setup
         shell: pwsh
         run: choco install innosetup --no-progress

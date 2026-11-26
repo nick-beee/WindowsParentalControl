@@ -1,7 +1,7 @@
 # 9. Web Admin as a React Single-Page App
 
 ## Status
-Accepted (2026-11-26). Not implemented yet: issue #26.
+Accepted (2026-11-26). The admin page is implemented in `web/admin` (issue #26). The child request page (`RequestPage.cs`) is the next step.
 
 ## Context
 1. **UI inside C# strings**: The web admin (`Web/Pages/AdminPage.cs`, 1712 lines) and the child request page (`Web/Pages/RequestPage.cs`, 960 lines) are C# raw strings. They hold the HTML, the CSS and 59 JavaScript functions. No editor, type check, linter or test reads this code.
