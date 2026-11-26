@@ -102,6 +102,92 @@ public class CategoryLimitCalculatorTests
         Assert.Equal("cat:Games", day.CategoryLimit(AppCategory.Games)!.Key);
     }
 
+    // An App Limit warning needs a running process of its app (issue #12).
+
+    private static readonly AppRule RobloxAt120 = new(20, RuleMatchType.File, "RobloxPlayerBeta.exe", AppCategory.Games, new DailyLimit(120, 120));
+    private static readonly AppRule GamesAt180 = new(21, RuleMatchType.Folder, @"C:\Games\", AppCategory.Games);
+
+    private static CategoryLimitCalculator CalculatorWithGames180(params AppRule[] rules) =>
+        new(new Dictionary<AppCategory, DailyLimit> { [AppCategory.Games] = new(180, 180) }, rules);
+
+    [Fact]
+    public void App_not_running_gives_no_App_Limit_warning()
+    {
+        var day = CalculatorWithGames180(RobloxAt120).Evaluate(Tuesday, Usage(AppCategory.Games, 115), 0);
+        var running = new[] { Resolve(@"C:\Games\Other\Other.exe", RobloxAt120, GamesAt180) };
+
+        Assert.Empty(day.DueWarnings(running));
+        Assert.Empty(day.DueWarnings([]));
+    }
+
+    [Fact]
+    public void App_running_gives_its_App_Limit_warning()
+    {
+        var day = CalculatorWithGames180(RobloxAt120).Evaluate(Tuesday, Usage(AppCategory.Games, 117), 0);
+        var running = new[] { Resolve(@"C:\Users\Kid\AppData\Local\Roblox\RobloxPlayerBeta.exe", RobloxAt120) };
+
+        var warning = Assert.Single(day.DueWarnings(running));
+        Assert.Same(RobloxAt120, warning.Rule);
+        Assert.Equal(LimitWarning.FiveMinutes, warning.DueWarning);
+        Assert.Equal(3, warning.RemainingMinutes);
+    }
+
+    [Fact]
+    public void Category_Limit_warning_needs_no_running_program()
+    {
+        var day = Calculator().Evaluate(Tuesday, Usage(AppCategory.Games, 115), 0);
+
+        var warning = Assert.Single(day.DueWarnings([]));
+        Assert.Null(warning.Rule);
+        Assert.Equal(AppCategory.Games, warning.Category);
+    }
+
+    [Fact]
+    public void Category_and_App_Limit_warnings_together()
+    {
+        var day = Calculator(Minecraft).Evaluate(Tuesday, Usage(AppCategory.Games, 175), 30);
+        var running = new[] { Resolve(@"C:\Minecraft\Minecraft.Windows.exe", Minecraft) };
+
+        // With 30 Bonus Minutes: Games 150 is reached (no warning), Minecraft 210 has 35 minutes left (no warning).
+        Assert.Empty(day.DueWarnings(running));
+
+        day = Calculator(Minecraft).Evaluate(Tuesday, Usage(AppCategory.Games, 179), 0);
+        Assert.Equal(["rule:10"], day.DueWarnings(running).Select(s => s.Key));
+        Assert.Empty(day.DueWarnings([]));
+    }
+
+    [Fact]
+    public void Folder_rule_App_Limit_covers_an_exe_below_its_folder()
+    {
+        var steam = new AppRule(30, RuleMatchType.Folder, @"C:\Steam\steamapps\common\", AppCategory.Games, new DailyLimit(120, 120));
+        var day = CalculatorWithGames180(steam).Evaluate(Tuesday, Usage(AppCategory.Games, 119), 0);
+        var running = new[] { Resolve(@"C:\Steam\steamapps\common\Portal\portal.exe", steam) };
+
+        var warning = Assert.Single(day.DueWarnings(running));
+        Assert.Same(steam, warning.Rule);
+        Assert.Equal(LimitWarning.OneMinute, warning.DueWarning);
+    }
+
+    [Fact]
+    public void File_rule_that_wins_over_a_folder_rule_takes_its_App_Limit_warning_away()
+    {
+        var steam = new AppRule(30, RuleMatchType.Folder, @"C:\Steam\steamapps\common\", AppCategory.Games, new DailyLimit(120, 120));
+        var portal = new AppRule(31, RuleMatchType.File, "portal.exe", AppCategory.Games);
+        var day = CalculatorWithGames180(steam, portal).Evaluate(Tuesday, Usage(AppCategory.Games, 117), 0);
+        var running = new[] { Resolve(@"C:\Steam\steamapps\common\Portal\portal.exe", steam, portal) };
+
+        Assert.Empty(day.DueWarnings(running));
+    }
+
+    [Fact]
+    public void Reached_App_Limit_gives_no_warning_also_if_the_app_runs()
+    {
+        var day = CalculatorWithGames180(RobloxAt120).Evaluate(Tuesday, Usage(AppCategory.Games, 120), 0);
+        var running = new[] { Resolve(@"C:\Roblox\RobloxPlayerBeta.exe", RobloxAt120) };
+
+        Assert.Empty(day.DueWarnings(running));
+    }
+
     // Requirement: App Limit replaces the Category Limit for its app
 
     [Fact]
