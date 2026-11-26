@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using ParentalControl.Domain.Messages;
 
 namespace ParentalControl.Core.Data;
 
@@ -13,34 +14,22 @@ public static class SettingsRepository
     public const string KeyTotpEnabled = "totp_enabled";
     public const string KeyAlertIntervals = "alert_intervals"; // e.g. "15,5,1"
     public const string KeyMaxDailyRequests = "max_daily_requests"; // default: 1
-    public const string KeyLanguagePreset = "language_preset"; // "id" or "en"
-    public const string KeyPromptResponsePresets = "prompt_response_presets";
-    public const string DefaultPromptResponsePresets = "Sebentar lagi selesai game\nSedang tugas sekolah\nOke, segera logout\nTanggung, minta waktu 5 menit lagi";
+    public const string KeyLanguagePreset = "language_preset"; // a Language Preset: "de", "en" or "id"
+    public const string KeyPromptResponsePresets = ChildMessageKeys.PromptResponsePresets;
 
-    // Customizable message keys
-    public const string KeyMsgLimitWarn = "msg_limit_warn";
-    public const string KeyMsgCurfewWarn = "msg_curfew_warn";
-    public const string KeyMsgLimitReached = "msg_limit_reached";
-    public const string KeyMsgCurfewReached = "msg_curfew_reached";
-    public const string KeyMsgLoginDeniedLimit = "msg_login_denied_limit";
-    public const string KeyMsgLoginDeniedCurfew = "msg_login_denied_curfew";
-    public const string KeyMsgRemoteLock = "msg_remote_lock";
-    public const string KeyMsgBonusGranted = "msg_bonus_granted";
+    // Customizable message keys. The default texts are in ParentalControl.Domain.Messages.MessageCatalog.
+    public const string KeyMsgLimitWarn = ChildMessageKeys.LimitWarn;
+    public const string KeyMsgCurfewWarn = ChildMessageKeys.CurfewWarn;
+    public const string KeyMsgLimitReached = ChildMessageKeys.LimitReached;
+    public const string KeyMsgCurfewReached = ChildMessageKeys.CurfewReached;
+    public const string KeyMsgLoginDeniedLimit = ChildMessageKeys.LoginDeniedLimit;
+    public const string KeyMsgLoginDeniedCurfew = ChildMessageKeys.LoginDeniedCurfew;
+    public const string KeyMsgRemoteLock = ChildMessageKeys.RemoteLock;
+    public const string KeyMsgBonusGranted = ChildMessageKeys.BonusGranted;
     // App Categories. Placeholders: {name} (category or app), {category}, {minutes}.
-    public const string KeyMsgCategoryWarn = "msg_category_warn";
-    public const string KeyMsgCategorySuspended = "msg_category_suspended";
+    public const string KeyMsgCategoryWarn = ChildMessageKeys.CategoryWarn;
+    public const string KeyMsgCategorySuspended = ChildMessageKeys.CategorySuspended;
 
-    public static readonly IReadOnlyDictionary<string, string> CategoryMessagesEn = new Dictionary<string, string>
-    {
-        [KeyMsgCategoryWarn] = "{name} time ends in {minutes} minutes. Then the {name} programs pause. They do not close. Please save your progress.",
-        [KeyMsgCategorySuspended] = "{name} time is over for today. The {name} programs are paused, not closed. They continue tomorrow or after bonus minutes.",
-    };
-
-    public static readonly IReadOnlyDictionary<string, string> CategoryMessagesId = new Dictionary<string, string>
-    {
-        [KeyMsgCategoryWarn] = "Waktu {name} akan habis dalam {minutes} menit. Setelah itu program {name} dijeda, tidak ditutup. Harap simpan progres Anda.",
-        [KeyMsgCategorySuspended] = "Waktu {name} untuk hari ini sudah habis. Program {name} dijeda, tidak ditutup. Program berlanjut besok atau setelah menit bonus.",
-    };
     public static string Get(string key, string defaultValue = "")
     {
         using var connection = DatabaseManager.CreateConnection();
@@ -75,12 +64,15 @@ public static class SettingsRepository
 
     public static List<string> GetPromptResponsePresets()
     {
-        var raw = Get(KeyPromptResponsePresets, DefaultPromptResponsePresets);
+        var raw = GetMessage(KeyPromptResponsePresets);
         return raw.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
                   .Select(s => s.Trim())
                   .Where(s => !string.IsNullOrEmpty(s))
                   .ToList();
     }
+
+    /// <summary>The stored Language Preset. A missing or unknown value gives the default "de".</summary>
+    public static string GetLanguagePreset() => LanguagePreset.Normalize(Get(KeyLanguagePreset));
 
     public static void Set(string key, string value)
     {
@@ -111,55 +103,92 @@ public static class SettingsRepository
         return dict;
     }
 
-    public static void ApplyLanguagePreset(string lang)
+    /// <summary>
+    /// Stores the Language Preset and writes its default text for each child message key that the parent did not edit.
+    /// Returns the keys that keep an edited text.
+    /// </summary>
+    public static IReadOnlyList<string> ApplyLanguagePreset(string preset)
     {
-        var isEnglish = lang.Equals("en", StringComparison.OrdinalIgnoreCase);
-        Set(KeyLanguagePreset, isEnglish ? "en" : "id");
-
-        if (isEnglish)
-        {
-            Set(KeyMsgLimitWarn, "You have {minutes} minutes of daily screen time remaining. Please save your work.");
-            Set(KeyMsgCurfewWarn, "Allowed usage time ends at {curfew_end} ({minutes} minutes remaining). Please save your work.");
-            Set(KeyMsgLimitReached, "Your daily screen time limit has been reached. Your session will close now.");
-            Set(KeyMsgCurfewReached, "Allowed usage time has ended (curfew). Your session will close now.");
-            Set(KeyMsgLoginDeniedLimit, "Sign-in denied: Daily screen time limit has already been reached.");
-            Set(KeyMsgLoginDeniedCurfew, "Sign-in denied: Outside allowed schedule hours.");
-            Set(KeyMsgRemoteLock, "Time for a break. Computer will be locked by administrator shortly.");
-            Set(KeyMsgBonusGranted, "Administrator has granted you +{minutes} minutes of screen time!");
-            foreach (var (key, text) in CategoryMessagesEn) Set(key, text);
-        }
-        else
-        {
-            Set(KeyMsgLimitWarn, "Sisa waktu layar harian Anda tinggal {minutes} menit lagi. Harap simpan semua pekerjaan Anda.");
-            Set(KeyMsgCurfewWarn, "Waktu penggunaan yang diizinkan akan berakhir pada pukul {curfew_end} ({minutes} menit lagi). Harap simpan pekerjaan Anda.");
-            Set(KeyMsgLimitReached, "Batas waktu layar harian Anda telah habis. Sesi Anda akan ditutup sekarang.");
-            Set(KeyMsgCurfewReached, "Waktu penggunaan yang diizinkan telah berakhir (jam malam). Sesi Anda akan ditutup sekarang.");
-            Set(KeyMsgLoginDeniedLimit, "Login ditolak: Batas waktu layar harian telah tercapai.");
-            Set(KeyMsgLoginDeniedCurfew, "Login ditolak: Di luar jadwal jam yang diizinkan.");
-            Set(KeyMsgRemoteLock, "Waktunya istirahat. Komputer akan segera dikunci oleh administrator.");
-            Set(KeyMsgBonusGranted, "Administrator telah menambahkan +{minutes} menit waktu layar untuk Anda!");
-            foreach (var (key, text) in CategoryMessagesId) Set(key, text);
-        }
+        var target = LanguagePreset.Normalize(preset);
+        using var connection = DatabaseManager.CreateConnection();
+        using var transaction = connection.BeginTransaction();
+        var plan = PresetSwitch.Plan(ReadChildMessages(connection, transaction), target);
+        Upsert(connection, transaction, KeyLanguagePreset, target);
+        foreach (var (key, text) in plan.Writes) Upsert(connection, transaction, key, text);
+        transaction.Commit();
+        return plan.Kept;
     }
 
+    /// <summary>
+    /// Runs at each start (DatabaseManager.Initialize). A database without a preset gets "de" with the rule of a
+    /// preset switch. A database with a preset keeps it: a missing key gets the default of the preset, and an
+    /// earlier default text gets the current default. No edited text changes.
+    /// </summary>
+    internal static void SeedChildMessages(SqliteConnection connection)
+    {
+        using var transaction = connection.BeginTransaction();
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.Transaction = transaction;
+            cmd.CommandText = "SELECT value FROM app_settings WHERE key = @key";
+            cmd.Parameters.AddWithValue("@key", KeyLanguagePreset);
+            var stored = cmd.ExecuteScalar() as string;
+
+            var texts = ReadChildMessages(connection, transaction);
+            PresetSwitchPlan plan;
+            if (string.IsNullOrWhiteSpace(stored))
+            {
+                plan = PresetSwitch.Plan(texts, LanguagePreset.Default);
+                Upsert(connection, transaction, KeyLanguagePreset, LanguagePreset.Default);
+            }
+            else
+            {
+                plan = PresetSwitch.PlanUpdate(texts, LanguagePreset.Normalize(stored));
+            }
+            foreach (var (key, text) in plan.Writes) Upsert(connection, transaction, key, text);
+        }
+        transaction.Commit();
+    }
+
+    /// <summary>
+    /// The text of a child message key with its placeholders filled. A missing, empty or white-space text gives
+    /// the default text of the current preset for this key only. It writes nothing.
+    /// </summary>
     public static string GetMessage(string key, Dictionary<string, string>? placeholders = null)
     {
         var msg = Get(key);
         if (string.IsNullOrWhiteSpace(msg))
         {
-            var currentPreset = Get(KeyLanguagePreset, "id");
-            ApplyLanguagePreset(currentPreset);
-            msg = Get(key);
+            msg = MessageCatalog.Defaults(GetLanguagePreset())[key];
         }
-
-        if (placeholders != null && !string.IsNullOrWhiteSpace(msg))
-        {
-            foreach (var (k, v) in placeholders)
-            {
-                msg = msg.Replace($"{{{k}}}", v);
-            }
-        }
-
-        return msg ?? string.Empty;
-}
+        return TextTemplate.Fill(msg, placeholders);
     }
+
+    private static Dictionary<string, string?> ReadChildMessages(SqliteConnection connection, SqliteTransaction transaction)
+    {
+        var texts = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var key in ChildMessageKeys.All)
+        {
+            using var cmd = connection.CreateCommand();
+            cmd.Transaction = transaction;
+            cmd.CommandText = "SELECT value FROM app_settings WHERE key = @key";
+            cmd.Parameters.AddWithValue("@key", key);
+            if (cmd.ExecuteScalar() is string value) texts[key] = value;
+        }
+        return texts;
+    }
+
+    private static void Upsert(SqliteConnection connection, SqliteTransaction transaction, string key, string value)
+    {
+        using var cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText = """
+            INSERT INTO app_settings (key, value)
+            VALUES (@key, @value)
+            ON CONFLICT(key) DO UPDATE SET value = @value
+            """;
+        cmd.Parameters.AddWithValue("@key", key);
+        cmd.Parameters.AddWithValue("@value", value);
+        cmd.ExecuteNonQuery();
+    }
+}

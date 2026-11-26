@@ -981,7 +981,7 @@ public sealed class TelegramBotService
         var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
         if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
 
-        var lang = SettingsRepository.Get(SettingsRepository.KeyLanguagePreset, "id");
+        var lang = ParentalControl.Domain.Messages.LanguagePreset.ParentLanguage(SettingsRepository.GetLanguagePreset());
         var text = BuildSignInNotificationText(username, machineName, time, remainingMinutes, start, end, lang);
 
         var success = await SendWithRetryAsync(() => SendTextMessageAsync(chatId, text));
@@ -1006,7 +1006,7 @@ public sealed class TelegramBotService
         var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
         if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
 
-        var lang = SettingsRepository.Get(SettingsRepository.KeyLanguagePreset, "id");
+        var lang = ParentalControl.Domain.Messages.LanguagePreset.ParentLanguage(SettingsRepository.GetLanguagePreset());
         var text = BuildSignOutNotificationText(username, machineName, time, minutesUsedToday, lang);
 
         var success = await SendWithRetryAsync(() => SendTextMessageAsync(chatId, text));
@@ -1029,7 +1029,7 @@ public sealed class TelegramBotService
         var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
         if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
 
-        var lang = SettingsRepository.Get(SettingsRepository.KeyLanguagePreset, "id");
+        var lang = ParentalControl.Domain.Messages.LanguagePreset.ParentLanguage(SettingsRepository.GetLanguagePreset());
         var (text, keyboard) = BuildAdminSignInAlert(sessionId, username, machineName, time, lang);
 
         var success = await SendWithRetryAsync(() => SendTextMessageWithKeyboardAsync(chatId, text, keyboard));
@@ -1052,7 +1052,7 @@ public sealed class TelegramBotService
         var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
         if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
 
-        var lang = SettingsRepository.Get(SettingsRepository.KeyLanguagePreset, "id");
+        var lang = ParentalControl.Domain.Messages.LanguagePreset.ParentLanguage(SettingsRepository.GetLanguagePreset());
         var isYes = string.Equals(prompt.Response, "YES", StringComparison.OrdinalIgnoreCase);
         var isTimeout = string.Equals(prompt.Response, "TIMEOUT", StringComparison.OrdinalIgnoreCase);
         var durationStr = lang == "en" ? $"{prompt.TurnaroundSeconds} seconds" : $"{prompt.TurnaroundSeconds} detik";
@@ -1137,7 +1137,7 @@ public sealed class TelegramBotService
 
             try
             {
-                var lang = SettingsRepository.Get(SettingsRepository.KeyLanguagePreset, "id");
+                var lang = ParentalControl.Domain.Messages.LanguagePreset.ParentLanguage(SettingsRepository.GetLanguagePreset());
                 bool sent = false;
 
                 if (item.NotificationType == "USER_SIGN_IN")

@@ -1574,7 +1574,7 @@ public sealed class WebServerHost : BackgroundService
                 telegramNotifySignIn = SettingsRepository.IsTelegramNotifySignInEnabled(),
                 telegramNotifySignOut = SettingsRepository.IsTelegramNotifySignOutEnabled(),
                 telegramNotifyAdminLogon = SettingsRepository.IsTelegramNotifyAdminLogonEnabled(),
-                promptResponsePresets = SettingsRepository.Get(SettingsRepository.KeyPromptResponsePresets, SettingsRepository.DefaultPromptResponsePresets),
+                promptResponsePresets = SettingsRepository.GetMessage(SettingsRepository.KeyPromptResponsePresets),
                 msgCategoryWarn = SettingsRepository.GetMessage(SettingsRepository.KeyMsgCategoryWarn),
                 msgCategorySuspended = SettingsRepository.GetMessage(SettingsRepository.KeyMsgCategorySuspended)
             });
@@ -1604,9 +1604,9 @@ public sealed class WebServerHost : BackgroundService
                 }
                 if (doc.RootElement.TryGetProperty("promptResponsePresets", out var pr))
                 {
-                    SettingsRepository.Set(SettingsRepository.KeyPromptResponsePresets, pr.GetString() ?? SettingsRepository.DefaultPromptResponsePresets);
+                    SettingsRepository.Set(SettingsRepository.KeyPromptResponsePresets, pr.GetString() ?? string.Empty); // An empty list gives the default reasons of the preset.
                 }
-                // An empty text keeps the old one: GetMessage would otherwise apply the language preset to all messages.
+                // An empty text keeps the old one.
                 if (doc.RootElement.TryGetProperty("msgCategoryWarn", out var mcw) && !string.IsNullOrWhiteSpace(mcw.GetString()))
                 {
                     SettingsRepository.Set(SettingsRepository.KeyMsgCategoryWarn, mcw.GetString()!.Trim());

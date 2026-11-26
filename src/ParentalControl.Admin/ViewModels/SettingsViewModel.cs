@@ -151,7 +151,7 @@ public partial class SettingsViewModel : ObservableObject
         }
 
         // Load message templates
-        LanguagePreset = SettingsRepository.Get(SettingsRepository.KeyLanguagePreset, "id");
+        LanguagePreset = SettingsRepository.GetLanguagePreset();
         MsgLimitWarn = SettingsRepository.GetMessage(SettingsRepository.KeyMsgLimitWarn);
         MsgCurfewWarn = SettingsRepository.GetMessage(SettingsRepository.KeyMsgCurfewWarn);
         MsgLimitReached = SettingsRepository.GetMessage(SettingsRepository.KeyMsgLimitReached);

@@ -73,26 +73,7 @@ public static class CategoryRepository
             insert.ExecuteNonQuery();
         }
 
-        // Default texts of the category messages. A text that exists stays.
-        using (var presetCmd = connection.CreateCommand())
-        {
-            presetCmd.Transaction = transaction;
-            presetCmd.CommandText = "SELECT value FROM app_settings WHERE key = @key";
-            presetCmd.Parameters.AddWithValue("@key", SettingsRepository.KeyLanguagePreset);
-            var preset = presetCmd.ExecuteScalar() as string ?? "id";
-            var texts = preset.Equals("en", StringComparison.OrdinalIgnoreCase)
-                ? SettingsRepository.CategoryMessagesEn
-                : SettingsRepository.CategoryMessagesId;
-            foreach (var (key, text) in texts)
-            {
-                using var insert = connection.CreateCommand();
-                insert.Transaction = transaction;
-                insert.CommandText = "INSERT OR IGNORE INTO app_settings (key, value) VALUES (@key, @value)";
-                insert.Parameters.AddWithValue("@key", key);
-                insert.Parameters.AddWithValue("@value", text);
-                insert.ExecuteNonQuery();
-            }
-        }
+        // The default texts of the category messages come from SettingsRepository.SeedChildMessages.
 
         using var check = connection.CreateCommand();
         check.Transaction = transaction;
