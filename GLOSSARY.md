@@ -44,3 +44,6 @@ The daily limit of an App Category: the weekend value on Saturday and Sunday, th
 
 ## Suspended App
 A process of a Restricted User that the service suspends (`NtSuspendProcess`) because its exe has no time left under its App Limit or Category Limit. The process stays open and its audio is muted. The service records it and resumes it when time is available again or when the service stops. The service never closes or kills it.
+
+## Language Preset
+A named set of default child texts: "de" (German), "en" (English) or "id" (Indonesian). A new install uses "de". The preset sets the language of the service messages, the Session Agent and the child request page. It does not change the language of the admin UIs. A preset switch replaces only the texts that the parent did not edit.
