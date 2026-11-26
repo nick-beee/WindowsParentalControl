@@ -12,9 +12,9 @@ PR #20 (`add-german-child-texts`) is merged (design D14). Do not install a build
 
 ## 2. Domain: the decision "at its start"
 
-- [ ] 2.1 Add `BlockedStartDecider` with the results `Close`, `Suspend` and `Ignore` and the constant `StartWindow = 10 s` (design D4). Verify with xUnit tests: a start after the epoch detected after 1 s (Close), after 11 s (Suspend), a start before the epoch (Suspend), a protected exe (Ignore), an unrestricted session (Ignore), a null path (Ignore), an exe that is not blocked (Ignore), a new process whose parent is a blocked process created before the epoch (Suspend), the same parent pid with a creation time after the child (reused pid: Close), and a new process whose parent is a Blocked Start (Close).
-- [ ] 2.2 Add the pure classifier for a silent start (`--no-startup-window`, `--type=`, letter case ignored, inside quotes too) (design D9). Verify with xUnit tests for the Edge Startup Boost command line, a Chrome renderer command line, a normal start, an empty command line, and a command line with `--no-startup-window` as part of a URL argument.
-- [ ] 2.3 Verify by test that the silent classifier cannot change `Close` to another result: the decider has no command line input (spec "Process data for a block is untrusted").
+- [x] 2.1 Add `BlockedStartDecider` with the results `Close`, `Suspend` and `Ignore` and the constant `StartWindow = 10 s` (design D4). Verify with xUnit tests: a start after the epoch detected after 1 s (Close), after 11 s (Suspend), a start before the epoch (Suspend), a protected exe (Ignore), an unrestricted session (Ignore), a null path (Ignore), an exe that is not blocked (Ignore), a new process whose parent is a blocked process created before the epoch (Suspend), the same parent pid with a creation time after the child (reused pid: Close), and a new process whose parent is a Blocked Start (Close).
+- [x] 2.2 Add the pure classifier for a silent start (`--no-startup-window`, `--type=`, letter case ignored, inside quotes too) (design D9). Verify with xUnit tests for the Edge Startup Boost command line, a Chrome renderer command line, a normal start, an empty command line, and a command line with `--no-startup-window` as part of a URL argument.
+- [x] 2.3 Verify by test that the silent classifier cannot change `Close` to another result: the decider has no command line input (spec "Process data for a block is untrusted").
 
 ## 3. Domain: blocked suspensions in the planner
 
