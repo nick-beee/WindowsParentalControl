@@ -58,4 +58,10 @@ A named set of default child texts: "de" (German), "en" (English) or "id" (Indon
 The signed-in state of the parent in the Remote Admin Interface. It is a token with an issue time and a session epoch. It is valid for 12 hours. A logout, a restart of the service, or a new session epoch (a new TOTP secret or "Sign out all web sessions" in the Admin app) ends it. Each route below `/api/admin/` except the login and the logout requires a valid Admin Session.
 
 ## Untrusted Data Folder
-A data folder (`C:\ProgramData\ParentalControl`) or an item in it that an account other than SYSTEM or the Administrators group owns or can change, for example a folder that the Restricted User made before the install. The service never uses its content. At the start it renames the folder to `ParentalControl.untrusted-<guid>` and starts with a new database. A link as the data folder is not moved; the service deletes the link itself.
+A data folder (`C:\ProgramData\ParentalControl`) or an item in it that an account other than SYSTEM or the Administrators group owns or can change, for example a folder that the Restricted User made before the install. The service never uses its content. At the start it renames the folder to `ParentalControl.untrusted-<guid>` and starts with a new database. If the rename fails, the service leaves the folder alone and uses a Relocated Data Folder. A link as the data folder is not moved; the service deletes the link itself.
+
+## Relocated Data Folder
+A new data folder `C:\ProgramData\ParentalControl-<32 random hex digits>` that the service creates, with its final owner and rules, when it cannot make the configured data folder safe. The service stores its path in the admin-only registry value `HKLM\SOFTWARE\ParentalControl\DataFolderPath`, and each component reads the data folder from there. It starts with a new database.
+
+## Data Folder Lockdown
+The state of the service while no data folder works. The service does not stop: it applies the Enforced Workstation Lock to each active session of a user who is not an administrator, and it tries the data folder step again every minute. It never closes or kills a program.

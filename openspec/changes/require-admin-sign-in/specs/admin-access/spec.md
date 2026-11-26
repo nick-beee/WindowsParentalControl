@@ -185,7 +185,7 @@ The routes for the Restricted User and the Session Agent (`/`, `/request`, `/api
 - **THEN** the system answers as before, with no Admin Session
 
 ### Requirement: Restricted User cannot read the admin secret
-The data folder (`C:\ProgramData\ParentalControl`) and its files SHALL be owned by the Administrators group and accessible only to SYSTEM and the Administrators group. The service SHALL enforce this at each start, also for an existing folder, before it opens the database or a log file in the folder.
+The data folder (`C:\ProgramData\ParentalControl`, or the folder that the registry value names) and its files SHALL be owned by the Administrators group and accessible only to SYSTEM and the Administrators group. The service SHALL enforce this at each start, also for an existing folder, before it opens the database or a log file in the folder.
 
 #### Scenario: Child reads the database
 - **WHEN** a process of the Restricted User tries to open `data.db`
@@ -196,7 +196,7 @@ The data folder (`C:\ProgramData\ParentalControl`) and its files SHALL be owned 
 - **THEN** the folder and its files have only the rules for SYSTEM and the Administrators group, and the data stays
 
 ### Requirement: Service never uses an unsafe data folder
-The service SHALL never follow a link (a junction, a symbolic link or a hard link) in the data folder, and SHALL never use content that an account other than SYSTEM or the Administrators group owns or can change. If the service cannot make the folder safe, it SHALL not open the database or a log file in the folder, SHALL report the error in the Windows event log and in the Admin app, and SHALL stop (fail closed).
+The service SHALL never follow a link (a junction, a symbolic link or a hard link) in the data folder, and SHALL never use content that an account other than SYSTEM or the Administrators group owns or can change. If the service cannot make the folder safe, it SHALL not open the database or a log file in that folder, and SHALL report the error in the Windows event log and in the Admin app.
 
 #### Scenario: Folder made by the child before the install
 - **WHEN** the Restricted User creates `C:\ProgramData\ParentalControl` before the install, puts a `data.db` into it, and the service starts
@@ -218,14 +218,50 @@ The service SHALL never follow a link (a junction, a symbolic link or a hard lin
 - **THEN** the service deletes the link, or replaces the file with a copy that has one name, and does not change the target
 - **AND** the Remote Admin Interface stays usable
 
-#### Scenario: Untrusted folder that cannot be moved
-- **WHEN** a process holds a handle to the untrusted folder or to an item in it, so the service cannot move the folder
-- **THEN** the service does not open the database or a log file in the folder, writes the error to the event log and to the state of the Admin app, and stops
-- **AND** the Admin app shows the error, not "Set up on <date>"
-
 #### Scenario: Admin app and an unsafe folder
 - **WHEN** the parent opens the Admin app while the data folder is a link or is not trusted
 - **THEN** the Admin app shows the error and does not open the database
+
+### Requirement: Limits stay on when the data folder fails
+The service SHALL never stop the enforcement of the limits because of the data folder. If it cannot use the configured folder, it SHALL use a new data folder; while no folder works, it SHALL apply the Enforced Workstation Lock. It SHALL never close or kill a program because of the data folder.
+
+#### Scenario: Child holds a handle on its folder
+- **WHEN** the Restricted User creates `C:\ProgramData\ParentalControl` before the install and holds a handle to it or to an item in it, so the service cannot move the folder, and the service starts
+- **THEN** the service does not open the database or a log file in that folder and does not change it
+- **AND** the service creates a new folder `C:\ProgramData\ParentalControl-<32 random hex digits>` with the owner Administrators and the rules for SYSTEM and the Administrators group in the same call, stores its path in the registry value, starts with a new database there, and enforces
+- **AND** the event log and the Admin app show the old and the new folder, and the Telegram bot sends one alert after the parent configures it
+
+#### Scenario: Name of the new folder exists
+- **WHEN** an item with the random name of the new folder exists already
+- **THEN** the service does not use that item and picks another random name
+
+#### Scenario: Trusted folder with a failed step
+- **WHEN** a step of the data folder check fails on a folder whose owner and rules are trusted, whose items are all trusted, and that contains no link and no file with more than one name
+- **THEN** the service keeps the folder and its database and enforces the limits
+- **AND** the Remote Admin Interface stays locked until a start secures the folder, and the event log and the Admin app show the failed step
+
+#### Scenario: No data folder works
+- **WHEN** the service cannot secure the configured folder and cannot create a new folder
+- **THEN** the service does not stop and does not open a database
+- **AND** the service applies the Enforced Workstation Lock to each active session of a user who is not an administrator, and does not close or kill a program
+- **AND** the service tries the data folder step again every minute, and enforces as normal after a step succeeds
+- **AND** the event log and the Admin app show the error
+
+### Requirement: Location of the data folder
+The location of the data folder SHALL come from the value `DataFolderPath` in `HKLM\SOFTWARE\ParentalControl`. Only SYSTEM and the Administrators group SHALL be able to change the key; the other accounts SHALL only read it. Without the value, the location SHALL be `C:\ProgramData\ParentalControl`. Each component that opens the database or a log file SHALL read the location in this way and SHALL check the folder before it opens anything in it.
+
+#### Scenario: Value absent
+- **WHEN** the registry value is absent
+- **THEN** each component uses `C:\ProgramData\ParentalControl`
+
+#### Scenario: Value not accepted
+- **WHEN** the registry value is not `C:\ProgramData\ParentalControl` or `C:\ProgramData\ParentalControl-<32 hex digits>`, or another account than SYSTEM or the Administrators group can change the key
+- **THEN** no component uses the value or the default folder
+- **AND** the service creates a new folder as for a folder that it cannot use, and the Admin app shows an error and does not open a database
+
+#### Scenario: Next start after a new folder
+- **WHEN** the service created a new folder at an earlier start
+- **THEN** the service, the Admin app and the test tools use the new folder, and the service leaves the old folder alone
 
 ### Requirement: Upgrade of an install without the setup
 At the first start after the upgrade, an install with TOTP on and a valid secret SHALL keep its sign-in. Each other install SHALL get a Remote Admin Interface that is not set up. If Telegram is configured, the system SHALL send one German message that tells the parent to do the setup. A further start SHALL not send it again.
