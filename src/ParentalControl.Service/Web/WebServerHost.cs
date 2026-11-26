@@ -1904,7 +1904,9 @@ public sealed class WebServerHost : BackgroundService
                 telegramNotifyBreak = SettingsRepository.IsTelegramNotifyBreakEnabled(),
                 msgBreakWarn = SettingsRepository.GetMessage(SettingsRepository.KeyMsgBreakWarn),
                 msgBreakStart = SettingsRepository.GetMessage(SettingsRepository.KeyMsgBreakStart),
-                msgBreakRunning = SettingsRepository.GetMessage(SettingsRepository.KeyMsgBreakRunning)
+                msgBreakRunning = SettingsRepository.GetMessage(SettingsRepository.KeyMsgBreakRunning),
+                msgProgramBlocked = SettingsRepository.GetMessage(SettingsRepository.KeyMsgProgramBlocked),
+                notifyBlockedTelegram = SettingsRepository.IsNotifyBlockedTelegramEnabled()
             });
         });
 
@@ -1955,6 +1957,14 @@ public sealed class WebServerHost : BackgroundService
                 {
                     if (doc.RootElement.TryGetProperty(field, out var text) && !string.IsNullOrWhiteSpace(text.GetString()))
                         SettingsRepository.Set(key, text.GetString()!.Trim());
+                }
+                if (doc.RootElement.TryGetProperty("msgProgramBlocked", out var mpb) && !string.IsNullOrWhiteSpace(mpb.GetString()))
+                {
+                    SettingsRepository.Set(SettingsRepository.KeyMsgProgramBlocked, mpb.GetString()!.Trim());
+                }
+                if (doc.RootElement.TryGetProperty("notifyBlockedTelegram", out var nbt))
+                {
+                    SettingsRepository.Set(SettingsRepository.KeyNotifyBlockedTelegram, nbt.GetBoolean() ? "1" : "0");
                 }
 
                 return Results.Ok(new { success = true });
@@ -2029,6 +2039,44 @@ public sealed class WebServerHost : BackgroundService
                     weekdayMinutes = r.Rule.AppLimit?.WeekdayMinutes,
                     weekendMinutes = r.Rule.AppLimit?.WeekendMinutes,
                     isDefault = r.IsDefault,
+                    blocked = r.Rule.IsBlocked,
+                }),
+            });
+        });
+
+        // The blocked programs of one day (default: today), per Restricted User and program. The file name and the
+        // path are untrusted text: a client shows them as text.
+        // The Admin Session gate in front of each /api/admin/ route covers it (AdminRoutePolicy, deny by default).
+        app.MapGet("/api/admin/blocked-starts", (HttpContext ctx) =>
+        {
+            var dateText = ctx.Request.Query["date"].ToString();
+            DateOnly date;
+            if (string.IsNullOrWhiteSpace(dateText))
+                date = DateOnly.FromDateTime(DateTime.Now);
+            else if (!DateOnly.TryParseExact(dateText, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture,
+                         System.Globalization.DateTimeStyles.None, out date))
+                return Results.BadRequest(new { error = "date must be yyyy-MM-dd." });
+
+            var names = new Dictionary<int, string>();
+            string NameOf(int userId)
+            {
+                if (!names.TryGetValue(userId, out var name))
+                    names[userId] = name = UserRepository.GetById(userId)?.Username ?? userId.ToString();
+                return name;
+            }
+
+            return Results.Ok(new
+            {
+                date = date.ToString("yyyy-MM-dd"),
+                starts = BlockedStartRepository.GetForDate(date).Select(r => new
+                {
+                    username = NameOf(r.UserId),
+                    fileName = r.FileName,
+                    exePath = r.ExePath,
+                    closedCount = r.ClosedCount,
+                    suspendedCount = r.SuspendedCount,
+                    firstAt = r.FirstAtUtc,
+                    lastAt = r.LastAtUtc,
                 }),
             });
         });
@@ -2039,8 +2087,10 @@ public sealed class WebServerHost : BackgroundService
             if (rule is null) return Results.BadRequest(new { error });
             try
             {
-                var id = AppRuleRepository.Insert(rule.Value.MatchType, rule.Value.Pattern, rule.Value.Category, rule.Value.AppLimit);
-                _logger.Information("Web Admin added App Rule {Id}: {Type} {Pattern} -> {Category}", id, rule.Value.MatchType, rule.Value.Pattern, rule.Value.Category);
+                var id = AppRuleRepository.Insert(rule.Value.MatchType, rule.Value.Pattern, rule.Value.Category, rule.Value.AppLimit,
+                    rule.Value.Blocked ?? false);
+                _logger.Information("Web Admin added App Rule {Id}: {Type} {Pattern} -> {Category}, blocked {Blocked}",
+                    id, rule.Value.MatchType, rule.Value.Pattern, rule.Value.Category, rule.Value.Blocked ?? false);
                 return Results.Ok(new { success = true, id });
             }
             catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
@@ -2053,9 +2103,11 @@ public sealed class WebServerHost : BackgroundService
             if (rule is null) return Results.BadRequest(new { error });
             try
             {
-                if (!AppRuleRepository.Update(id, rule.Value.MatchType, rule.Value.Pattern, rule.Value.Category, rule.Value.AppLimit))
+                // A missing "blocked" keeps the stored block, so an old client does not remove a block.
+                if (!AppRuleRepository.Update(id, rule.Value.MatchType, rule.Value.Pattern, rule.Value.Category, rule.Value.AppLimit, rule.Value.Blocked))
                     return Results.NotFound(new { error = "Rule not found." });
-                _logger.Information("Web Admin changed App Rule {Id}: {Type} {Pattern} -> {Category}", id, rule.Value.MatchType, rule.Value.Pattern, rule.Value.Category);
+                _logger.Information("Web Admin changed App Rule {Id}: {Type} {Pattern} -> {Category}, blocked {Blocked}",
+                    id, rule.Value.MatchType, rule.Value.Pattern, rule.Value.Category, rule.Value.Blocked?.ToString() ?? "unchanged");
                 return Results.Ok(new { success = true });
             }
             catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
@@ -2170,7 +2222,11 @@ public sealed class WebServerHost : BackgroundService
         return DailyLimit.IsValidMinutes(minutes);
     }
 
-    private static async Task<((RuleMatchType MatchType, string Pattern, AppCategory Category, DailyLimit? AppLimit)? Rule, string? Error)> ReadRuleAsync(HttpContext ctx)
+    /// <summary>
+    /// Reads an App Rule from the request body. <c>blocked</c> is optional: missing or null gives a null value.
+    /// The block validation of a rule change runs in the repository against the stored block.
+    /// </summary>
+    private static async Task<((RuleMatchType MatchType, string Pattern, AppCategory Category, DailyLimit? AppLimit, bool? Blocked)? Rule, string? Error)> ReadRuleAsync(HttpContext ctx)
     {
         JsonElement root;
         try { root = (await JsonDocument.ParseAsync(ctx.Request.Body)).RootElement.Clone(); }
@@ -2187,9 +2243,21 @@ public sealed class WebServerHost : BackgroundService
         if (!TryReadMinutes(root, "weekdayMinutes", out var weekday) || !TryReadMinutes(root, "weekendMinutes", out var weekend))
             return (null, $"An App Limit must be a whole number from 0 to {DailyLimit.MaxMinutes}, or empty.");
 
+        bool? blocked = null;
+        if (root.TryGetProperty("blocked", out var b))
+        {
+            switch (b.ValueKind)
+            {
+                case JsonValueKind.True: blocked = true; break;
+                case JsonValueKind.False: blocked = false; break;
+                case JsonValueKind.Null: break;
+                default: return (null, "blocked must be true or false.");
+            }
+        }
+
         DailyLimit? appLimit = weekday is null && weekend is null ? null : new DailyLimit(weekday, weekend);
-        var error = AppRule.Validate(matchType.Value, pattern, category, appLimit);
-        return error is null ? ((matchType.Value, pattern, category, appLimit), null) : (null, error);
+        var error = AppRule.Validate(matchType.Value, pattern, category, appLimit, blocked ?? false, CategoryRepository.LocalProtectedPrograms());
+        return error is null ? ((matchType.Value, pattern, category, appLimit, blocked), null) : (null, error);
     }
 
     /// <summary>
