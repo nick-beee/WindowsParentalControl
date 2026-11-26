@@ -1,3 +1,4 @@
+using ParentalControl.Core;
 using ParentalControl.Core.Data;
 using ParentalControl.Core.Models;
 using ParentalControl.Core.Platform;
@@ -39,6 +40,7 @@ public sealed class CategoryEnforcer : IDisposable
     private readonly Serilog.ILogger _logger;
     private readonly string? _testSuspendFailExe;
     private readonly BlockEnforcer _blockEnforcer;
+    private readonly StorageHealth _health = StorageHealth.Shared;
 
     private readonly object _gate = new();
     private bool _stopped;
@@ -116,7 +118,7 @@ public sealed class CategoryEnforcer : IDisposable
                 return;
 
             var nowUtc = DateTime.UtcNow;
-            var today = DateOnly.FromDateTime(DateTime.Now);
+            var today = ControlTime.Current.Today;
             if (_sentDate != today)
             {
                 _sentToday.Clear();
@@ -147,7 +149,7 @@ public sealed class CategoryEnforcer : IDisposable
                 id => id,
                 id => config.Calculator.Evaluate(
                     today,
-                    CategoryUsageRepository.GetForUserAndDate(id, today),
+                    UsageLedger.Shared.CategoryUsage(id, today), // stored plus Pending Usage (storage-failure)
                     UsageRepository.GetUsage(id, today)?.BonusMinutes ?? 0));
 
             var records = SuspensionRepository.GetAll();
@@ -191,14 +193,15 @@ public sealed class CategoryEnforcer : IDisposable
 
             foreach (var record in plan.ToDrop)
             {
-                SuspensionRepository.Delete(record.Pid, record.StartTimeUtc);
-                _logger.Information("Dropped stale suspension record {Pid} ({Exe})", record.Pid, record.ExePath);
+                if (_health.TryWrite(() => SuspensionRepository.Delete(record.Pid, record.StartTimeUtc), "drop of a suspension record", _logger))
+                    _logger.Information("Dropped stale suspension record {Pid} ({Exe})", record.Pid, record.ExePath);
             }
 
             foreach (var record in plan.ToRelabel)
             {
-                SuspensionRepository.UpdateReason(record.Pid, record.StartTimeUtc, record.Reason, record.Category);
-                _logger.Information("Suspension of {Exe} (pid {Pid}) now has the reason {Reason}", record.ExePath, record.Pid, record.Reason);
+                if (_health.TryWrite(() => SuspensionRepository.UpdateReason(record.Pid, record.StartTimeUtc, record.Reason, record.Category),
+                        "new reason of a suspension record", _logger))
+                    _logger.Information("Suspension of {Exe} (pid {Pid}) now has the reason {Reason}", record.ExePath, record.Pid, record.Reason);
             }
 
             foreach (var record in plan.ToResume)
@@ -243,8 +246,10 @@ public sealed class CategoryEnforcer : IDisposable
                 case HoldRequestResult.Refused:
                     _logger.Warning("Session end hold refused for {Username} (session {SessionId}, {Reason}): an unconfirmed hold in the last {Minutes} min",
                         user.Username, sessionId, reason, SessionEndHolds.UnconfirmedWindow.TotalMinutes);
-                    EventRepository.LogEvent(user.Sid, EventType.SECURITY_ALERT,
-                        $"Session end request refused ({reason}): an earlier sign-out did not complete");
+                    // A failed write must not stop the Session End Guard (storage-failure).
+                    _health.TryWrite(() => EventRepository.LogEvent(user.Sid, EventType.SECURITY_ALERT,
+                        $"Session end request refused ({reason}): an earlier sign-out did not complete"),
+                        "security alert event", _logger);
                     StartGuard(sessionId, user);
                     PublishAndSchedule();
                     return result;
@@ -299,8 +304,9 @@ public sealed class CategoryEnforcer : IDisposable
         if (!guard.Repeated)
             return;
 
-        EventRepository.LogEvent(user.Sid, EventType.SECURITY_ALERT,
-            "Repeated sign-out that did not complete: the paused programs ran for about one minute again");
+        _health.TryWrite(() => EventRepository.LogEvent(user.Sid, EventType.SECURITY_ALERT,
+            "Repeated sign-out that did not complete: the paused programs ran for about one minute again"),
+            "security alert event", _logger);
         if (_sentToday.Add($"guard:{user.Id}"))
             SendParentAlert($"Parental Control: {user.Username} on {Environment.MachineName} started a sign-out again and again " +
                             "without completing it. Each time the paused programs run for about one minute, and then they are paused again.");
@@ -331,8 +337,9 @@ public sealed class CategoryEnforcer : IDisposable
         _logger.Warning("Session end hold of {Username} (session {SessionId}) ended without the end of the session; alert {Alert}",
             username, hold.SessionId, hold.Alert);
         if (user is not null)
-            EventRepository.LogEvent(user.Sid, EventType.SECURITY_ALERT,
-                "A sign-out did not complete: the paused programs ran for the end of the session and are paused again");
+            _health.TryWrite(() => EventRepository.LogEvent(user.Sid, EventType.SECURITY_ALERT,
+                "A sign-out did not complete: the paused programs ran for the end of the session and are paused again"),
+                "security alert event", _logger);
         if (hold.Alert)
             SendParentAlert($"Parental Control: a sign-out of {username} on {Environment.MachineName} did not complete. " +
                             "The paused programs ran for about one minute and are paused again.");
@@ -384,7 +391,8 @@ public sealed class CategoryEnforcer : IDisposable
         if (result is ProcessOpResult.Ok or ProcessOpResult.NotFound)
         {
             _guards.MarkResumed(record.Pid, record.StartTimeUtc);
-            SuspensionRepository.Delete(record.Pid, record.StartTimeUtc);
+            // A failed delete keeps the record; the next tick resumes the process again (no effect) and tries the delete.
+            _health.TryWrite(() => SuspensionRepository.Delete(record.Pid, record.StartTimeUtc), "delete of a suspension record", _logger);
             _logger.Information("Resumed {Exe} (pid {Pid}, {Category}): {Reason} ({Result})",
                 record.ExePath, record.Pid, record.Category, reason, result);
         }
@@ -401,8 +409,11 @@ public sealed class CategoryEnforcer : IDisposable
         var record = new SuspensionRecord(p.Pid, p.StartTimeUtc, p.SessionId, action.UserId, action.Category, action.ExePath, action.Reason);
 
         // Record before the suspension: a crash between the two then leaves no suspended process without a record.
-        if (!action.IsRecorded)
-            SuspensionRepository.Insert(record);
+        // No suspension without a record (storage-failure): a failed write skips this process, and the tick counts as
+        // failed. The Storage Lockdown covers the gap.
+        if (!action.IsRecorded &&
+            !_health.TryWrite(() => SuspensionRepository.Insert(record), $"suspension record of {action.ExePath}", _logger))
+            return;
 
         ProcessOpResult result;
         string detail;
@@ -431,7 +442,8 @@ public sealed class CategoryEnforcer : IDisposable
                 }
                 else if (!action.IsRecorded && user is not null && _sentToday.Add($"suspended:{action.UserId}:{action.Category}"))
                 {
-                    EventRepository.LogEvent(user.Sid, EventType.LIMIT_REACHED, $"{action.Category} limit reached: programs paused");
+                    _health.TryWrite(() => EventRepository.LogEvent(user.Sid, EventType.LIMIT_REACHED, $"{action.Category} limit reached: programs paused"),
+                        "category limit event", _logger);
                     var categoryName = CategoryNames.For(action.Category, SettingsRepository.GetLanguagePreset());
                     SendToUser(action.UserId, SettingsRepository.GetMessage(SettingsRepository.KeyMsgCategorySuspended,
                         new Dictionary<string, string> { ["name"] = categoryName, ["category"] = categoryName }));
@@ -440,12 +452,12 @@ public sealed class CategoryEnforcer : IDisposable
 
             case ProcessOpResult.NotFound:
                 if (!action.IsRecorded)
-                    SuspensionRepository.Delete(record.Pid, record.StartTimeUtc);
+                    _health.TryWrite(() => SuspensionRepository.Delete(record.Pid, record.StartTimeUtc), "delete of a suspension record", _logger);
                 break;
 
             default:
                 if (!action.IsRecorded)
-                    SuspensionRepository.Delete(record.Pid, record.StartTimeUtc);
+                    _health.TryWrite(() => SuspensionRepository.Delete(record.Pid, record.StartTimeUtc), "delete of a suspension record", _logger);
                 Fallback(action, user, username, $"{result} {detail}");
                 break;
         }
@@ -458,19 +470,21 @@ public sealed class CategoryEnforcer : IDisposable
         _logger.Warning("Could not suspend {Exe} (pid {Pid}) of {Username}: {Reason}. Locking session {SessionId}",
             action.ExePath, action.Process.Pid, username, reason, sessionId);
 
+        // The lock first, then the writes (storage-failure).
+        if (!(_sessionTracker.ActiveSessions.TryGetValue(sessionId, out var session) && session.IsLocked))
+        {
+            SessionManager.LockSession(sessionId);
+            _sessionTracker.OnSessionLock(sessionId, $"{action.Category} program cannot be paused - workstation locked");
+        }
+
         if (_sentToday.Add($"alert:{action.UserId}:{action.ExePath}"))
         {
             if (user is not null)
-                EventRepository.LogEvent(user.Sid, EventType.SECURITY_ALERT, $"Cannot pause {WindowsPath.GetFileName(action.ExePath)} ({action.Category}): session locked");
+                _health.TryWrite(() => EventRepository.LogEvent(user.Sid, EventType.SECURITY_ALERT, $"Cannot pause {WindowsPath.GetFileName(action.ExePath)} ({action.Category}): session locked"),
+                    "security alert event", _logger);
             SendParentAlert($"Parental Control: cannot pause {WindowsPath.GetFileName(action.ExePath)} ({action.Category}) " +
                             $"of {username} on {Environment.MachineName}. The session is locked.\nPath: {action.ExePath}\nReason: {reason}");
         }
-
-        if (_sessionTracker.ActiveSessions.TryGetValue(sessionId, out var session) && session.IsLocked)
-            return;
-
-        SessionManager.LockSession(sessionId);
-        _sessionTracker.OnSessionLock(sessionId, $"{action.Category} program cannot be paused - workstation locked");
     }
 
     /// <summary>

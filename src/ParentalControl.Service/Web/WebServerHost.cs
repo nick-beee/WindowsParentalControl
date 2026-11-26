@@ -19,6 +19,7 @@ using ParentalControl.Domain.Captures;
 using ParentalControl.Domain.Messages;
 using ParentalControl.Domain.AdminAccess;
 using ParentalControl.Domain.Breaks;
+using ParentalControl.Domain.Time;
 using Microsoft.AspNetCore.Routing;
 
 namespace ParentalControl.Service.Web;
@@ -139,15 +140,16 @@ public sealed class WebServerHost : BackgroundService
 
             var sb = new StringBuilder();
             sb.AppendLine("📊 *Status Screen Time Hari Ini:*\n");
-            var today = DateOnly.FromDateTime(DateTime.Now);
-            var dayOfWeek = DateTime.Now.DayOfWeek;
+            var moment = ControlTime.Current.Read(); // control-clock: the day of the Control Time Zone
+            var today = moment.Today;
+            var dayOfWeek = moment.DayOfWeek;
 
             foreach (var u in restrictedUsers)
             {
                 var limit = ScheduleRepository.GetEffectiveLimit(u.Id, dayOfWeek, today);
                 var usage = UsageRepository.GetUsage(u.Id, today);
                 var totalAllowed = (limit?.DailyMinutes ?? 120) + (usage?.BonusMinutes ?? 0);
-                var used = usage?.MinutesUsed ?? 0;
+                var used = UsageLedger.Shared.AllowanceUsed(u.Id, today, usage);
                 var remaining = Math.Max(0, totalAllowed - used);
 
                 var session = _sessionTracker.ActiveSessions.Values.FirstOrDefault(s => s.UserSid == u.Sid);
@@ -216,7 +218,7 @@ public sealed class WebServerHost : BackgroundService
                 ?? UserRepository.GetAll().FirstOrDefault(u => u.Username.Equals(targetUsername, StringComparison.OrdinalIgnoreCase));
             if (user != null)
             {
-                var today = DateOnly.FromDateTime(DateTime.Now);
+                var today = ControlTime.Current.Today;
                 UsageRepository.AddBonusMinutes(user.Id, today, minutes);
                 EventRepository.LogEvent(user.Sid, EventType.LOGIN, $"Admin menambahkan +{minutes}m via Telegram");
                 return Task.FromResult(true);
@@ -429,8 +431,9 @@ public sealed class WebServerHost : BackgroundService
         // User Grace Request Portal
         app.MapGet("/request", async (HttpContext ctx) =>
         {
-            var today = DateOnly.FromDateTime(DateTime.Now);
-            var dayOfWeek = DateTime.Now.DayOfWeek;
+            var moment = ControlTime.Current.Read(); // control-clock: the day of the Control Time Zone
+            var today = moment.Today;
+            var dayOfWeek = moment.DayOfWeek;
 
             var allUsers = UserRepository.GetAll();
             var restrictedUsers = allUsers.Where(u => u.IsRestricted).ToList();
@@ -480,7 +483,7 @@ public sealed class WebServerHost : BackgroundService
             var limit = ScheduleRepository.GetEffectiveLimit(targetUser!.Id, dayOfWeek, today);
             var usage = UsageRepository.GetUsage(targetUser.Id, today);
             var totalAllowed = (limit?.DailyMinutes ?? 120) + (usage?.BonusMinutes ?? 0);
-            var used = usage?.MinutesUsed ?? 0;
+            var used = UsageLedger.Shared.AllowanceUsed(targetUser.Id, today, usage);
             var dailyRemaining = Math.Max(0, totalAllowed - used);
 
             var sessions = _sessionTracker.ActiveSessions.Values.ToList();
@@ -488,10 +491,10 @@ public sealed class WebServerHost : BackgroundService
             bool isSessionActive = activeTargetSession != null;
             bool isSessionLocked = activeTargetSession?.IsLocked ?? false;
 
-            var elapsedSec = activeTargetSession != null && !isSessionLocked ? (int)(DateTime.Now - activeTargetSession.LastTick).TotalSeconds : 0;
+            var elapsedSec = activeTargetSession != null && !isSessionLocked ? ElapsedTime.Seconds(activeTargetSession.LastTickMono, Environment.TickCount64) : 0;
             var dailySec = Math.Max(0, (dailyRemaining * 60) - Math.Min(59, Math.Max(0, elapsedSec)));
 
-            var nowTime = DateTime.Now.TimeOfDay;
+            var nowTime = moment.TimeOfDay.ToTimeSpan();
             var curfewSec = int.MaxValue;
             if (limit != null)
             {
@@ -613,7 +616,7 @@ public sealed class WebServerHost : BackgroundService
                     }
                 }
 
-                var today = DateOnly.FromDateTime(DateTime.Now);
+                var today = ControlTime.Current.Today;
 
                 var restrictedUsers = UserRepository.GetAll().Where(u => u.IsRestricted).ToList();
                 User? user = null;
@@ -752,21 +755,22 @@ public sealed class WebServerHost : BackgroundService
                 });
             }
 
-            var today = DateOnly.FromDateTime(DateTime.Now);
-            var dayOfWeek = DateTime.Now.DayOfWeek;
+            var moment = ControlTime.Current.Read(); // control-clock: the day of the Control Time Zone
+            var today = moment.Today;
+            var dayOfWeek = moment.DayOfWeek;
             var limit = ScheduleRepository.GetEffectiveLimit(user.Id, dayOfWeek, today);
             var usage = UsageRepository.GetUsage(user.Id, today);
             var totalAllowed = (limit?.DailyMinutes ?? 120) + (usage?.BonusMinutes ?? 0);
-            var used = usage?.MinutesUsed ?? 0;
+            var used = UsageLedger.Shared.AllowanceUsed(user.Id, today, usage);
             var remMinutes = Math.Max(0, totalAllowed - used);
 
             var sessions = _sessionTracker.ActiveSessions.Values.ToList();
             var session = sessions.FirstOrDefault(s => s.UserSid == user.Sid);
             var isLocked = session?.IsLocked ?? false;
-            var elapsedSec = session != null && !isLocked ? (int)(DateTime.Now - session.LastTick).TotalSeconds : 0;
+            var elapsedSec = session != null && !isLocked ? ElapsedTime.Seconds(session.LastTickMono, Environment.TickCount64) : 0;
             var dailySec = Math.Max(0, (remMinutes * 60) - Math.Min(59, Math.Max(0, elapsedSec)));
 
-            var nowTime = DateTime.Now.TimeOfDay;
+            var nowTime = moment.TimeOfDay.ToTimeSpan();
             var curfewSec = int.MaxValue;
             if (limit != null)
             {
@@ -948,8 +952,10 @@ public sealed class WebServerHost : BackgroundService
                     }
 
                     _liveActivities[user.Username] = (processName, windowTitle, DateTime.Now);
-                    var today = DateOnly.FromDateTime(DateTime.Now);
-                    AppUsageRepository.AddSeconds(user.Id, today, processName, windowTitle, durationSeconds);
+                    var today = ControlTime.Current.Today;
+                    // A failed write of App Usage (the Activity Timeline) is lost; it has no effect on a limit (storage-failure D6).
+                    StorageHealth.Shared.TryWrite(() => AppUsageRepository.AddSeconds(user.Id, today, processName, windowTitle, durationSeconds),
+                        "app usage", _logger);
 
                     // Category Usage. The repository never counts System.
                     var resolver = CategoryConfigCache.Current.Resolver;
@@ -963,7 +969,12 @@ public sealed class WebServerHost : BackgroundService
                     var isSuspendedExe = resolution.CanonicalPath is not null && suspended.Any(r =>
                         string.Equals(WindowsPath.Canonicalize(r.ExePath), resolution.CanonicalPath, StringComparison.OrdinalIgnoreCase));
                     if (!isSuspendedExe)
-                        CategoryUsageRepository.AddSeconds(user.Id, today, resolution.Category, durationSeconds);
+                    {
+                        // The whole minutes go through the ledger: a failed write keeps them in the Pending Usage.
+                        var categoryMinutes = CategoryUsageRepository.CollectMinutes(user.Id, today, resolution.Category, durationSeconds);
+                        if (categoryMinutes > 0)
+                            UsageLedger.Shared.AddCategory(user.Id, today, resolution.Category, categoryMinutes);
+                    }
 
                     // The agent mutes the audio of these processes.
                     var suspendedPids = suspended.Select(r => r.Pid).Distinct().ToArray();
@@ -1036,7 +1047,7 @@ public sealed class WebServerHost : BackgroundService
             long bytesToday;
             lock (_captureReservations)
             {
-                (filesToday, bytesToday) = ScreenCaptureRepository.GetDayTotals(user.Id, DateTime.Today);
+                (filesToday, bytesToday) = ScreenCaptureRepository.GetDayTotals(user.Id, ControlTime.Current.StartOfToday);
                 _captureReservations.TryGetValue(user.Id, out var reserved);
                 quota = CaptureQuota.Check(filesToday + reserved.Files, bytesToday + reserved.Bytes);
                 if (quota.Allowed)
@@ -1046,7 +1057,7 @@ public sealed class WebServerHost : BackgroundService
             {
                 if (!quota.Allowed)
                 {
-                    if (_captureRefusals.Count(user.Id, DateOnly.FromDateTime(DateTime.Today)))
+                    if (_captureRefusals.Count(user.Id, ControlTime.Current.Today))
                         _logger.Warning("Capture refused for {Username}: the daily quota is used ({Outcome}: {Files} files, {Bytes} bytes). " +
                                         "Later refusals today are not logged.", user.Username, quota.Outcome, filesToday, bytesToday);
                     return Results.StatusCode(StatusCodes.Status429TooManyRequests);
@@ -1071,7 +1082,7 @@ public sealed class WebServerHost : BackgroundService
                     try { File.Delete(filePath); } catch { /* the cleanup removes it later */ }
                     if (written == 0)
                         return Results.BadRequest(new { error = "Empty capture." });
-                    if (_captureRefusals.Count(user.Id, DateOnly.FromDateTime(DateTime.Today)))
+                    if (_captureRefusals.Count(user.Id, ControlTime.Current.Today))
                         _logger.Warning("Capture refused for {Username}: the body is larger than {Max} bytes. Later refusals today are not logged.",
                             user.Username, quota.MaxBytes);
                     return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
@@ -1081,7 +1092,7 @@ public sealed class WebServerHost : BackgroundService
                 var record = new ScreenCaptureRecord
                 {
                     UserId = user.Id,
-                    Timestamp = DateTime.Now,
+                    Timestamp = ControlTime.Current.Now, // the capture quota counts from midnight of the Control Time Zone
                     FilePath = filePath,
                     Width = width > 0 ? width : 1920,
                     Height = height > 0 ? height : 1080,
@@ -1170,8 +1181,9 @@ public sealed class WebServerHost : BackgroundService
         // Web Admin Dashboard JSON API
         app.MapGet("/api/admin/dashboard", (HttpContext ctx) =>
         {
-            var today = DateOnly.FromDateTime(DateTime.Now);
-            var dayOfWeek = DateTime.Now.DayOfWeek;
+            var moment = ControlTime.Current.Read(); // control-clock: the day of the Control Time Zone
+            var today = moment.Today;
+            var dayOfWeek = moment.DayOfWeek;
             var users = UserRepository.GetAll().ToDictionary(u => u.Id, u => u);
             var restrictedUsers = users.Values.Where(u => u.IsRestricted).ToList();
 
@@ -1206,7 +1218,7 @@ public sealed class WebServerHost : BackgroundService
                 var limit = isRestricted ? ScheduleRepository.GetEffectiveLimit(user.Id, dayOfWeek, today) : null;
                 var usage = isRestricted ? UsageRepository.GetUsage(user.Id, today) : null;
                 var totalAllowed = limit != null ? (limit.DailyMinutes + (usage?.BonusMinutes ?? 0)) : 0;
-                var used = usage?.MinutesUsed ?? 0;
+                var used = isRestricted ? UsageLedger.Shared.AllowanceUsed(user.Id, today, usage) : 0;
                 var remaining = limit != null ? Math.Max(0, totalAllowed - used) : 0;
 
                 string currentApp = "Inactive / Idle";
@@ -1309,7 +1321,7 @@ public sealed class WebServerHost : BackgroundService
             var userId = doc.RootElement.GetProperty("userId").GetInt32();
             var minutes = doc.RootElement.GetProperty("minutes").GetInt32();
 
-            var today = DateOnly.FromDateTime(DateTime.Now);
+            var today = ControlTime.Current.Today;
             UsageRepository.AddBonusMinutes(userId, today, minutes);
             var user = UserRepository.GetAll().FirstOrDefault(u => u.Id == userId);
             if (user != null)
@@ -1697,7 +1709,7 @@ public sealed class WebServerHost : BackgroundService
                 };
             }).ToList();
 
-            var today = DateOnly.FromDateTime(DateTime.Now);
+            var today = ControlTime.Current.Today;
             var upcomingExceptions = ScheduleExceptionRepository.GetUpcomingForUser(userId, today)
                 .Select(e => new
                 {
@@ -1959,9 +1971,9 @@ public sealed class WebServerHost : BackgroundService
         app.MapGet("/api/admin/categories", (HttpContext ctx) =>
         {
             var limits = CategoryRepository.GetLimits();
-            var today = DateOnly.FromDateTime(DateTime.Now);
+            var today = ControlTime.Current.Today;
             var usageToday = UserRepository.GetAll().Where(u => u.IsRestricted).SelectMany(u =>
-                CategoryUsageRepository.GetForUserAndDate(u.Id, today).Select(kv => new
+                UsageLedger.Shared.CategoryUsage(u.Id, today).Select(kv => new
                 {
                     username = u.Username,
                     category = kv.Key.ToString(),
