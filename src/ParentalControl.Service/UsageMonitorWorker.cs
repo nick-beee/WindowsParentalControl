@@ -273,6 +273,7 @@ public sealed class UsageMonitorWorker : BackgroundService
         var usageDeleted = UsageRepository.DeleteOlderThan(usageCutoff);
         var appUsageDeleted = AppUsageRepository.DeleteOlderThan(usageCutoff);
         var categoryUsageDeleted = CategoryUsageRepository.DeleteOlderThan(usageCutoff);
+        BlockedStartRepository.DeleteOlderThan(usageCutoff);
         var capturesDeleted = ScreenCaptureRepository.PruneOldCaptures(DatabaseManager.CapturesRetentionDays, DatabaseManager.MaxCapturesStorageBytes);
         var exceptionsDeleted = ScheduleExceptionRepository.DeleteOlderThan(today);
         if (eventsDeleted > 0 || usageDeleted > 0 || appUsageDeleted > 0 || categoryUsageDeleted > 0)

@@ -285,6 +285,7 @@ public static class DatabaseManager
                 weekend_minutes INTEGER NULL,
                 is_default INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
+                is_blocked INTEGER NOT NULL DEFAULT 0,
                 UNIQUE (match_type, pattern COLLATE NOCASE)
             );
 
@@ -304,6 +305,7 @@ public static class DatabaseManager
                 category TEXT NOT NULL,
                 exe_path TEXT NOT NULL,
                 suspended_at TEXT NOT NULL,
+                reason TEXT NOT NULL DEFAULT 'limit',
                 PRIMARY KEY (pid, start_time_utc)
             );
 
@@ -331,6 +333,20 @@ public static class DatabaseManager
                 break_ends_utc TEXT NULL,
                 warned_5 INTEGER NOT NULL DEFAULT 0,
                 warned_1 INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS blocked_starts (
+                user_id INTEGER NOT NULL,
+                date TEXT NOT NULL,
+                file_name TEXT NOT NULL COLLATE NOCASE,
+                exe_path TEXT NOT NULL,
+                closed_count INTEGER NOT NULL DEFAULT 0,
+                suspended_count INTEGER NOT NULL DEFAULT 0,
+                first_at TEXT NOT NULL,
+                last_at TEXT NOT NULL,
+                child_notified INTEGER NOT NULL DEFAULT 0,
+                parent_notified INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, date, file_name)
             );
 
             CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events (timestamp);
@@ -378,6 +394,24 @@ public static class DatabaseManager
             }
         }
 
+        // Migration (add-blocked-programs): the block of an App Rule and the reason of a suspension.
+        // A row of stage 1 gets "no block" and the reason "limit".
+        foreach (var (table, column, alterSql) in new[]
+        {
+            ("app_rules", "is_blocked", "ALTER TABLE app_rules ADD COLUMN is_blocked INTEGER NOT NULL DEFAULT 0;"),
+            ("suspended_processes", "reason", "ALTER TABLE suspended_processes ADD COLUMN reason TEXT NOT NULL DEFAULT 'limit';"),
+        })
+        {
+            using var checkCol = connection.CreateCommand();
+            checkCol.CommandText = $"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}';";
+            if (Convert.ToInt32(checkCol.ExecuteScalar()) == 0)
+            {
+                using var alter = connection.CreateCommand();
+                alter.CommandText = alterSql;
+                alter.ExecuteNonQuery();
+            }
+        }
+
         // Migration: repair legacy inflated app_activity_hourly and app_usage data (> 60m in 1 hour)
         using var repairCheckCmd = connection.CreateCommand();
         repairCheckCmd.CommandText = "SELECT COUNT(*) FROM app_activity_hourly WHERE minutes > 60;";
@@ -413,6 +447,9 @@ public static class DatabaseManager
 
         // App Categories: default limits for missing categories; default rules one time only.
         CategoryRepository.SeedIfNeeded(connection, CategoryRepository.LocalDefaultRuleFolders());
+
+        // Default blocked browsers: one time per install, also on a database that has the default rules already.
+        CategoryRepository.SeedBlockedBrowsersIfNeeded(connection);
     }
 
     public static SqliteConnection CreateConnection()

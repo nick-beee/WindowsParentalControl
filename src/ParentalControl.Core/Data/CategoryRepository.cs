@@ -7,6 +7,7 @@ namespace ParentalControl.Core.Data;
 public static class CategoryRepository
 {
     public const string KeyCategoriesSeeded = "categories_seeded";
+    public const string KeyBlockedDefaultsSeeded = "blocked_defaults_seeded";
 
     public static Dictionary<AppCategory, DailyLimit> GetLimits()
     {
@@ -110,6 +111,92 @@ public static class CategoryRepository
         transaction.Commit();
         CategoryConfigCache.Invalidate();
     }
+
+    /// <summary>
+    /// While the setting <see cref="KeyBlockedDefaultsSeeded"/> is absent, it writes the default blocked browser rules
+    /// and turns on the block of an existing rule with the same pattern, then sets the key. All in one transaction.
+    /// Thus a default rule that the parent deletes stays deleted, and a block that the parent removes stays removed.
+    /// </summary>
+    internal static void SeedBlockedBrowsersIfNeeded(SqliteConnection connection)
+    {
+        using var transaction = connection.BeginTransaction();
+
+        using (var check = connection.CreateCommand())
+        {
+            check.Transaction = transaction;
+            check.CommandText = "SELECT COUNT(*) FROM app_settings WHERE key = @key";
+            check.Parameters.AddWithValue("@key", KeyBlockedDefaultsSeeded);
+            if (Convert.ToInt32(check.ExecuteScalar()) > 0)
+                return; // the transaction rolls back on dispose; it wrote nothing
+        }
+
+        var existing = new List<AppRule>();
+        using (var read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText = "SELECT id, pattern, category, is_blocked FROM app_rules WHERE match_type = 'file'";
+            using var reader = read.ExecuteReader();
+            while (reader.Read())
+            {
+                if (!AppCategories.TryParse(reader.GetString(2), out var category))
+                    category = AppCategory.Unknown;
+                existing.Add(new AppRule(reader.GetInt64(0), RuleMatchType.File, reader.GetString(1), category, null, reader.GetInt32(3) != 0));
+            }
+        }
+
+        var plan = CategoryDefaults.PlanBlockedBrowserSeed(existing);
+        var now = DateTime.UtcNow.ToString("o");
+        foreach (var rule in plan.ToInsert)
+        {
+            using var insert = connection.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText = """
+                INSERT OR IGNORE INTO app_rules (match_type, pattern, category, weekday_minutes, weekend_minutes, is_default, created_at, is_blocked)
+                VALUES ('file', @pattern, @category, NULL, NULL, 1, @now, 1)
+                """;
+            insert.Parameters.AddWithValue("@pattern", rule.Pattern);
+            insert.Parameters.AddWithValue("@category", rule.Category.ToString());
+            insert.Parameters.AddWithValue("@now", now);
+            insert.ExecuteNonQuery();
+        }
+
+        foreach (var id in plan.ToBlock)
+        {
+            using var block = connection.CreateCommand();
+            block.Transaction = transaction;
+            block.CommandText = "UPDATE app_rules SET is_blocked = 1 WHERE id = @id";
+            block.Parameters.AddWithValue("@id", id);
+            block.ExecuteNonQuery();
+        }
+
+        using (var mark = connection.CreateCommand())
+        {
+            mark.Transaction = transaction;
+            mark.CommandText = "INSERT INTO app_settings (key, value) VALUES (@key, @value)";
+            mark.Parameters.AddWithValue("@key", KeyBlockedDefaultsSeeded);
+            mark.Parameters.AddWithValue("@value", DateTime.UtcNow.ToString("o"));
+            mark.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
+        CategoryConfigCache.Invalidate();
+    }
+
+    private static readonly Lazy<ProtectedPrograms> LocalProtected = new(() =>
+    {
+        // The install folder of the installer, and the folder of this program. The service, the agent and the
+        // admin app run from {app}\service, {app}\agent and {app}\admin, so the parent of that folder is {app}.
+        var baseDir = AppContext.BaseDirectory;
+        var folders = new List<string?> { LocalDefaultRuleFolders().InstallFolder, baseDir };
+        var trimmed = baseDir.TrimEnd('\\', '/');
+        var last = Path.GetFileName(trimmed);
+        if (last is "service" or "agent" or "admin")
+            folders.Add(Path.GetDirectoryName(trimmed));
+        return new ProtectedPrograms(Environment.GetFolderPath(Environment.SpecialFolder.Windows), folders);
+    });
+
+    /// <summary>The programs of this computer that a block never closes or suspends.</summary>
+    public static ProtectedPrograms LocalProtectedPrograms() => LocalProtected.Value;
 
     /// <summary>The folders of this computer for the default rules.</summary>
     internal static DefaultRuleFolders LocalDefaultRuleFolders()

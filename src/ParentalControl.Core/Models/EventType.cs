@@ -17,5 +17,6 @@ public enum EventType
     PROMPT_ANSWERED,
     PROMPT_TIMEOUT,
     BREAK_STARTED,
-    BREAK_ENDED
+    BREAK_ENDED,
+    PROGRAM_BLOCKED
 }

@@ -1718,6 +1718,8 @@ Debug.Assert(BreakRepository.GetState(user.Id).BreakEndsUtc is null, "A reset st
 Debug.Assert(SettingsRepository.IsTelegramNotifyBreakEnabled() == false, "telegram_notify_break should be off by default");
 Console.WriteLine("✅ Break Repository Passed.");
 
+BlockedProgramChecks.RunData();
+
 // Cleanup test user
 UserRepository.DeleteBySid(testSid);
 ScheduleRepository.DeleteForUser(user.Id);
