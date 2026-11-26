@@ -8,7 +8,7 @@ The Remote Admin Interface has no sign-in while Authenticator TOTP is off, and T
 
 - **BREAKING:** The Remote Admin Interface always requires a signed-in admin. The "Enable Authenticator 2FA" switch goes away. No `/api/admin/*` route works without an Admin Session, also on a fresh install.
 - The admin credential is Authenticator TOTP. The parent sets it up only in the WPF Admin app (Parental Control Admin), which runs as an administrator. The parent confirms one code from the phone before the app saves the secret. The web server has no first-run setup page.
-- Before the setup, the `/admin` page shows only a short text in German: "Richte die Anmeldung in Parental Control Admin auf diesem PC ein." ("Set up the sign-in in Parental Control Admin on this PC.") Every admin route refuses. The child-facing routes work as before.
+- Before the setup, the `/admin` page shows only a short text in German: "Die Web-Verwaltung ist gesperrt. Richte die Anmeldung in Parental Control Admin auf diesem PC ein." ("The web admin is locked. Set up the sign-in in Parental Control Admin on this PC.") Every admin route refuses. The child-facing routes work as before.
 - The login refuses every code while no credential is set up. Today it accepts any code when the secret is empty.
 - The login accepts each TOTP code one time only.
 - New texts that the parent reads on the web page and in Telegram are in German, because the parent and the child speak German. The texts of the Admin app stay in English, as the rest of that app.

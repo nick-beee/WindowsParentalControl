@@ -53,3 +53,6 @@ A short time (60 seconds) after the service resumed the Suspended Apps of a sess
 
 ## Language Preset
 A named set of default child texts: "de" (German), "en" (English) or "id" (Indonesian). A new install uses "de". The preset sets the language of the service messages, the Session Agent and the child request page. It does not change the language of the admin UIs. A preset switch replaces only the texts that the parent did not edit.
+
+## Admin Session
+The signed-in state of the parent in the Remote Admin Interface. It is a token with an issue time and a session epoch. It is valid for 12 hours. A logout, a restart of the service, or a new session epoch (a new TOTP secret or "Sign out all web sessions" in the Admin app) ends it. Each route below `/api/admin/` except the login and the logout requires a valid Admin Session.
