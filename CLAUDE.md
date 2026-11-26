@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Fork of `DarkTama/WindowsParentalControl`. The goal is a parental control for one child (10 years, a standard Windows account) with time limits per app category and breaks. The full plan, the open questions and the current state are in `docs/HANDOFF.md`. Read it before you start a new stage.
+Fork of `DarkTama/WindowsParentalControl`. The goal is a parental control for one child (10 years, a standard Windows account) with time limits per app category and breaks. The current behaviour is in `openspec/specs/`. The plan, the next steps and the open questions are in `docs/ROADMAP.md`; the known problems are GitHub issues of the fork. Read the roadmap before you start a new stage.
 
 ## The hard rule
 
@@ -41,6 +41,7 @@ Windows VM 102 on the Proxmox host pve2 (192.168.1.98) is the test target: Windo
 - Before you install the service on the VM, check that the snapshot `test-base` exists. Roll back to it if a test leaves the VM in a bad state. `test-base` has OpenSSH, the .NET 8 SDK and `Kid`, but no Parental Control. The older snapshot `clean-before-parental` has none of these: after a rollback to it, SSH does not work.
 - Test the session lock and the re-login in the Proxmox console (noVNC or SPICE). Do not test it over RDP: an RDP session sends other session events.
 - The VM is not the child's PC. Do the final test on the child's PC.
+- `docs/vm.md` has the VM details: snapshots, sound card, and how to drive the console from the Mac (screenshot, keys, programs as `Kid`).
 
 ## Git
 

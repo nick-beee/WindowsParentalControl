@@ -1,7 +1,7 @@
 #!/bin/sh
 # Copies the working tree (tracked and untracked, not ignored files) to the
 # Windows test VM and runs the self-check tests there.
-# Needs the SSH alias "winvm" in ~/.ssh/config (see docs/HANDOFF.md).
+# Needs the SSH alias "winvm" in ~/.ssh/config (see docs/vm.md).
 set -eu
 cd "$(dirname "$0")/.."
 
