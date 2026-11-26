@@ -15,7 +15,8 @@ The current code has these properties:
 - `EventRepository` stores `EventType` as text.
 - PR #20 (`add-german-child-texts`) is merged. The child texts are in the catalog `ChildMessageKeys` / `MessageCatalog` in `ParentalControl.Domain/Messages` (spec `child-messages`). At each start, `SettingsRepository.SeedChildMessages` writes the default text of the current preset for a key that has no stored text. A new key thus reaches an existing install without a migration.
 - PR #28 sends an App Limit warning only while a process of the app is in the process list of the service (`CategoryEnforcer.RunningExes`, `DayLimits.DueWarnings`). A suspended process is still in that list.
-- The draft PR #21 (`require-admin-sign-in`) puts one Admin Session gate in front of each `/api/admin/*` route. The draft PR #22 (`resume-suspended-apps-at-session-end`) resumes each record of `suspended_processes` when the session ends.
+- PR #21 (`require-admin-sign-in`) is merged and archived (spec `admin-access`). One Admin Session gate (`AdminRoutePolicy`, deny by default) is in front of each `/api/admin/*` route except the login and the logout.
+- PR #22 (`resume-suspended-apps-at-session-end`) is merged and archived (spec `category-limits`). It resumes each record of `suspended_processes` when the session ends and starts a Session End Hold, in which the planner suspends no process of the session (`PlannerInput.HeldSessions`). Each suspension is two-phase: `PendingSuspensions` keeps a process 10 seconds as a Pending Suspension, the Session Agent minimizes its windows, and then the service suspends it.
 
 Each decision below was decided by the orchestrator under the user's delegation (2026-11-26).
 
@@ -25,7 +26,7 @@ Each decision below was decided by the orchestrator under the user's delegation 
 - One pure decision, in Domain, that says "close" for a process. `TerminateProcess` has one call site, and only this decision leads to it. A review can check the hard rule in one place.
 - The block uses the existing resolver, precedence and caches. There is no second rule engine.
 - The detection does not depend on data from the Session Agent.
-- A blocked process that is not at its start is suspended with the existing suspension machinery. It thus gets the existing resume on a service stop, the re-suspension, the fallback, and the resume at session end of PR #22.
+- A blocked process that is not at its start is suspended with the existing suspension machinery. It thus gets the existing resume on a service stop, the re-suspension, the fallback, the Pending Suspension, the resume at session end and the Session End Hold of PR #22 (D15).
 
 **Non-Goals:**
 - Protection against a renamed or a portable browser (see Risks).
@@ -130,6 +131,7 @@ Decided by the orchestrator under the user's delegation (2026-11-26).
 - A record with the reason `limit` whose exe becomes a Blocked Program changes to `blocked` (decided during `/opsx:apply`). Else the limit reset of the next day resumes a blocked browser. The plan has a list `ToRelabel` for these changes.
 - The re-suspension after a resume by a tool, the resume at a service stop (`ResumeAll`), and the D6 fallback of stage 1 apply without a change, because they use the same records.
 - PR #22 resumes each record when the session ends. A blocked suspension thus does not bring back issue #4.
+- A blocked suspension goes through the Pending Suspension and the Session End Hold like a limit suspension (D15).
 
 Rejected alternatives:
 - *Close it anyway*: breaks the hard rule.
@@ -251,7 +253,7 @@ Decided by the orchestrator under the user's delegation (2026-11-26).
 - `GET /api/admin/blocked-starts` (D11).
 - `GET /api/admin/settings` and `POST /api/admin/settings` get `notifyBlockedTelegram`, and `msgProgramBlocked` like the other editable child texts (D10).
 - The validation of D2 returns status 400 with an error text.
-- All routes are below `/api/admin/`, so the Admin Session gate of PR #21 covers them without a change. Until PR #21 merges, they use the current `CheckAuth`.
+- All routes are below `/api/admin/`, so the Admin Session gate of PR #21 covers them without a change. `AdminRoutePolicy` is deny by default and needs no new entry: it classifies each new and changed route as `Admin`. The Domain test of the policy lists the routes, and the console gate test checks that they are mapped behind the gate and refuse a request without an Admin Session (status 401).
 - The UI is a task for the React admin (issue #26): a block switch in the rules table, a "Blocked today" list, and the notice setting. Until #26, the default rules work without a UI, and the parent can call the API.
 
 Rejected alternative: *separate routes for blocked rules*: two ways to change one rule.
@@ -260,10 +262,25 @@ Rejected alternative: *separate routes for blocked rules*: two ways to change on
 Decided by the orchestrator under the user's delegation (2026-11-26).
 
 - PR #20 (the text catalog) is merged. D10 adds a key to that catalog.
-- PR #22 merges before this change reaches the child's PC. Without it, a suspended blocked browser has the sign-out problem of issue #4.
-- PR #21 is not a code dependency (D13), but the child's PC needs it, because without it the child can remove a block through the API (#18).
+- PR #21 and PR #22 are merged. This change is rebased on them (D15).
 - Issue #26 is a dependency of the UI tasks only.
-- PR #22 also modifies the requirement "Resume suspended programs" of `category-limits`. The change that is archived second must merge both texts in its MODIFIED block before its archive.
+- PR #22 is archived first. Each MODIFIED requirement of `category-limits` in this change starts from the current text of `openspec/specs/category-limits/spec.md` and only adds the parts of the block.
+
+### D15. Blocked suspensions in the two-phase suspension and the Session End Hold of PR #22
+Decided by the orchestrator under the user's delegation (2026-11-26).
+
+- A blocked process that the system must suspend (it ran before the block took effect, the service detects it late, or it is a new process of an old blocked browser) goes through the same Pending Suspension as a limit suspension. The Session Agent minimizes its windows, and the service suspends it 10 seconds later. Reason: the hard rule and issue #4 apply the same way to a browser and to a game. A suspended full-screen window that is not minimized covers the desktop. The `SuspendAction` of the planner goes into `PendingSuspensions.Step` without a check of the reason, so the code has one path.
+- A Blocked Start has no Pending Suspension. The `BlockEnforcer` closes it at once, and the planner skips it (`PendingClose`). A closed process has no window to minimize and no work that the child can lose.
+- A Blocked Start whose close fails gets `Suspend` from then on (D5). The planner then makes it a Pending Suspension like each other blocked process, so it runs and is minimized for 10 seconds before the suspension.
+- During a Session End Hold, the planner suspends no process of the session, also no blocked process (`HeldSessions` applies before the block check). The blocked records of the session stay. If the session goes on after the hold, the planner suspends each blocked process again through the Pending Suspension, within 20 seconds after the end of the hold. A new process of an old blocked browser that starts during the hold gets `Suspend` from D4, and the planner suspends it after the hold.
+- During a Session End Hold, the `BlockEnforcer` still closes a Blocked Start. A close is not a suspension: a closed process cannot block the end of the session, and the hard rule permits this close at the start of the program. Without it, the child can start a browser with a fake session-end request and use it during the hold.
+- The suspension times of `blocked-programs` thus include the 10 seconds of the Pending Suspension: a running Blocked Program is suspended within 70 seconds, like a limit suspension in `category-limits`. A resume has no pending step, so its time stays 60 seconds.
+- The MODIFIED requirements of `category-limits` add the block to "Keep a suspended process suspended", "Session End Hold" and "Minimize a process before its suspension", so that the text of PR #22 does not contradict a blocked suspension (for example, a Pending Suspension is not dropped while the exe has time left but is still a Blocked Program).
+
+Rejected alternatives:
+- *Suspend a blocked process at once, without a Pending Suspension*: a suspended full-screen browser covers the desktop, the problem that PR #22 solved for games.
+- *Suspend a blocked process also during a Session End Hold*: the suspended browser blocks the sign-out again (issue #4).
+- *No close of a Blocked Start during a hold*: a fake session-end request opens a 60-second gap for a new browser.
 
 ## Risks / Trade-offs
 
@@ -272,12 +289,11 @@ Decided by the orchestrator under the user's delegation (2026-11-26).
 - [Edge is the default PDF and HTML viewer. These files do not open.] → The parent documentation tells the parent to install another PDF reader.
 - [A game launcher that opens a web page for sign-in or for news fails to open it.] → Accepted for now. The parent sees the try in the report. The launcher itself keeps running.
 - [The browser window shows for up to about 1 second before the close.] → Accepted.
-- [The WMI service (`winmgmt`) stops or fails.] → The tick fallback finds the browser within 60 seconds and suspends it. The watcher starts again at the next tick.
+- [The WMI service (`winmgmt`) stops or fails.] → The tick fallback finds the browser within 60 seconds and suspends it after the Pending Suspension (70 seconds in all). The watcher starts again at the next tick.
 - [A Blocked Start in the first seconds after sign-in can take longer than 10 seconds to detect on a slow PC, or its event can arrive before `SessionTracker` knows the session.] → Then the process is suspended, not closed. The suspension of a browser holds no risk for the child's data. Check the timing on VM 102.
-- [The child resumes a suspended blocked browser with a tool again and again.] → The same re-suspension as for limits, within 60 seconds. Issue #24 handles the repeated case.
+- [The child resumes a suspended blocked browser with a tool again and again.] → The same re-suspension as for limits, within 70 seconds. Issue #24 handles the repeated case.
 - [A process that an Administrator starts with "Run as administrator" in the child's session is treated as the child's process.] → The same session rule as `category-limits`. Accepted.
 - [A browser inside another program (Steam overlay, Electron apps) still gives web access.] → Out of scope.
-- [The admin API without PR #21 lets the child remove a block (#18).] → Do not install this change on the child's PC before PR #21.
 
 ## Migration Plan
 

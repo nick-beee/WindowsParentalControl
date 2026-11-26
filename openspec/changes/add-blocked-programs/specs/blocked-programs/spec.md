@@ -108,12 +108,19 @@ The system SHALL close a process of a Blocked Program only if the process starte
 - **WHEN** Firefox ran before the parent turned on the block for `firefox.exe`, and the child opens a new tab before the system suspends Firefox
 - **THEN** the system suspends the new Firefox process and does not close it
 
+### Requirement: Close a Blocked Start without a Pending Suspension
+The system SHALL close a Blocked Start without a Pending Suspension. It SHALL close a Blocked Start also during a Session End Hold of its session.
+
+#### Scenario: Browser start during a cancelled sign-out
+- **WHEN** a Session End Hold of the session of the child is active and the child starts Chrome, which is blocked
+- **THEN** the system closes the Chrome process within 2 seconds after its start
+
 ### Requirement: Suspend a Blocked Program that already runs
-The system SHALL suspend, within 60 seconds, a process of a Blocked Program that it does not close at its start. This includes a process that ran before the block took effect or before the service started, and a process that it detects more than 10 seconds after its creation. It SHALL NOT close or kill such a process.
+The system SHALL suspend, within 70 seconds, a process of a Blocked Program that it does not close at its start. The 70 seconds include the 10 seconds of the Pending Suspension of `category-limits`. The requirement "Session End Hold" of `category-limits` adds an exception. This includes a process that ran before the block took effect or before the service started, and a process that it detects more than 10 seconds after its creation. It SHALL NOT close or kill such a process.
 
 #### Scenario: Block turned on while the browser runs
 - **WHEN** Chrome runs and the parent turns on the block for `chrome.exe`
-- **THEN** each Chrome process of the child is suspended within 60 seconds and still exists
+- **THEN** each Chrome process of the child is suspended within 70 seconds and still exists
 
 #### Scenario: Service restart while the browser runs
 - **WHEN** the service restarts while Firefox runs in the session of the child and `firefox.exe` is blocked
@@ -122,6 +129,11 @@ The system SHALL suspend, within 60 seconds, a process of a Blocked Program that
 #### Scenario: Late detection
 - **WHEN** the start event of a `brave.exe` process does not arrive and the 60-second check finds it 40 seconds after its start
 - **THEN** the process is suspended, not closed
+
+#### Scenario: Sign-out while a blocked browser is suspended
+- **WHEN** a blocked Chrome is suspended and the child signs out
+- **THEN** the system resumes Chrome for the end of the session and does not suspend it during the Session End Hold
+- **AND** the sign-out completes
 
 ### Requirement: A blocked suspension lasts while the block applies
 A process that the system suspended because of a block SHALL stay suspended while its exe is a Blocked Program, also if its category has time left. The system SHALL resume it when the exe is no longer a Blocked Program and has time left under its limit, when the session ends, and when the service stops.
@@ -136,14 +148,14 @@ A process that the system suspended because of a block SHALL stay suspended whil
 
 #### Scenario: Child resumes the browser with a tool
 - **WHEN** the child resumes a suspended blocked Chrome with a tool
-- **THEN** the system suspends Chrome again within 60 seconds
+- **THEN** the system suspends Chrome again within 70 seconds
 
 #### Scenario: Service stop
 - **WHEN** the service stops while a blocked Chrome is suspended
 - **THEN** the system resumes Chrome before it exits
 
 ### Requirement: Fallback when a Blocked Program cannot be stopped
-If the system cannot close a Blocked Start, it SHALL suspend the process. If it cannot suspend a process that it must suspend because of a block, it SHALL lock the session with the Enforced Workstation Lock and SHALL notify the parent through the Alert Channel, at most one time per exe and day.
+If the system cannot close a Blocked Start, it SHALL suspend the process after its Pending Suspension. If it cannot suspend a process that it must suspend because of a block, it SHALL lock the session with the Enforced Workstation Lock and SHALL notify the parent through the Alert Channel, at most one time per exe and day.
 
 #### Scenario: Close refused
 - **WHEN** Windows refuses to close a Blocked Start of `opera.exe` and permits the suspension
@@ -199,7 +211,7 @@ When Telegram is set up and the notice setting is on, the system SHALL send the 
 - **AND** the event log still has the entry
 
 ### Requirement: Parent manages blocks through the admin API
-The admin API SHALL let a signed-in admin read and set the block of each App Rule, read the blocked starts of a day, and read and set the Telegram notice setting. Each change of a block SHALL take effect within 60 seconds. A request without a valid Admin Session SHALL be refused.
+The admin API SHALL let a signed-in admin read and set the block of each App Rule, read the blocked starts of a day, and read and set the Telegram notice setting. After each change of a block, the system SHALL close each new Blocked Start, and SHALL suspend each running process of a new Blocked Program as the requirement "Suspend a Blocked Program that already runs" states. A request without a valid Admin Session SHALL be refused.
 
 #### Scenario: Block a new program
 - **WHEN** the parent adds a file rule for `game2.exe` with the block on and the child then starts `game2.exe`

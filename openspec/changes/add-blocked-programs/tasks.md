@@ -1,6 +1,6 @@
 # Tasks
 
-PR #20 (`add-german-child-texts`) is merged (design D14). Do not install a build of this change on the child's PC before PR #21 and PR #22 are merged.
+PR #20 (`add-german-child-texts`), PR #21 (`require-admin-sign-in`) and PR #22 (`resume-suspended-apps-at-session-end`) are merged. This change is rebased on them (design D14, D15).
 
 ## 1. Domain: the block on an App Rule
 
@@ -55,19 +55,20 @@ PR #20 (`add-german-child-texts`) is merged (design D14). Do not install a build
   - Start Edge from the Start menu. Expected: the Edge window closes within 2 seconds; `Kid` gets one German message; `blocked_starts` has one row for `msedge.exe` with `closed_count` 1; the event log has one `PROGRAM_BLOCKED` entry.
   - Start Edge again. Expected: it closes; no second message; `closed_count` 2.
   - Sign out and sign in as `Kid`. Expected: if Startup Boost starts Edge, it closes without a message.
-  - Install Firefox. Start it as `Kid`, then stop the service, start Firefox, and start the service. Expected: the running Firefox is suspended within 60 seconds, not closed; its record has the reason `blocked`.
-  - Remove the block of `firefox.exe` and start Firefox as `Kid`. Turn on the block through the API, and at once open a new tab in Firefox. Expected: no Firefox process is closed; all Firefox processes are suspended within 60 seconds.
+  - Install Firefox. Start it as `Kid`, then stop the service, start Firefox, and start the service. Expected: the Firefox windows are minimized and the running Firefox is suspended within 70 seconds, not closed; its record has the reason `blocked`.
+  - Remove the block of `firefox.exe` and start Firefox as `Kid`. Turn on the block through the API, and at once open a new tab in Firefox. Expected: no Firefox process is closed; all Firefox processes are suspended within 70 seconds.
   - Remove the block of `firefox.exe` through the API. Expected: Firefox resumes within 60 seconds.
   - Start a Study app that uses `msedgewebview2.exe` (for example a WebView2 sample or the Widgets of Windows 10). Expected: it keeps running.
-  - Stop the WMI service (`net stop winmgmt /y`) and start Chrome. Expected: Chrome is suspended within 60 seconds, not closed; the watcher starts again after `net start winmgmt`.
-  - Sign out while a blocked browser is suspended (needs PR #22). Expected: the sign-out finishes and no other program of `Kid` is closed.
+  - Stop the WMI service (`net stop winmgmt /y`) and start Chrome. Expected: Chrome is suspended within 70 seconds, not closed; the watcher starts again after `net start winmgmt`.
+  - Sign out while a blocked browser is suspended. Expected: the sign-out finishes and no other program of `Kid` is closed.
+  - Start the sign-out while a blocked browser is suspended and Notepad has unsaved text, and cancel it. Expected: the browser is not suspended during the Session End Hold, and is suspended again within 20 seconds after the hold; a new Chrome start during the hold is closed (design D15).
 
 ## 8. Web admin API
 
 - [ ] 8.1 Add `blocked` to `GET`, `POST` and `PUT /api/admin/app-rules` (missing on `PUT` keeps the stored value) with the validation of design D2 (status 400). Verify with an assert in `tests/ParentalControl.Tests` or a `curl` call on VM 102: a blocked System rule returns 400; a `PUT` without `blocked` keeps the block.
 - [ ] 8.2 Add `GET /api/admin/blocked-starts?date=` (design D11). Verify with `curl` on VM 102 after task 7.7: the list has `msedge.exe` with the counts.
 - [ ] 8.3 Add `notifyBlockedTelegram` to `GET` and `POST /api/admin/settings`. Verify with `curl` on VM 102 that the value survives a service restart.
-- [ ] 8.4 Verify with `curl` on VM 102 that each new or changed route returns 401 without an admin session.
+- [ ] 8.4 Verify with `curl` on VM 102 that each new or changed route returns 401 without an admin session. The console gate test (task 11.3) already checks `GET /api/admin/blocked-starts` and a `PUT` of a block in CI.
 
 ## 9. Admin UI (depends on issue #26)
 
@@ -81,9 +82,15 @@ PR #20 (`add-german-child-texts`) is merged (design D14). Do not install a build
 - [x] 10.2 Add the parent notes to `README.md`: the default blocked browsers, the PDF reader hint for Edge (design D9), and that a renamed browser is not blocked. Verify that the notes name each of the 15 default file names.
 - [x] 10.3 Update `docs/ROADMAP.md` (stage 2): blocked programs done, the allow-list mode and the renamed-browser detection as follow-ups. Verify that the roadmap links this change.
 
+## 11. Rebase on PR #21 and PR #22
+
+- [x] 11.1 Rebase on `main` with PR #21 and PR #22. Keep both behaviours in `SuspensionPlanner` (`HeldSessions` together with `PendingClose` and `ProtectedPrograms`), `CategoryEnforcer` (the hold expiry and the Pending Suspension together with the block enforcer), the schema in `DatabaseManager`, and `GLOSSARY.md`. The route `GET /api/admin/blocked-starts` uses the Admin Session gate instead of `CheckAuth` (design D13, D15). Verify that `dotnet build -p:EnableWindowsTargeting=true` has 0 errors and that `dotnet test tests/ParentalControl.Domain.Tests` passes.
+- [x] 11.2 Add xUnit tests: during a Session End Hold, the planner suspends no blocked process and keeps the blocked record; after the hold, it suspends the blocked processes again with the reason `Blocked`. Add `/api/admin/blocked-starts` and `/api/admin/app-rules` to the route policy test. Verify that `dotnet test tests/ParentalControl.Domain.Tests` passes.
+- [x] 11.3 In the console gate test, check that the routes of the block are mapped and classified as `Admin`, that `GET /api/admin/blocked-starts` without a session gives 401, and that a `PUT` of a block without a session gives 401 and keeps the block. Verify with the CI run of the PR.
+
 ## Workflow follow-up
 
 - Run `/opsx:verify` after the VM checks of task 7.7 and group 8.
-- Before the archive: if PR #22 is archived first, merge its text of "Resume suspended programs" into the MODIFIED block of this change (design D14).
+- Before the archive: if `openspec/specs/category-limits/spec.md` changed after this rebase (for example by PR #31), start each MODIFIED block of this change again from the current text (design D14).
 - Archive the change with `/opsx:archive` after the final check on the child's PC.
 - Open follow-up issues: the allow-list mode ("allowed programs"), the detection of a renamed or portable browser.

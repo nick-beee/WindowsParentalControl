@@ -9,7 +9,7 @@ The parent wants to block some programs fully. For now, this includes all web br
 - An App Rule gets a block switch. A rule with the block makes each exe that it resolves a **Blocked Program**. The block uses the same match types (file name or folder) and the same rule precedence as the categories. A file rule without the block thus makes an exception to a blocked folder.
 - The service detects process starts in the sessions of a Restricted User. It uses a Windows process start event, and the 60-second tick lists the processes as a fallback. It does not use data from the Session Agent.
 - **Blocked Start**: when a process of a Blocked Program starts after the block took effect, the service closes it at once. This is the only close of a program of the child. A process counts as "at its start" only if the service detects it within 10 seconds after its creation.
-- A process of a Blocked Program that ran before the block took effect, or that the service detects later than 10 seconds after its creation, is **not** closed. The service suspends it as a Suspended App. It stays suspended until it ends, until the parent removes the block, until the session ends, or until the service stops.
+- A process of a Blocked Program that ran before the block took effect, or that the service detects later than 10 seconds after its creation, is **not** closed. The service suspends it as a Suspended App, after the 10-second Pending Suspension in which the Session Agent minimizes its windows. It stays suspended until it ends, until the parent removes the block, until the session ends, or until the service stops.
 - Default blocked rules for the common browsers: `chrome.exe`, `firefox.exe` (also Tor Browser), `msedge.exe`, `opera.exe` (also Opera GX), `brave.exe`, `vivaldi.exe`, `browser.exe` (Yandex), `iexplore.exe`, `chromium.exe`, `waterfox.exe`, `librewolf.exe`, `floorp.exe`, `palemoon.exe`, `thorium.exe` and `DuckDuckGo.exe`. An existing install gets them one time. A rule with the same pattern that the parent made keeps its category and gets the block.
 - `msedge.exe` is blocked. A start in the background (Startup Boost, background mode) is closed silently: the child gets no message for it.
 - The service never blocks: an exe below the Windows folder, an exe below the Parental Control install folder (the service, the Session Agent, the admin app), `msedgewebview2.exe`, a process of another user or session, and a process whose path it cannot read.
@@ -36,7 +36,7 @@ The parent wants to block some programs fully. For now, this includes all web br
 - `blocked-programs`: the block on an App Rule, the default blocked browsers, the detection of process starts, the close of a Blocked Start, the suspension of a Blocked Program that already runs, the never-block list, the child message, and the parent report.
 
 ### Modified Capabilities
-- `category-limits`: "Resume suspended programs" and "Suspensions survive a service restart" now apply to a process that the service suspended for a limit. A process that the service suspended because of a block follows `blocked-programs`.
+- `category-limits`: "Resume suspended programs" and "Suspensions survive a service restart" now apply to a process that the service suspended for a limit. A process that the service suspended because of a block follows `blocked-programs`. "Keep a suspended process suspended", "Session End Hold" and "Minimize a process before its suspension" also cover a blocked suspension: it goes through the Pending Suspension, and the Session End Hold stops it too.
 
 ## Impact
 
@@ -46,4 +46,4 @@ The parent wants to block some programs fully. For now, this includes all web br
 - New NuGet dependency `System.Management` (Microsoft, MIT) in the Service project.
 - The child text catalog (`src/ParentalControl.Domain/Messages`, spec `child-messages`) gets one new child message key.
 - `GLOSSARY.md`: new terms Blocked Program and Blocked Start; a wider definition of Suspended App.
-- Dependencies: PR #21 (Admin Session), PR #22 (resume at session end), issue #26 (React admin UI). PR #20 (text catalog) is merged.
+- Dependencies: issue #26 (React admin UI). PR #20 (text catalog), PR #21 (Admin Session) and PR #22 (resume at session end, Pending Suspension, Session End Hold) are merged; a blocked suspension uses the Pending Suspension and the Session End Hold of PR #22 (design D15).
