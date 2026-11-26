@@ -211,6 +211,17 @@ The system SHALL have the routes `GET /api/admin/breaks` (Break Rule and state o
 - **WHEN** the parent sends `POST /api/admin/breaks/{userId}/end` and no Break of that user runs
 - **THEN** the system answers with status 409 and changes nothing
 
+### Requirement: Admin page for Breaks
+The web admin SHALL show for each Restricted User the Break Rule (on or off, N, M) with fields that the parent can change, and the state: the Continuous Use, or the end time of a running Break. For a running Break, it SHALL show a button that ends the Break. The settings of the web admin SHALL include `telegram_notify_break` and the three break texts.
+
+#### Scenario: Parent changes the rule on the page
+- **WHEN** the parent sets N to 30 and M to 5 for `Kid` on the page and saves
+- **THEN** the page sends `PUT /api/admin/breaks/{userId}` with the three fields, and the system stores the new Break Rule
+
+#### Scenario: Parent ends a Break on the page
+- **WHEN** a Break of `Kid` runs and the parent clicks the end button and confirms
+- **THEN** the page sends `POST /api/admin/breaks/{userId}/end`, the Break ends, and the session stays locked until the child unlocks it
+
 ### Requirement: Break texts follow the Language Preset
 The child message keys `msg_break_warn`, `msg_break_start` and `msg_break_running` SHALL have a default text in each Language Preset ("de", "en", "id") with the same placeholders. The parent SHALL be able to edit them like the other child message keys. `{break_end}` SHALL be the local time of the end of the Break in the format `HH:mm`. The title of the three messages SHALL be the fixed session text `break_title` of the Language Preset.
 

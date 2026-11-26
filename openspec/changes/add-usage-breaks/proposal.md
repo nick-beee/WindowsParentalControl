@@ -19,6 +19,7 @@ The parent wants the rule "N minutes of use, then a break of M minutes" (`docs/R
 - New: API routes `GET /api/admin/breaks`, `PUT /api/admin/breaks/{userId}` and `POST /api/admin/breaks/{userId}/end`, behind the Admin Session.
 - New: child message keys `msg_break_warn`, `msg_break_start` and `msg_break_running` with German, English and Indonesian default texts, in the message catalog of `child-messages` (`src/ParentalControl.Domain/Messages`), and a fixed session text `break_title` for the title of the break messages.
 - New: an optional Telegram notice to the parent at each Break start, off by default.
+- New: the card "Pausen" in the React web admin (rule, state, end button) and the break settings in its settings dialog.
 - No change to the Allowance Time, the Schedule Window, the Category Limits or the Suspended Apps.
 
 ## Capabilities
@@ -35,7 +36,7 @@ None. The requirement "Session limits stay unchanged" of `category-limits` stays
 
 - PR #21 (`require-admin-sign-in`) is on `main`. Its Admin Session gate protects the API routes of this change. Without it, a process of the child could call `POST /api/admin/breaks/{userId}/end` and end its own Break.
 - PR #20 (`add-german-child-texts`) is on `main` (capability `child-messages`). The break texts use its catalog, the "de" preset and the word forms `{minutes|Minute|Minuten}`.
-- Issue #26 (React admin, ADR 0009): the page for the break settings is a part of the React admin. It is not a tracked task of this change, so it does not block the archive. Until #26, the default rule applies, and the parent uses Telegram or the API.
+- PR #35 (React admin, ADR 0009) is on `main`. The card "Pausen" and the break settings are in this change.
 
 ## Out of Scope
 

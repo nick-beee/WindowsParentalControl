@@ -51,6 +51,7 @@ For each VM step: check that the snapshot `test-base` exists before you install 
 - [x] 7.1 Add `GET /api/admin/breaks`, `PUT /api/admin/breaks/{userId}` and `POST /api/admin/breaks/{userId}/end` with the shapes and status codes of design D14. Verify: an xUnit test of `AdminRoutePolicy` classifies the three paths as admin routes, and the build passes.
 - [ ] 7.2 Put the range check of `BreakRule` in the PUT route and the rule change of design D11 in `BreakEnforcer`. Verify: xUnit tests from group 1 cover the logic; on the VM, `PUT` with `useMinutes` 5 gives 400 and no change, and a change of N from 60 to 30 with 40 counted minutes gives 25.
 - [ ] 7.3 Add `telegram_notify_break` and the three break texts (`msg_break_warn`, `msg_break_start`, `msg_break_running`) to `GET` and `POST /api/admin/settings`, as for the category texts. Verify on the VM: the key changes through the API with an Admin Session.
+- [ ] 7.5 Add the card "Pausen" to the React admin (`web/admin`, design D16): the Break Rule per Restricted User (on/off, N, M with the ranges of D3), the Continuous Use or the end of a running Break, a save button and an end button with a confirmation, and `telegramNotifyBreak` and the three break texts in the settings dialog. German texts in `src/i18n/de.ts`. Verify: Vitest tests for the card and the settings dialog pass with `npm test`, lint and the type check pass, and on the VM the page reads, changes and ends a Break through a headless browser.
 - [ ] 7.4 Verify the gate on the VM: as `Kid`, `curl -X POST http://127.0.0.1:5050/api/admin/breaks/{userId}/end` without a cookie gives 401 and the Break continues; with an Admin Session it gives 200 and the Break ends; a second call gives 409.
 
 ## 8. Telegram
@@ -72,7 +73,6 @@ For each VM step: check that the snapshot `test-base` exists before you install 
 
 ## Workflow follow-up
 
-- The page for the Break Rule in the React admin (`GET`/`PUT /api/admin/breaks`, end button, `telegram_notify_break`) is a part of issue #26. It does not block the archive of this change.
 - Run `/opsx:verify`, then `/opsx:archive` after the VM checks pass.
 - Do the final test on the child's PC, not only on the VM.
 - Follow-up change: breaks per App Category.

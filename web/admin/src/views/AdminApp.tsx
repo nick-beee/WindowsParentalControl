@@ -9,6 +9,7 @@ import { SettingsDialog } from '../dialogs/SettingsDialog'
 import { UpdateDialog } from '../dialogs/UpdateDialog'
 import { t } from '../i18n'
 import { ActivityPanel, presetQuery, type DatePreset } from './ActivityPanel'
+import { BreaksCard } from './BreaksCard'
 import { CapturePanel } from './CapturePanel'
 import { CategoriesPanel } from './CategoriesPanel'
 import { RequestsCard } from './RequestsCard'
@@ -183,6 +184,7 @@ function AdminPage({ version }: { version: string }) {
           <RequestsCard requests={data?.requests ?? null} onResolve={resolve} />
         </div>
         <UsersCard users={data?.managedUsers ?? null} onManage={(userId, username) => setDialog({ kind: 'schedule', userId, username })} />
+        <BreaksCard tick={tick} />
         <CapturePanel state={captures} />
         <CategoriesPanel
           categories={categories}

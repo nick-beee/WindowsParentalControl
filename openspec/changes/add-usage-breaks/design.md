@@ -23,7 +23,6 @@ The current state that shapes the approach:
 
 **Non-Goals:**
 - A fix of the re-lock after an unlock in `SessionTracker` (issue #14). The design works around it (D7).
-- The page in the React admin (issue #26).
 
 ## Decisions
 
@@ -160,9 +159,9 @@ One new fixed session text in `SessionTexts`: `break_title` = "Parental Control 
 - *Rejected:* the existing `lock_title` as the title. Its German text "Computer wird gesperrt" does not fit the warning.
 - *Rejected:* a change of the requirements of `child-messages`. They apply to each child message key and each fixed session message already.
 
-### D16. The admin page waits for the React admin
-The page for the Break Rule is a part of the React admin (ADR 0009, issue #26). It reads and writes the routes of D14. The page is not a tracked task of this change, so the change can be archived when the service part works.
-- *Rejected:* a section in the current `AdminPage.cs`. ADR 0009 replaces that page, so the work is lost.
+### D16. The admin page in the React admin
+The React admin of ADR 0009 (PR #35) is on `main`. The card "Pausen" (`web/admin/src/views/BreaksCard.tsx`) shows one row per Restricted User: on/off, N, M, the Continuous Use or the end of a running Break, a save button and an end button. It reads and writes the routes of D14 through the typed client (`src/api/client.ts`). It loads the state again with each refresh of the dashboard (10 s). The page checks the ranges of D3 before it sends a `PUT`; the server checks them again. The end button asks for a confirmation and says that the session stays locked. The settings dialog has the toggle `telegramNotifyBreak` and the three break texts.
+- *Rejected:* a section in the old `AdminPage.cs`. ADR 0009 replaced that page.
 - *Rejected:* the settings in the WPF Admin app. ADR 0009 makes the web admin the place for settings.
 
 ### D17. No ADR
@@ -176,7 +175,7 @@ All decisions are in settings and in two new tables. A later change can revert e
 - [The service restarts while the child plays. The down time counts neither as use nor as a Rest.] → The child gets the down time as extra use. A restart is rare, and the child cannot stop the service.
 - [An online game loses its connection during a Break of 10 minutes.] → Accepted. The program stays open, as the parent asked. The parent can change M or put the game on another rule later (per-category breaks, follow-up).
 - [The message with `wait` blocks the tick for up to 5 seconds per session.] → The same as for the Allowance Time today. With one child, the delay is small.
-- [Breaks are on after an update (D2).] → The release notes say so. The parent can turn the rule off with the API or, after #26, on the page.
+- [Breaks are on after an update (D2).] → The release notes say so. The parent can turn the rule off on the page "Pausen" of the web admin.
 
 ## Migration Plan
 

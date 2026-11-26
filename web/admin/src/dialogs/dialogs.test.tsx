@@ -193,6 +193,10 @@ describe('SettingsDialog', () => {
         promptResponsePresets: 'Ja\nNein',
         msgCategoryWarn: 'Noch {minutes} Minuten {name}',
         msgCategorySuspended: '{name} pausiert',
+        telegramNotifyBreak: false,
+        msgBreakWarn: 'In {minutes} Minuten ist Pause.',
+        msgBreakStart: 'Pause bis {break_end}',
+        msgBreakRunning: 'Noch {minutes} Minuten bis {break_end}',
       },
       'POST /api/admin/settings': { success: true },
     })
@@ -205,6 +209,10 @@ describe('SettingsDialog', () => {
     const dialog = await screen.findByRole('dialog')
     expect(await within(dialog).findByText(/Telegram sind noch nicht eingerichtet/)).toBeInTheDocument()
     await userEvent.click(within(dialog).getByLabelText(t.notifySignOut))
+    await userEvent.click(within(dialog).getByLabelText(t.notifyBreak))
+    const start = within(dialog).getByLabelText(t.msgBreakStartLabel)
+    await userEvent.clear(start)
+    await userEvent.type(start, 'Pause bis {{break_end} Uhr')
     await userEvent.click(within(dialog).getByRole('button', { name: /Speichern/ }))
     expect(last(calls, 'POST /api/admin/settings')?.body).toEqual({
       telegramNotifySignIn: true,
@@ -213,6 +221,10 @@ describe('SettingsDialog', () => {
       promptResponsePresets: 'Ja\nNein',
       msgCategoryWarn: 'Noch {minutes} Minuten {name}',
       msgCategorySuspended: '{name} pausiert',
+      telegramNotifyBreak: true,
+      msgBreakWarn: 'In {minutes} Minuten ist Pause.',
+      msgBreakStart: 'Pause bis {break_end} Uhr',
+      msgBreakRunning: 'Noch {minutes} Minuten bis {break_end}',
     })
     expect(onClose).toHaveBeenCalled()
   })
