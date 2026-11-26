@@ -17,7 +17,7 @@ The parent wants the rule "N minutes of use, then a break of M minutes" (`docs/R
 - New: the parent can end a running Break from the Remote Admin Interface (API) and from Telegram (command `/break`).
 - New: the Break Rule and the state of the Break survive a service restart.
 - New: API routes `GET /api/admin/breaks`, `PUT /api/admin/breaks/{userId}` and `POST /api/admin/breaks/{userId}/end`, behind the Admin Session.
-- New: child message keys `msg_break_warn`, `msg_break_start` and `msg_break_running` with German, English and Indonesian default texts, in the message catalog of the change `add-german-child-texts`.
+- New: child message keys `msg_break_warn`, `msg_break_start` and `msg_break_running` with German, English and Indonesian default texts, in the message catalog of `child-messages` (`src/ParentalControl.Domain/Messages`), and a fixed session text `break_title` for the title of the break messages.
 - New: an optional Telegram notice to the parent at each Break start, off by default.
 - No change to the Allowance Time, the Schedule Window, the Category Limits or the Suspended Apps.
 
@@ -29,12 +29,12 @@ The parent wants the rule "N minutes of use, then a break of M minutes" (`docs/R
 
 ### Modified Capabilities
 
-None. The requirement "Session limits stay unchanged" of `category-limits` stays true. The break texts and the break routes are in `usage-breaks`, because the capabilities `child-messages` (PR #20) and `admin-access` (PR #21) are not on `main` yet.
+None. The requirement "Session limits stay unchanged" of `category-limits` stays true. The requirements of `child-messages` apply to each child message key and each fixed session message (same placeholders in each preset, word forms, preset switch, update, Telegram language), so the new keys need no change of `child-messages`. The German break texts are in `usage-breaks`. The break routes are in `usage-breaks`, because the capability `admin-access` (PR #21) is not on `main` yet.
 
 ## Dependencies
 
 - PR #21 (`require-admin-sign-in`) must merge before the API routes of this change. On `main` today, the web admin has no sign-in while TOTP is off (issue #18). Without #21, a process of the child can call `POST /api/admin/breaks/{userId}/end` and end its own Break.
-- PR #20 (`add-german-child-texts`) must merge before the break texts. The "de" preset and the word forms `{minutes|Minute|Minuten}` exist only in that change.
+- PR #20 (`add-german-child-texts`) is on `main` (capability `child-messages`). The break texts use its catalog, the "de" preset and the word forms `{minutes|Minute|Minuten}`.
 - Issue #26 (React admin, ADR 0009): the page for the break settings is a part of the React admin. It is not a tracked task of this change, so it does not block the archive. Until #26, the default rule applies, and the parent uses Telegram or the API.
 
 ## Out of Scope
@@ -45,13 +45,13 @@ None. The requirement "Session limits stay unchanged" of `category-limits` stays
 - Idle detection. Time away from the keyboard in an unlocked session counts as use, as for the Allowance Time.
 - A button for the child to start a Break early or to move a Break.
 - A "skip the next Break" function for the parent. The parent can turn the rule off or end a running Break.
-- German Telegram texts for the parent (PR #20 has no German Telegram texts).
+- German Telegram texts for the parent (`child-messages` has no German Telegram texts).
 - The break settings in the WPF Admin app.
-- The fix of the lock state in `SessionTracker` (issues #9 and #14, stage 3).
+- A change of the lock state in `SessionTracker`. PR #30 fixed issue #9 (the poll reads the Windows lock flag). Issue #14 (the re-lock after an unlock is not verified) stays open.
 
 ## Impact
 
-- Code: `src/ParentalControl.Domain` (new folder `Breaks`: rule, state, planner), `src/ParentalControl.Service` (`SessionTracker`, `UsageMonitorWorker`, a new `BreakEnforcer`, `Web/WebServerHost.cs`), `src/ParentalControl.Core` (`DatabaseManager`, new `BreakRepository`, `EventType`, `TelegramBotService`), `src/ParentalControl.Domain/Messages` (from PR #20).
+- Code: `src/ParentalControl.Domain` (new folder `Breaks`: rule, state, planner), `src/ParentalControl.Service` (`SessionTracker`, `UsageMonitorWorker`, a new `BreakEnforcer`, `Web/WebServerHost.cs`), `src/ParentalControl.Core` (`DatabaseManager`, new `BreakRepository`, `EventType`, `TelegramBotService`), `src/ParentalControl.Domain/Messages` (`ChildMessageKeys`, `MessageCatalog`, `SessionTexts`).
 - Data: new tables `break_rules` and `break_state`, new settings key `telegram_notify_break`, new event types `BREAK_STARTED` and `BREAK_ENDED`.
 - API: three new routes below `/api/admin/`.
 - Tests: xUnit tests in `tests/ParentalControl.Domain.Tests`, and manual checks on test VM 102.

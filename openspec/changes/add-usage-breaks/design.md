@@ -8,10 +8,11 @@ The current state that shapes the approach:
 - `UsageMonitorWorker` ticks every 60 seconds. For each unlocked session of a Restricted User, it checks the Allowance Time and then the Schedule Window. If one of them ends, it sends a message with `NotificationManager.SendMessage` (`WTSSendMessageW`) and locks the session with `SessionManager.LockSession` (`WTSDisconnectSession`). This is the Enforced Workstation Lock (ADR 0006). Then it sends the threshold warnings and runs `CategoryEnforcer.Tick()`.
 - `SessionTracker.TickAllSessions` adds the elapsed whole minutes of each unlocked session to `usage.minutes_used`. A gap of more than 2 minutes counts as 1 minute (an undetected sleep). `FlushSessionTime` adds the open minutes at a lock, a sign-out and a sleep.
 - `SessionTracker.OnSessionUnlock` locks the session again if the Allowance Time or the Schedule Window is over. It sends the message at most one time in 10 seconds. `OnUserLogon` signs the child out (`WTSLogoffSession`) in the same case.
-- `ParentalControlServiceLifetime.OnSessionChange` calls `OnSessionLock` for `SessionLock` and `ConsoleDisconnect`, and `OnSessionUnlock` for `SessionUnlock` and `ConsoleConnect`.
-- `SessionTracker.SynchronizeSessions` reads the lock state each minute with `WTSEnumerateSessionsW` and `WTSQuerySessionInformationW`. Issue #9: after Win+L, this poll shows the session as unlocked.
+- `ParentalControlServiceLifetime.OnSessionChange` calls `OnSessionLock` for `SessionLock`, `ConsoleDisconnect` and `RemoteDisconnect`, `OnSessionUnlock` for `SessionUnlock`, and `OnSessionReconnect` for `ConsoleConnect` and `RemoteConnect`. `OnSessionReconnect` runs the unlock check if Windows shows the session as unlocked.
+- `SessionTracker.SynchronizeSessions` reads the Windows lock flag each minute (`SessionManager.QueryLockFlag`, `SessionLockRules.Reconcile`). A disconnected session or a LOCK flag marks the session as locked. An UNLOCK flag runs the unlock check. PR #30 made this change and fixed issue #9.
 - The pure logic is in `src/ParentalControl.Domain` (`net8.0`) with xUnit tests that run on the Mac.
-- Two draft changes are not merged: `add-german-child-texts` (PR #20, message catalog with the presets "de", "en" and "id") and `require-admin-sign-in` (PR #21, Admin Session for each route below `/api/admin/`).
+- The message catalog with the presets "de", "en" and "id" is on `main` (PR #20, capability `child-messages`, `src/ParentalControl.Domain/Messages`).
+- The draft change `require-admin-sign-in` (PR #21, Admin Session for each route below `/api/admin/`) is not merged. On `main`, `CheckAuth` lets each request pass while TOTP is off (issue #18).
 
 ## Goals / Non-Goals
 
@@ -21,7 +22,7 @@ The current state that shapes the approach:
 - No new WinAPI call. The Break uses the same lock and message calls as the Allowance Time.
 
 **Non-Goals:**
-- A fix of the lock state in `SessionTracker` (issues #9 and #14). The design works around it (D7).
+- A fix of the re-lock after an unlock in `SessionTracker` (issue #14). The design works around it (D7).
 - The page in the React admin (issue #26).
 
 ## Decisions
@@ -46,7 +47,9 @@ N is 10 to 240 minutes, M is 5 to 120 minutes, in whole minutes.
 - *Rejected:* free values. N below 6 makes the 5-minute warning come at the start of the use.
 
 ### D4. One source of minutes for the Allowance Time and Continuous Use
-Continuous Use counts at the same two places that add minutes to the Allowance Time: `SessionTracker.TickAllSessions` and `SessionTracker.FlushSessionTime`. Each call of `UsageRepository.AddMinutes` for a Restricted User also adds the same minutes to Continuous Use. The rule "a gap of more than 2 minutes counts as 1 minute" applies to both counts. A later fix of issue #9 corrects both counts at the same time.
+Continuous Use counts at the same two places that add minutes to the Allowance Time: `SessionTracker.TickAllSessions` and `SessionTracker.FlushSessionTime`. Each call of `UsageRepository.AddMinutes` for a Restricted User also adds the same minutes to Continuous Use. The rule "a gap of more than 2 minutes counts as 1 minute" applies to both counts. The fix of issue #9 (PR #30) corrects both counts at the same time.
+- Only the elapsed minutes of a Restricted User count. The penalty of the Clock Tampering Detection (`AddMinutes` with the daily minutes) and `UsageRepository.SetUsage` do not change Continuous Use. The hook is at the two call sites, not inside `UsageRepository.AddMinutes`.
+- While a Break runs, the two call sites add no minutes to either count, also if the session shows as unlocked before the tick locks it again.
 - *Rejected:* the Foreground Window samples of the Session Agent. The agent channel has no authentication (issue #6, `CLAUDE.md` security rule).
 - *Rejected:* a separate timer for breaks. Two timers can drift apart, and the child sees two different numbers.
 
@@ -55,11 +58,13 @@ The table `break_state` stores `last_use_utc`: the time of the last counted minu
 - The events give the exact times, so a Rest of M − 1 minutes does not reset the count (scenario "Rest one minute too short").
 - A tick gap of M minutes or more without a sleep event (the PC slept or was off) is a Rest.
 - At a service start, if the session of the user is unlocked, the down time counts neither as use nor as a Rest. The service does not know what happened in that time. A short restart (for example an update) must not give a free reset. At a service start without a session of the user, or with a locked session, the Rest starts at `last_use_utc`.
+- Exception: if the PC started after `last_use_utc` (boot time = now minus the system uptime), the PC was off. Then the time from `last_use_utc` is a Rest, also if the session is already unlocked at the service start. The service starts automatically, but the child can sign in before it runs.
+- A Rest starts only for a session that the service tracked as unlocked: a lock, a sign-out or a sleep. A lock event of a session that is already locked (for example after a rejected unlock) does not move `last_use_utc`. A Rest ends at an accepted unlock, a sign-in or a wake. The end of a Rest sets `last_use_utc` to the end time, so that the next counted minute does not see the Rest again.
 - *Rejected:* reset only after an enforced Break. Then a child who stops for 30 minutes gets a Break soon after the return.
 - *Rejected:* a reset at midnight. Use from 23:50 to 00:30 is continuous use. A night with the PC off is a Rest anyway.
 
 ### D6. The Break is the Enforced Workstation Lock
-At the start of a Break, the service sends `msg_break_start` with `NotificationManager.SendMessage` (`WTSSendMessageW`, 5 seconds, wait), then calls `SessionManager.LockSession` (`WTSDisconnectSession`) and `SessionTracker.OnSessionLock`. It writes the event `BREAK_STARTED`. This is the same call order as for the end of the Allowance Time.
+At the start of a Break, the service sends `msg_break_start` with `NotificationManager.SendMessage` (`WTSSendMessageW`, 5 seconds, wait), then calls `SessionManager.LockSession` (`WTSDisconnectSession`) and `SessionTracker.OnSessionLock`. It writes the event `BREAK_STARTED`. This is the same call order as for the end of the Allowance Time. The title of the break messages is the fixed session text `break_title`.
 - *Rejected:* suspend all processes of the session (`NtSuspendProcess`). The child can still use the desktop and start new programs, so it is not a break.
 - *Rejected:* `LockWorkStation`. It works only from a process inside the session, and the service runs in session 0.
 - *Rejected:* sign the child out (`WTSLogoffSession`). This closes the programs and breaks the hard rule.
@@ -73,7 +78,7 @@ Three places lock again:
 - *Rejected:* the unlock event only. Issues #9 and #14 show that the event path is not reliable.
 
 ### D8. Order in the tick and the Schedule Window end
-In `UsageMonitorWorker.ProcessTick`, the break check runs after the checks of the Allowance Time and the Schedule Window, for each session that they did not lock. If one of them locks the session, no Break starts in that tick.
+In `UsageMonitorWorker.ProcessTick`, the break check runs after the checks of the Allowance Time and the Schedule Window, for each unlocked session of a Restricted User that they did not lock, also for a user without a schedule. If one of them locks the session, no Break starts in that tick. The end of a running Break is checked each tick for each Restricted User, also if the session is locked or the user is signed out.
 - The end of a Break is the earlier of `start + M` and today's Schedule Window end (`ScheduleRepository.GetEffectiveLimit`, which includes the Schedule Exceptions). Without a schedule, it is `start + M`. After the Schedule Window end, the Schedule Window lock continues as before. The child sees the same `{break_end}` text; the unlock after that time gets the Schedule Window message.
 - The break warnings are not sent when the Allowance Time or the Schedule Window ends at or before the start of the Break. The child gets the Allowance Time or Schedule Window warnings instead.
 - *Rejected:* the Break comes first. Then the child gets a break message and, at the end of the Break, a second lock message for the day.
@@ -87,7 +92,7 @@ Bonus Minutes change only `usage.bonus_minutes`. The break logic does not read t
 - Remote Admin Interface: `POST /api/admin/breaks/{userId}/end`.
 - Telegram: the command `/break` lists each Restricted User with a Break Rule: the state ("Break until 15:10" or "Break in 12 minutes") and, for a running Break, a button. The `callback_data` is `brk_end:<userId>:<breakStartUnixSeconds>`, at most 32 bytes (the limit is 64). The existing check in `TelegramBotService.HandleCallbackQueryAsync` accepts a callback only from the configured chat. The service ends the Break only if the stored start of the running Break equals the start in the button.
 - The end of a Break by the parent sets Continuous Use to 0 and writes `BREAK_ENDED` with the reason "parent". The session stays locked. The child unlocks it.
-- The Telegram texts for the parent are Indonesian with the preset "id" and English with each other preset, as PR #20 defines for all Telegram texts.
+- The Telegram texts for the parent are Indonesian with the preset "id" and English with each other preset, as the requirement "Telegram texts for the parent" of `child-messages` defines.
 - *Rejected:* a Telegram notice with a button at each Break start, on by default. With 45/10, the parent gets about one message per hour. The notice exists, but the setting `telegram_notify_break` is off by default.
 - *Rejected:* the service unlocks the session when the parent ends the Break. The service cannot unlock a session without the password of the child, and the child is maybe not at the PC.
 
@@ -116,7 +121,9 @@ Other data:
 - `BreakRule`: a record with `Enabled`, `UseMinutes`, `BreakMinutes`, the default (45, 10, on) and a range check.
 - `BreakState`: a record with the stored values of `break_state`.
 - `BreakPlanner`: pure functions. Input: rule, state, the time in UTC and one input event (minutes counted, Rest start, Rest end, service start with or without an unlocked session, tick, rule change, end by the parent), plus the Schedule Window end in UTC and a flag "Allowance Time or Schedule Window locks in this tick". Output: the new state and a list of actions (send the 5-minute or the 1-minute warning, start a Break with its end time, end a Break with a reason, lock again).
-- `BreakEnforcer` (Service project) reads and writes `break_rules` and `break_state` through a new `BreakRepository` (Core), calls the planner and runs the actions with `NotificationManager`, `SessionManager` and `TelegramBotService`.
+- `BreakEnforcer` (Service project) reads and writes `break_rules` and `break_state` through a new `BreakRepository` (Core), calls the planner and runs the actions with `NotificationManager`, `SessionManager` and `TelegramBotService`. One lock covers each read, plan and write of the state; the messages go out after the lock.
+- `BreakEnforcer` does not depend on `SessionTracker`, because `SessionTracker` calls `BreakEnforcer`. After a lock, the caller (`UsageMonitorWorker` or `SessionTracker`) calls `SessionTracker.OnSessionLock`. Two singletons that depend on each other fail only at the start of the service.
+- `TelegramBotService` (Core) cannot reference the Service project. It calls `BreakEnforcer` through static hooks, as for `/status`. `Program.cs` sets the hooks.
 - *Rejected:* the logic in `UsageMonitorWorker`. It cannot run on the Mac, and that class already mixes four concerns.
 
 ### D14. Admin API routes
@@ -129,7 +136,7 @@ All routes are below `/api/admin/`. With PR #21, the deny-by-default gate covers
 - These routes do not merge before PR #21. On `main` today, the admin routes have no sign-in while TOTP is off (issue #18). Then a process of the child could end its own Break.
 
 ### D15. Child texts in the catalog of PR #20
-Three new keys in `ChildMessageKeys` and `MessageCatalog` (`src/ParentalControl.Domain/Messages/MessageCatalog.cs` of PR #20). The keys are in `ChildMessageKeys.All`, so the preset switch and the edit of texts work for them without other code.
+Three new keys in `ChildMessageKeys` and `MessageCatalog` (`src/ParentalControl.Domain/Messages/MessageCatalog.cs`, capability `child-messages`). The keys are in `ChildMessageKeys.All`, so the preset switch, the update of an earlier install (`PresetSwitch.PlanUpdate` writes the default of the stored preset for a missing key) and the edit of texts work for them without other code.
 
 | Key | Placeholders | "de" default |
 |---|---|---|
@@ -148,7 +155,10 @@ Three new keys in `ChildMessageKeys` and `MessageCatalog` (`src/ParentalControl.
 - `msg_break_running`: "Istirahat berlangsung sampai pukul {break_end} ({minutes} menit lagi). Komputer dikunci kembali."
 
 In `msg_break_running`, `{minutes}` is the remaining time of the Break, rounded up to whole minutes.
-- *Rejected:* a temporary path through the "en"/"id" defaults in `SettingsRepository`, if PR #20 is late. Two text paths double the work and the tests. The text tasks wait for PR #20.
+
+One new fixed session text in `SessionTexts`: `break_title` = "Parental Control — Pause" ("de"), "Parental Control — Break" ("en"), "Parental Control — Istirahat" ("id"). It is the title of the three break messages.
+- *Rejected:* the existing `lock_title` as the title. Its German text "Computer wird gesperrt" does not fit the warning.
+- *Rejected:* a change of the requirements of `child-messages`. They apply to each child message key and each fixed session message already.
 
 ### D16. The admin page waits for the React admin
 The page for the Break Rule is a part of the React admin (ADR 0009, issue #26). It reads and writes the routes of D14. The page is not a tracked task of this change, so the change can be archived when the service part works.
@@ -160,7 +170,7 @@ All decisions are in settings and in two new tables. A later change can revert e
 
 ## Risks / Trade-offs
 
-- [Issue #9: after Win+L, the poll shows the session as unlocked. Then the service counts the locked time as use, and a voluntary Rest with Win+L does not reset Continuous Use.] → The error makes a Break come earlier, not later. The lock and sign-out events still record the start of the Rest. The fix of #9 corrects the Allowance Time and Continuous Use together (D4). A VM check confirms that the Allowance Time does not grow during a Break.
+- [A wrong lock state in the poll counts locked time as use, and a voluntary Rest does not reset Continuous Use.] → PR #30 reads the Windows lock flag (issue #9). A remaining error makes a Break come earlier, not later. The lock and sign-out events still record the start of the Rest. A VM check confirms that the Allowance Time does not grow during a Break.
 - [Issue #14: the re-lock after an unlock is not verified.] → The tick locks again within 60 seconds (D7). A VM check measures the time.
 - [`LockSession` on a session that is already disconnected.] → `WTSDisconnectSession` on a disconnected session has no effect or fails. The tick ignores the result. A VM check confirms it.
 - [The service restarts while the child plays. The down time counts neither as use nor as a Rest.] → The child gets the down time as extra use. A restart is rare, and the child cannot stop the service.
@@ -172,4 +182,4 @@ All decisions are in settings and in two new tables. A later change can revert e
 
 - The tables come with the first start of the new version. No existing table changes.
 - Rollback: install the previous version. It ignores the two tables and the settings key. Breaks stop.
-- Order of the merge: PR #21 and PR #20 first, then the implementation of this change. The proposal itself can merge before them.
+- Order of the merge: PR #20 is on `main`. The API routes (group 7) wait for PR #21. Until then, the parent ends a Break with Telegram `/break`, and the Break Rule is the default or a row in `break_rules`.

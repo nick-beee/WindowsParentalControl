@@ -37,7 +37,7 @@ The system SHALL count Continuous Use per Restricted User in whole minutes. It S
 - **THEN** Continuous Use does not increase in these 5 minutes
 
 ### Requirement: A Rest resets Continuous Use
-A Rest is a time without use: the session is locked or disconnected, the user is signed out, or the PC sleeps or is off. When a Rest of at least M minutes ends, the system SHALL set Continuous Use to 0. A shorter Rest SHALL keep the value. A time while the service did not run and the session of the user was unlocked SHALL count neither as use nor as a Rest.
+A Rest is a time without use: the session is locked or disconnected, the user is signed out, or the PC sleeps or is off. When a Rest of at least M minutes ends, the system SHALL set Continuous Use to 0. A shorter Rest SHALL keep the value. A lock of a session that is already locked SHALL NOT move the start of a Rest.
 
 #### Scenario: Lock for 12 minutes
 - **WHEN** the Break Rule has M = 10, Continuous Use is 30 minutes, and the child locks the session for 12 minutes
@@ -53,6 +53,13 @@ A Rest is a time without use: the session is locked or disconnected, the user is
 
 #### Scenario: PC off overnight
 - **WHEN** the child used the PC for 40 minutes in the evening and starts it again the next morning
+- **THEN** Continuous Use is 0
+
+### Requirement: Rest at a service start
+A time while the service did not run and the session of the user was unlocked SHALL count neither as use nor as a Rest. If the PC started after the last use, the time from the last use SHALL be a Rest, also if the session is already unlocked at the service start.
+
+#### Scenario: Sign-in before the service runs
+- **WHEN** the child used the PC for 40 minutes, the PC was off for 30 minutes, and the child signs in before the service starts, with M = 10
 - **THEN** Continuous Use is 0
 
 #### Scenario: Service restart while the child plays
@@ -205,7 +212,7 @@ The system SHALL have the routes `GET /api/admin/breaks` (Break Rule and state o
 - **THEN** the system answers with status 409 and changes nothing
 
 ### Requirement: Break texts follow the Language Preset
-The child message keys `msg_break_warn`, `msg_break_start` and `msg_break_running` SHALL have a default text in each Language Preset ("de", "en", "id") with the same placeholders. The parent SHALL be able to edit them like the other child message keys. `{break_end}` SHALL be the local time of the end of the Break in the format `HH:mm`.
+The child message keys `msg_break_warn`, `msg_break_start` and `msg_break_running` SHALL have a default text in each Language Preset ("de", "en", "id") with the same placeholders. The parent SHALL be able to edit them like the other child message keys. `{break_end}` SHALL be the local time of the end of the Break in the format `HH:mm`. The title of the three messages SHALL be the fixed session text `break_title` of the Language Preset.
 
 #### Scenario: German warning
 - **WHEN** the preset is "de" and 5 minutes remain before a Break
