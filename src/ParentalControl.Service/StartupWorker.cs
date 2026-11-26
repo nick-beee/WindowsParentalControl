@@ -73,6 +73,7 @@ public sealed class StartupWorker : BackgroundService
     public int LockRounds { get; private set; }
 
     private readonly StartupStateMachine _machine = new();
+    private Stopwatch? _firstTryStarted;
 
     /// <summary>The result of one try of the start.</summary>
     /// <param name="Opened">True if the database and the log are open. A retry then does not open them again.</param>
@@ -82,6 +83,8 @@ public sealed class StartupWorker : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await Task.Yield();
+        // CB1 a: the 5 seconds before the lock count from the start of the worker, also the wait for the bind.
+        _firstTryStarted = Stopwatch.StartNew();
         // Before the gate opens, no error ends the process (SF2): an exit gave a restart gap of the Service Control
         // Manager without a lock. Each error gives the lockdown: lock every 2 seconds, try again every minute.
         try
@@ -268,7 +271,8 @@ public sealed class StartupWorker : BackgroundService
     /// </summary>
     private async Task<StartAttempt> RunWithLockAsync(Func<StartAttempt> work, CancellationToken stoppingToken)
     {
-        var started = Stopwatch.StartNew();
+        // The first try counts from the start of the worker; a later try from its own start.
+        var started = Interlocked.Exchange(ref _firstTryStarted, null) ?? Stopwatch.StartNew();
         var step = Task.Run(() =>
         {
             try

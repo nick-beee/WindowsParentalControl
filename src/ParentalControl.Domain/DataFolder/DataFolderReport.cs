@@ -69,8 +69,15 @@ public static class AdminSignInStatus
     /// The state line of the section "Web admin sign-in". "Set up on" shows only if the web admin really works:
     /// the sign-in is set up and the service secured the data folder.
     /// </summary>
-    public static string Describe(bool credentialSetUp, DateTimeOffset? setupAtUtc, DataFolderReport folder, TimeZoneInfo zone)
+    /// <param name="serviceRunning">
+    /// False if the service does not run. The registry still shows the state of its last start, but a stopped service
+    /// is the time when another program can take port 5050, so "Set up on" does not show then (third review, SF3).
+    /// </param>
+    public static string Describe(bool credentialSetUp, DateTimeOffset? setupAtUtc, DataFolderReport folder, TimeZoneInfo zone,
+        bool serviceRunning = true)
     {
+        if (!serviceRunning)
+            return "Locked: " + ServiceStoppedWarning;
         if (PortBlockedWarning(folder, zone) is { } portWarning)
             return "Locked: " + portWarning;
         switch (folder.State)
@@ -99,9 +106,14 @@ public static class AdminSignInStatus
     /// </summary>
     /// While another program holds the port of the web server, the web admin does not count as usable either: a page
     /// on http://localhost:5050 then comes from that program, so the parent must not type a code there (SF3).
-    public static bool IsWebAdminUsable(bool credentialSetUp, DataFolderReport folder) =>
-        credentialSetUp && folder.State == DataFolderState.Secured && string.IsNullOrEmpty(folder.Detail)
+    public static bool IsWebAdminUsable(bool credentialSetUp, DataFolderReport folder, bool serviceRunning = true) =>
+        serviceRunning && credentialSetUp && folder.State == DataFolderState.Secured && string.IsNullOrEmpty(folder.Detail)
         && string.IsNullOrEmpty(folder.WebPortBlockedBy);
+
+    /// <summary>The text while the service does not run (SF3).</summary>
+    public const string ServiceStoppedWarning =
+        "the service \"ParentalControl.Service\" does not run, so another program can answer on http://localhost:5050. "
+        + "Do not type a sign-in code there. Start the service or restart the PC.";
 
     /// <summary>
     /// The warning about a program that holds the port of the web server (third review, SF3), or null. While it shows,

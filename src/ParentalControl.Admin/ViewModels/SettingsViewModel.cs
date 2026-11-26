@@ -213,7 +213,8 @@ public partial class SettingsViewModel : ObservableObject
         // The state of the data folder step comes from the service (registry), so the text shows the real state of
         // the web admin and not only the saved setup (finding S3).
         var folder = Core.Platform.DataFolderStatusStore.Read();
-        SignInStatusText = AdminSignInStatus.Describe(IsSignInSetUp, AdminAccessRepository.GetSetupTime(), folder, TimeZoneInfo.Local);
+        SignInStatusText = AdminSignInStatus.Describe(IsSignInSetUp, AdminAccessRepository.GetSetupTime(), folder, TimeZoneInfo.Local,
+            Services.ServiceState.IsRunning());
         // A warning shows while the old folder still exists, so the parent knows what to delete.
         var warnings = new[]
         {

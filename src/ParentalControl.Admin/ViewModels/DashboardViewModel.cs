@@ -47,9 +47,12 @@ public partial class DashboardViewModel : ObservableObject
     {
         var credentialSetUp = AdminAccessRepository.IsCredentialSetUp();
         var folder = ParentalControl.Core.Platform.DataFolderStatusStore.Read();
-        IsWebAdminLocked = !ParentalControl.Domain.DataFolder.AdminSignInStatus.IsWebAdminUsable(credentialSetUp, folder);
-        // SF3: the warning about a program on port 5050 shows first, also before the setup.
-        WebAdminLockedHint = ParentalControl.Domain.DataFolder.AdminSignInStatus.PortBlockedWarning(folder, TimeZoneInfo.Local) is { } portWarning
+        var serviceRunning = ServiceState.IsRunning();
+        IsWebAdminLocked = !ParentalControl.Domain.DataFolder.AdminSignInStatus.IsWebAdminUsable(credentialSetUp, folder, serviceRunning);
+        // SF3: the warnings about a stopped service and a program on port 5050 show first, also before the setup.
+        WebAdminLockedHint = !serviceRunning
+            ? "Do not sign in on this PC now: " + ParentalControl.Domain.DataFolder.AdminSignInStatus.ServiceStoppedWarning
+            : ParentalControl.Domain.DataFolder.AdminSignInStatus.PortBlockedWarning(folder, TimeZoneInfo.Local) is { } portWarning
             ? "Do not sign in on this PC now: " + portWarning
             : credentialSetUp
                 ? ParentalControl.Domain.DataFolder.AdminSignInStatus.Describe(credentialSetUp, null, folder, TimeZoneInfo.Local)

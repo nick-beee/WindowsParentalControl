@@ -107,4 +107,15 @@ public class AdminSignInStatusTests
         Assert.StartsWith("Locked:", text);
         Assert.DoesNotContain("Set up on", text);
     }
+
+    [Fact]
+    public void Stopped_service_locks_the_web_admin()
+    {
+        // SF3: the registry keeps the Secured state of the last start, but a stopped service is the window of a squat.
+        Assert.False(AdminSignInStatus.IsWebAdminUsable(true, Secured, serviceRunning: false));
+        var text = AdminSignInStatus.Describe(true, At, Secured, Utc, serviceRunning: false);
+        Assert.StartsWith("Locked:", text);
+        Assert.Contains("does not run", text);
+        Assert.DoesNotContain("Set up on", text);
+    }
 }
