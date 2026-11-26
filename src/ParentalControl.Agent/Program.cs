@@ -40,9 +40,18 @@ internal static class Program
         // WPF shuts the agent down at its own WM_QUERYENDSESSION. The window of the session-end resume must still get
         // its query, so wait for it before the controller closes that window.
         long? sessionEndingMs = null;
-        app.SessionEnding += (_, _) => sessionEndingMs = Environment.TickCount64;
+        AgentController? controllerRef = null;
+        app.SessionEnding += (_, e) =>
+        {
+            var now = Environment.TickCount64;
+            sessionEndingMs = now;
+            // Diagnosis: the order of the query of the hidden window and the query of the WPF window.
+            AgentLog.Logger.Information("WPF SessionEnding {Reason}: the hidden window got the query already {Handled}",
+                e.ReasonSessionEnding, controllerRef?.IsSessionEndQueryHandled(now) ?? false);
+        };
 
         using var controller = new AgentController(app);
+        controllerRef = controller;
         app.Run();
 
         if (sessionEndingMs is { } endingMs)

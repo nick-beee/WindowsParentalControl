@@ -17,6 +17,7 @@ namespace ParentalControl.Agent;
 internal sealed class SessionEndWatcher : NativeWindow, IDisposable
 {
     private const int WmQueryEndSession = 0x0011;
+    private const int WmEndSession = 0x0016;
     private const int WsPopup = unchecked((int)0x80000000);
 
     // The handler runs on the UI thread and must answer well within the hung-app timeout of Windows (5 s).
@@ -43,6 +44,11 @@ internal sealed class SessionEndWatcher : NativeWindow, IDisposable
                 OnSessionEnding(kind);
             m.Result = (IntPtr)1;
             return;
+        }
+        if (m.Msg == WmEndSession)
+        {
+            // Diagnosis only: after this message Windows can end the process at any time.
+            AgentLog.Logger.Information("WM_ENDSESSION wParam=0x{WParam:X} lParam=0x{LParam:X}", (long)m.WParam, (long)m.LParam);
         }
         base.WndProc(ref m);
     }
@@ -93,6 +99,9 @@ internal sealed class SessionEndWatcher : NativeWindow, IDisposable
     /// <param name="sessionEndingMs">The time of the SessionEnding event of WPF (Environment.TickCount64).</param>
     public void WaitForQuery(TimeSpan timeout, long sessionEndingMs)
     {
+        // Log before the pump: Windows can end the process during the pump, right after the query and WM_ENDSESSION.
+        AgentLog.Logger.Information("WPF message loop ended after a session end: wait for the query, handled already {Handled}",
+            IsQueryOfThisEnd(sessionEndingMs));
         var watch = Stopwatch.StartNew();
         while (!SessionEndQuery.IsQueryOfThisEnd(_lastQueryMs, sessionEndingMs) && watch.Elapsed < timeout)
         {
@@ -102,6 +111,9 @@ internal sealed class SessionEndWatcher : NativeWindow, IDisposable
         AgentLog.Logger.Information("End of the agent after a session end: query handled {Handled} after {Ms} ms",
             SessionEndQuery.IsQueryOfThisEnd(_lastQueryMs, sessionEndingMs), watch.ElapsedMilliseconds);
     }
+
+    /// <summary>Tells if this window already got the query of the end of the session that WPF reported.</summary>
+    public bool IsQueryOfThisEnd(long sessionEndingMs) => SessionEndQuery.IsQueryOfThisEnd(_lastQueryMs, sessionEndingMs);
 
     public void Dispose() => DestroyHandle();
 }

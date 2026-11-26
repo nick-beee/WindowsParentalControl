@@ -303,6 +303,9 @@ public sealed class AgentController : IDisposable
     /// <summary>Called after the WPF message loop ended because of a session end. See <see cref="SessionEndWatcher.WaitForQuery"/>.</summary>
     public void WaitForSessionEndQuery(TimeSpan timeout, long sessionEndingMs) => _sessionEndWatcher.WaitForQuery(timeout, sessionEndingMs);
 
+    /// <summary>Tells if the hidden window already got the query of the end of the session that WPF reported.</summary>
+    public bool IsSessionEndQueryHandled(long sessionEndingMs) => _sessionEndWatcher.IsQueryOfThisEnd(sessionEndingMs);
+
     public void Dispose()
     {
         if (_disposed) return;
