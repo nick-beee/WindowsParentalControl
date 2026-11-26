@@ -29,11 +29,11 @@ The parent wants the rule "N minutes of use, then a break of M minutes" (`docs/R
 
 ### Modified Capabilities
 
-None. The requirement "Session limits stay unchanged" of `category-limits` stays true. The requirements of `child-messages` apply to each child message key and each fixed session message (same placeholders in each preset, word forms, preset switch, update, Telegram language), so the new keys need no change of `child-messages`. The German break texts are in `usage-breaks`. The break routes are in `usage-breaks`, because the capability `admin-access` (PR #21) is not on `main` yet.
+None. The requirement "Session limits stay unchanged" of `category-limits` stays true. The requirements of `child-messages` apply to each child message key and each fixed session message (same placeholders in each preset, word forms, preset switch, update, Telegram language), so the new keys need no change of `child-messages`. The German break texts are in `usage-breaks`. The break routes are in `usage-breaks`. The capability `admin-access` (PR #21, on `main`) covers them without a change: each new route below `/api/admin/` is an admin route.
 
 ## Dependencies
 
-- PR #21 (`require-admin-sign-in`) must merge before the API routes of this change. On `main` today, the web admin has no sign-in while TOTP is off (issue #18). Without #21, a process of the child can call `POST /api/admin/breaks/{userId}/end` and end its own Break.
+- PR #21 (`require-admin-sign-in`) is on `main`. Its Admin Session gate protects the API routes of this change. Without it, a process of the child could call `POST /api/admin/breaks/{userId}/end` and end its own Break.
 - PR #20 (`add-german-child-texts`) is on `main` (capability `child-messages`). The break texts use its catalog, the "de" preset and the word forms `{minutes|Minute|Minuten}`.
 - Issue #26 (React admin, ADR 0009): the page for the break settings is a part of the React admin. It is not a tracked task of this change, so it does not block the archive. Until #26, the default rule applies, and the parent uses Telegram or the API.
 

@@ -12,7 +12,7 @@ The current state that shapes the approach:
 - `SessionTracker.SynchronizeSessions` reads the Windows lock flag each minute (`SessionManager.QueryLockFlag`, `SessionLockRules.Reconcile`). A disconnected session or a LOCK flag marks the session as locked. An UNLOCK flag runs the unlock check. PR #30 made this change and fixed issue #9.
 - The pure logic is in `src/ParentalControl.Domain` (`net8.0`) with xUnit tests that run on the Mac.
 - The message catalog with the presets "de", "en" and "id" is on `main` (PR #20, capability `child-messages`, `src/ParentalControl.Domain/Messages`).
-- The draft change `require-admin-sign-in` (PR #21, Admin Session for each route below `/api/admin/`) is not merged. On `main`, `CheckAuth` lets each request pass while TOTP is off (issue #18).
+- The change `require-admin-sign-in` (PR #21, capability `admin-access`) is on `main`. Each route below `/api/admin/` except the login and the logout requires an Admin Session (`AdminRoutePolicy`, deny by default). Until the start gate opens, each route answers 503.
 
 ## Goals / Non-Goals
 
@@ -131,9 +131,9 @@ All routes are below `/api/admin/`. With PR #21, the deny-by-default gate covers
 - `GET /api/admin/breaks` → `200 [{ "userId": 3, "username": "Kid", "enabled": true, "useMinutes": 45, "breakMinutes": 10, "continuousUseMinutes": 31, "breakEndsAt": null }]`. `breakEndsAt` is an ISO 8601 time in UTC or null.
 - `PUT /api/admin/breaks/{userId}` with `{ "enabled": true, "useMinutes": 45, "breakMinutes": 10 }` → `200` with the item. `400` for a missing field or a value out of range (D3). `404` for an unknown user or a user that is not restricted.
 - `POST /api/admin/breaks/{userId}/end` → `200 { "ended": true }`. `409` if no Break runs. `404` as above.
-- `GET` and `POST /api/admin/settings` get the key `telegram_notify_break`.
+- `GET` and `POST /api/admin/settings` get the key `telegram_notify_break` (`telegramNotifyBreak`) and the three break texts (`msgBreakWarn`, `msgBreakStart`, `msgBreakRunning`), as the category texts. An empty text keeps the old one.
 - *Rejected:* the Break Rule as fields in `POST /api/admin/settings`. That route has no user, and a rule belongs to one user.
-- These routes do not merge before PR #21. On `main` today, the admin routes have no sign-in while TOTP is off (issue #18). Then a process of the child could end its own Break.
+- PR #21 is on `main`, so the routes come with this change. Without the gate, a process of the child could end its own Break (issue #18).
 
 ### D15. Child texts in the catalog of PR #20
 Three new keys in `ChildMessageKeys` and `MessageCatalog` (`src/ParentalControl.Domain/Messages/MessageCatalog.cs`, capability `child-messages`). The keys are in `ChildMessageKeys.All`, so the preset switch, the update of an earlier install (`PresetSwitch.PlanUpdate` writes the default of the stored preset for a missing key) and the edit of texts work for them without other code.
@@ -182,4 +182,4 @@ All decisions are in settings and in two new tables. A later change can revert e
 
 - The tables come with the first start of the new version. No existing table changes.
 - Rollback: install the previous version. It ignores the two tables and the settings key. Breaks stop.
-- Order of the merge: PR #20 is on `main`. The API routes (group 7) wait for PR #21. Until then, the parent ends a Break with Telegram `/break`, and the Break Rule is the default or a row in `break_rules`.
+- Order of the merge: PR #20 and PR #21 are on `main`. The API routes (group 7) are in this change.

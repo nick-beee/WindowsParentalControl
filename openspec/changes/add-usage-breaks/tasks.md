@@ -1,6 +1,6 @@
 # Tasks
 
-PR #20 (`add-german-child-texts`) is on `main`, so group 6 can start. Do not start group 7 before PR #21 (`require-admin-sign-in`) is on `main`: on `main`, the admin routes need no sign-in while TOTP is off (issue #18), and a process of the child could end its own Break. The other groups can start before PR #21.
+PR #20 (`add-german-child-texts`) and PR #21 (`require-admin-sign-in`) are on `main`. The Admin Session gate of PR #21 protects the routes of group 7.
 
 For each VM step: check that the snapshot `test-base` exists before you install the service on VM 102. Do the lock and unlock steps in the Proxmox console, not over RDP. For a short test, set the Break Rule of `Kid` to N = 10 and M = 5 (directly in `break_rules` before group 7, through the API after it).
 
@@ -48,7 +48,7 @@ For each VM step: check that the snapshot `test-base` exists before you install 
 
 ## 7. Admin API (after PR #21)
 
-- [ ] 7.1 Add `GET /api/admin/breaks`, `PUT /api/admin/breaks/{userId}` and `POST /api/admin/breaks/{userId}/end` with the shapes and status codes of design D14. Verify: an xUnit test of `AdminRoutePolicy` classifies the three paths as admin routes, and the build passes.
+- [x] 7.1 Add `GET /api/admin/breaks`, `PUT /api/admin/breaks/{userId}` and `POST /api/admin/breaks/{userId}/end` with the shapes and status codes of design D14. Verify: an xUnit test of `AdminRoutePolicy` classifies the three paths as admin routes, and the build passes.
 - [ ] 7.2 Put the range check of `BreakRule` in the PUT route and the rule change of design D11 in `BreakEnforcer`. Verify: xUnit tests from group 1 cover the logic; on the VM, `PUT` with `useMinutes` 5 gives 400 and no change, and a change of N from 60 to 30 with 40 counted minutes gives 25.
 - [ ] 7.3 Add `telegram_notify_break` and the three break texts (`msg_break_warn`, `msg_break_start`, `msg_break_running`) to `GET` and `POST /api/admin/settings`, as for the category texts. Verify on the VM: the key changes through the API with an Admin Session.
 - [ ] 7.4 Verify the gate on the VM: as `Kid`, `curl -X POST http://127.0.0.1:5050/api/admin/breaks/{userId}/end` without a cookie gives 401 and the Break continues; with an Admin Session it gives 200 and the Break ends; a second call gives 409.
