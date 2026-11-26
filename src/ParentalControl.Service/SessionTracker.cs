@@ -15,12 +15,14 @@ public sealed class SessionTracker
     private volatile bool _isAwake = true;
     private readonly Serilog.ILogger _logger;
     private readonly TelegramBotService? _telegramBotService;
+    private readonly BreakEnforcer? _breakEnforcer;
 
-    public SessionTracker(Serilog.ILogger logger) : this(null, logger) { }
+    public SessionTracker(Serilog.ILogger logger) : this(null, null, logger) { }
 
-    public SessionTracker(TelegramBotService? telegramBotService, Serilog.ILogger logger)
+    public SessionTracker(TelegramBotService? telegramBotService, BreakEnforcer? breakEnforcer, Serilog.ILogger logger)
     {
         _telegramBotService = telegramBotService;
+        _breakEnforcer = breakEnforcer;
         _logger = logger;
     }
 
@@ -71,6 +73,61 @@ public sealed class SessionTracker
             {
                 EnsureAgentRunning(sessionId);
             }
+        }
+
+        ReportServiceStartToBreaks();
+    }
+
+    /// <summary>Reports the service start to the Breaks for each Restricted User, with or without an unlocked session.</summary>
+    private void ReportServiceStartToBreaks()
+    {
+        if (_breakEnforcer is null) return;
+        try
+        {
+            foreach (var user in UserRepository.GetAll().Where(u => u.IsRestricted))
+            {
+                var hasUnlocked = _activeSessions.Values.Any(s => s.UserSid == user.Sid && !s.IsLocked);
+                _breakEnforcer.OnServiceStart(user, hasUnlocked);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error while reporting the service start to the Breaks");
+        }
+    }
+
+    /// <summary>A Rest of the user starts or ends. An error in the Breaks must not stop the session handling.</summary>
+    private void ReportRest(string userSid, bool start)
+    {
+        if (_breakEnforcer is null) return;
+        try
+        {
+            var user = UserRepository.GetBySid(userSid);
+            if (user is null || !user.IsRestricted) return;
+            if (start) _breakEnforcer.OnRestStart(user);
+            else _breakEnforcer.OnRestEnd(user);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error while reporting a Rest to the Breaks");
+        }
+    }
+
+    /// <summary>True if a Break of the user runs. Then the service adds no minutes to the Allowance Time or to Continuous Use.</summary>
+    private bool IsInBreak(User user) =>
+        user.IsRestricted && _breakEnforcer?.GetRunningBreakEnd(user.Id) is not null;
+
+    /// <summary>Adds the elapsed minutes of a Restricted User to Continuous Use, the same minutes as for the Allowance Time.</summary>
+    private void CountBreakMinutes(User user, int minutes)
+    {
+        if (_breakEnforcer is null || !user.IsRestricted) return;
+        try
+        {
+            _breakEnforcer.OnMinutesCounted(user, minutes);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error(ex, "Error while counting Continuous Use for {Username}", user.Username);
         }
     }
 
@@ -204,7 +261,19 @@ public sealed class SessionTracker
             }
         }
 
+        if (_breakEnforcer?.GetRunningBreakEnd(user.Id) is { } breakEndsUtc)
+        {
+            // A sign-out would close the programs of the autostart (hard rule): lock the new session instead.
+            _logger.Information("Sign-in during a Break (until {End:o}): {Username}; locking the session", breakEndsUtc, username);
+            _activeSessions.TryAdd(sessionId, new ActiveSession(sessionId, sid, username, eventTime, IsLocked: true));
+            EventRepository.LogEvent(sid, EventType.LOGIN, "Break running - session locked");
+            EventRepository.LogEvent(sid, EventType.SESSION_LOCKED, "Break running on sign-in");
+            _breakEnforcer.LockForRunningBreak(sessionId, breakEndsUtc);
+            return;
+        }
+
         _activeSessions.TryAdd(sessionId, new ActiveSession(sessionId, sid, username, eventTime));
+        ReportRest(sid, start: false);
 
         var loginDetail = "";
         if (limit is not null)
@@ -234,6 +303,7 @@ public sealed class SessionTracker
         if (_activeSessions.TryRemove(sessionId, out var session))
         {
             FlushSessionTime(session);
+            if (!session.IsLocked) ReportRest(session.UserSid, start: true);
             EventRepository.LogEvent(session.UserSid, EventType.LOGOUT);
             _logger.Information("User logged off: {Username}", session.Username);
             var user = UserRepository.GetBySid(session.UserSid);
@@ -259,6 +329,7 @@ public sealed class SessionTracker
         foreach (var (sessionId, session) in _activeSessions)
         {
             FlushSessionTime(session);
+            if (!session.IsLocked) ReportRest(session.UserSid, start: true);
             _activeSessions[sessionId] = session with { LastTick = now };
             EventRepository.LogEvent(session.UserSid, EventType.SLEEP);
         }
@@ -275,6 +346,7 @@ public sealed class SessionTracker
             var sleepMinutes = (int)(now - session.LastTick).TotalMinutes;
             var detail = sleepMinutes > 1 ? $"After ~{sleepMinutes} min sleep" : "";
             _activeSessions[sessionId] = session with { LastTick = now };
+            if (!session.IsLocked) ReportRest(session.UserSid, start: false);
             EventRepository.LogEvent(session.UserSid, EventType.WAKE, detail);
         }
     }
@@ -290,6 +362,8 @@ public sealed class SessionTracker
         {
             FlushSessionTime(session);
             _activeSessions[sessionId] = session with { IsLocked = true, LastTick = DateTime.Now };
+            // Only a session that was unlocked starts a Rest. A second lock event must not move the start of the Rest.
+            if (!session.IsLocked) ReportRest(session.UserSid, start: true);
             EventRepository.LogEvent(session.UserSid, EventType.SESSION_LOCKED, reason);
             _logger.Information("Session {SessionId} ({Username}) locked: {Reason}", sessionId, session.Username, reason);
         }
@@ -309,7 +383,13 @@ public sealed class SessionTracker
 
     public void OnSessionUnlock(int sessionId)
     {
-        if (!_activeSessions.TryGetValue(sessionId, out var session))
+        // A session that the service did not track is restored here; its unlock also ends a Rest.
+        var wasLocked = true;
+        if (_activeSessions.TryGetValue(sessionId, out var session))
+        {
+            wasLocked = session.IsLocked;
+        }
+        else
         {
             var username = SessionManager.GetSessionUsername(sessionId);
             var sid = SessionManager.GetSessionUserSid(sessionId);
@@ -369,10 +449,20 @@ public sealed class SessionTracker
                 }
             }
 
+            if (_breakEnforcer?.GetRunningBreakEnd(user.Id) is { } breakEndsUtc)
+            {
+                _logger.Information("Unlock rejected (Break until {End:o}): {Username} on session {SessionId}", breakEndsUtc, session.Username, sessionId);
+                EventRepository.LogEvent(session.UserSid, EventType.LOGIN_DENIED, "Break running on unlock");
+                _activeSessions[sessionId] = session with { IsLocked = true, LastTick = DateTime.Now };
+                _breakEnforcer.LockForRunningBreak(sessionId, breakEndsUtc);
+                return;
+            }
+
             EnsureAgentRunning(sessionId);
         }
 
         _activeSessions[sessionId] = session with { IsLocked = false, LastTick = DateTime.Now };
+        if (wasLocked) ReportRest(session.UserSid, start: false);
         EventRepository.LogEvent(session.UserSid, EventType.SESSION_UNLOCKED, "Session unlocked");
         _logger.Information("Session {SessionId} ({Username}) unlocked", sessionId, session.Username);
         SessionUnlocked?.Invoke(sessionId);
@@ -527,6 +617,13 @@ public sealed class SessionTracker
 
             var today = DateOnly.FromDateTime(now);
 
+            if (IsInBreak(user))
+            {
+                // A Break uses no Allowance Time, also if the session shows as unlocked before the tick locks it again.
+                _activeSessions[sessionId] = session with { LastTick = now };
+                continue;
+            }
+
             if (elapsed > 2)
             {
                 _logger.Warning("Time gap detected ({Elapsed} min) for {Username} — possible undetected sleep/hibernate",
@@ -534,11 +631,13 @@ public sealed class SessionTracker
                 EventRepository.LogEvent(session.UserSid, EventType.SLEEP, $"Detected retroactively (~{elapsed} min gap)");
                 EventRepository.LogEvent(session.UserSid, EventType.WAKE, $"Detected retroactively (~{elapsed} min gap)");
                 UsageRepository.AddMinutes(user.Id, today, 1);
+                CountBreakMinutes(user, 1);
                 _activeSessions[sessionId] = session with { LastTick = now };
                 continue;
             }
 
             UsageRepository.AddMinutes(user.Id, today, elapsed);
+            CountBreakMinutes(user, elapsed);
             _activeSessions[sessionId] = session with { LastTick = now };
         }
     }
@@ -554,8 +653,10 @@ public sealed class SessionTracker
 
         var user = UserRepository.GetBySid(session.UserSid);
         if (user is null) return;
+        if (IsInBreak(user)) return;
 
         var today = DateOnly.FromDateTime(now);
         UsageRepository.AddMinutes(user.Id, today, elapsed);
+        CountBreakMinutes(user, elapsed);
     }
 }

@@ -5,7 +5,7 @@ import { Modal } from '../components/Modal'
 import { errorMessage, useNotify } from '../components/notices'
 import { t } from '../i18n'
 
-/** Telegram notifications, prompt answer presets and the texts of the category messages. */
+/** Telegram notifications, prompt answer presets and the texts of the category and break messages. */
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const notify = useNotify()
   const [settings, setSettings] = useState<Settings | null>(null)
@@ -23,6 +23,10 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           promptResponsePresets: s.promptResponsePresets ?? '',
           msgCategoryWarn: s.msgCategoryWarn ?? '',
           msgCategorySuspended: s.msgCategorySuspended ?? '',
+          telegramNotifyBreak: s.telegramNotifyBreak ?? false,
+          msgBreakWarn: s.msgBreakWarn ?? '',
+          msgBreakStart: s.msgBreakStart ?? '',
+          msgBreakRunning: s.msgBreakRunning ?? '',
         })
       })
       .catch((e: unknown) => active && setLoadError(errorMessage(e)))
@@ -46,6 +50,10 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         promptResponsePresets: settings.promptResponsePresets,
         msgCategoryWarn: settings.msgCategoryWarn,
         msgCategorySuspended: settings.msgCategorySuspended,
+        telegramNotifyBreak: settings.telegramNotifyBreak,
+        msgBreakWarn: settings.msgBreakWarn,
+        msgBreakStart: settings.msgBreakStart,
+        msgBreakRunning: settings.msgBreakRunning,
       })
       notify.ok(t.settingsSaved)
       onClose()
@@ -89,6 +97,10 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             <input type="checkbox" checked={settings.telegramNotifyAdminLogon} onChange={(e) => update('telegramNotifyAdminLogon', e.target.checked)} />
             <span>{t.notifyAdminLogon}</span>
           </label>
+          <label className="check">
+            <input type="checkbox" checked={settings.telegramNotifyBreak} onChange={(e) => update('telegramNotifyBreak', e.target.checked)} />
+            <span>{t.notifyBreak}</span>
+          </label>
           <div>
             <label className="field" htmlFor="cfg-presets">
               {t.promptPresetsLabel}
@@ -106,6 +118,24 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               {t.msgCategorySuspendedLabel}
             </label>
             <textarea id="cfg-suspended" className="full" rows={2} value={settings.msgCategorySuspended} onChange={(e) => update('msgCategorySuspended', e.target.value)} />
+          </div>
+          <div>
+            <label className="field" htmlFor="cfg-break-warn">
+              {t.msgBreakWarnLabel}
+            </label>
+            <textarea id="cfg-break-warn" className="full" rows={2} value={settings.msgBreakWarn} onChange={(e) => update('msgBreakWarn', e.target.value)} />
+          </div>
+          <div>
+            <label className="field" htmlFor="cfg-break-start">
+              {t.msgBreakStartLabel}
+            </label>
+            <textarea id="cfg-break-start" className="full" rows={2} value={settings.msgBreakStart} onChange={(e) => update('msgBreakStart', e.target.value)} />
+          </div>
+          <div>
+            <label className="field" htmlFor="cfg-break-running">
+              {t.msgBreakRunningLabel}
+            </label>
+            <textarea id="cfg-break-running" className="full" rows={2} value={settings.msgBreakRunning} onChange={(e) => update('msgBreakRunning', e.target.value)} />
           </div>
         </div>
       )}

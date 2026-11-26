@@ -2,6 +2,8 @@
 import type {
   AppRule,
   AppRuleInput,
+  BreakRuleInput,
+  BreakStatus,
   Capture,
   Categories,
   Category,
@@ -168,6 +170,16 @@ export const api = {
 
   getSettings: () => request<Settings>('GET', '/api/admin/settings'),
   saveSettings: (settings: SettingsSave) => request<Success>('POST', '/api/admin/settings', settings),
+
+  // ── Breaks (usage-breaks) ──
+
+  getBreaks: () => request<BreakStatus[]>('GET', '/api/admin/breaks'),
+  /** All three fields are required. A value out of range gives 400 and no change. */
+  setBreakRule: (userId: number, rule: BreakRuleInput) =>
+    request<BreakStatus>('PUT', `/api/admin/breaks/${encodeURIComponent(String(userId))}`, rule),
+  /** Ends the running Break. 409 if no Break runs. The session stays locked; the child unlocks it. */
+  endBreak: (userId: number) =>
+    request<{ ended: boolean }>('POST', `/api/admin/breaks/${encodeURIComponent(String(userId))}/end`),
 
   // ── App Categories and App Rules ──
 

@@ -9,6 +9,7 @@ public sealed class UsageMonitorWorker : BackgroundService
 {
     private readonly SessionTracker _sessionTracker;
     private readonly CategoryEnforcer _categoryEnforcer;
+    private readonly BreakEnforcer _breakEnforcer;
     private readonly Serilog.ILogger _logger;
     private readonly ServiceStartup _startup;
     private readonly IHostApplicationLifetime _lifetime;
@@ -17,13 +18,14 @@ public sealed class UsageMonitorWorker : BackgroundService
     private readonly ConcurrentDictionary<int, HashSet<int>> _sentAlerts = new();
     private long _lastMonotonicTick = Environment.TickCount64;
     private DateTime _lastWallTime = DateTime.UtcNow;
-    public UsageMonitorWorker(SessionTracker sessionTracker, CategoryEnforcer categoryEnforcer, Serilog.ILogger logger,
+    public UsageMonitorWorker(SessionTracker sessionTracker, CategoryEnforcer categoryEnforcer, BreakEnforcer breakEnforcer, Serilog.ILogger logger,
         ServiceStartup startup, IHostApplicationLifetime lifetime)
     {
         _startup = startup;
         _lifetime = lifetime;
         _sessionTracker = sessionTracker;
         _categoryEnforcer = categoryEnforcer;
+        _breakEnforcer = breakEnforcer;
         _logger = logger;
     }
 
@@ -242,6 +244,9 @@ public sealed class UsageMonitorWorker : BackgroundService
                 }
             }
         }
+
+        // Breaks: after the checks of the Allowance Time and the Schedule Window, so that they come first.
+        _breakEnforcer.Tick(_sessionTracker);
 
         // 3. App Categories: warnings, suspension and resume. An error here must not stop the session checks.
         try

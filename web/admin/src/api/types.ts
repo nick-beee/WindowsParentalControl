@@ -153,9 +153,39 @@ export interface Settings {
   promptResponsePresets: string
   msgCategoryWarn: string
   msgCategorySuspended: string
+  /** Telegram notice at each Break start (usage-breaks). Default off. */
+  telegramNotifyBreak: boolean
+  /** Child texts of the Breaks. An empty text keeps the old one on the server. */
+  msgBreakWarn: string
+  msgBreakStart: string
+  msgBreakRunning: string
 }
 
 export type SettingsSave = Omit<Settings, 'telegramConfigured'>
+
+/** The ranges of a Break Rule (BreakRule in the Domain). The PUT route refuses other values with 400. */
+export const BREAK_USE_MINUTES = { min: 10, max: 240 } as const
+export const BREAK_BREAK_MINUTES = { min: 5, max: 120 } as const
+
+/** One item of GET /api/admin/breaks: the Break Rule and the Break state of one Restricted User. */
+export interface BreakStatus {
+  userId: number
+  username: string
+  enabled: boolean
+  /** N: the minutes of Continuous Use before a Break. */
+  useMinutes: number
+  /** M: the length of a Break in minutes. */
+  breakMinutes: number
+  continuousUseMinutes: number
+  /** The end of the running Break as an ISO 8601 time in UTC, or null if no Break runs. */
+  breakEndsAt: string | null
+}
+
+export interface BreakRuleInput {
+  enabled: boolean
+  useMinutes: number
+  breakMinutes: number
+}
 
 export interface CategoryLimitRow {
   category: Category

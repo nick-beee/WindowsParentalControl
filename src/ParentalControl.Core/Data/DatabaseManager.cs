@@ -314,6 +314,25 @@ public static class DatabaseManager
             );
 
             CREATE INDEX IF NOT EXISTS idx_admin_login_failures_time ON admin_login_failures (failed_at_utc);
+
+            CREATE TABLE IF NOT EXISTS break_rules (
+                user_id INTEGER PRIMARY KEY REFERENCES users(id),
+                enabled INTEGER NOT NULL,
+                use_minutes INTEGER NOT NULL,
+                break_minutes INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS break_state (
+                user_id INTEGER PRIMARY KEY REFERENCES users(id),
+                continuous_use_minutes INTEGER NOT NULL DEFAULT 0,
+                last_use_utc TEXT NULL,
+                break_started_utc TEXT NULL,
+                break_ends_utc TEXT NULL,
+                warned_5 INTEGER NOT NULL DEFAULT 0,
+                warned_1 INTEGER NOT NULL DEFAULT 0
+            );
+
             CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events (timestamp);
             CREATE INDEX IF NOT EXISTS idx_events_user_timestamp ON events (user_sid, timestamp);
             CREATE INDEX IF NOT EXISTS idx_grace_user_date ON grace_requests (user_id, date);

@@ -91,6 +91,34 @@ export const de = {
   allStandard: 'Alle Tage Standard',
   manageSchedule: 'Zeitplan bearbeiten',
 
+  // ── Breaks (usage-breaks) ──
+  breaksTitle: 'Pausen',
+  breaksHint: (useMin: number, useMax: number, breakMin: number, breakMax: number) =>
+    `Nach N Minuten Nutzung am Stück sperrt der PC für M Minuten. Die Programme bleiben offen. ` +
+    `N: ${useMin} bis ${useMax} Min., M: ${breakMin} bis ${breakMax} Min.`,
+  breaksEmpty: 'Es gibt noch kein eingeschränktes Kinderkonto.',
+  breaksLoadFailed: 'Die Pausen sind nicht geladen.',
+  colBreakOn: 'Aktiv',
+  colUseMinutes: 'Nutzung N (Min.)',
+  colBreakMinutes: 'Pause M (Min.)',
+  colBreakState: 'Stand',
+  breakOnLabel: (user: string) => `Pausen für ${user} aktiv`,
+  useMinutesLabel: (user: string) => `Nutzung N in Minuten für ${user}`,
+  breakMinutesLabel: (user: string) => `Pause M in Minuten für ${user}`,
+  breakSave: (user: string) => `Pausen für ${user} speichern`,
+  breakEnd: 'Pause beenden',
+  breakEndLabel: (user: string) => `Pause von ${user} beenden`,
+  breakRunning: (time: string) => `Pause bis ${time} Uhr`,
+  breakUse: (used: number, total: number) => `${used} / ${total} Min. am Stück`,
+  breakOff: 'Aus',
+  breakRuleSaved: (user: string) => `Die Pausen für ${user} sind gespeichert.`,
+  breakRangeError: (useMin: number, useMax: number, breakMin: number, breakMax: number) =>
+    `N muss zwischen ${useMin} und ${useMax} liegen, M zwischen ${breakMin} und ${breakMax}.`,
+  confirmEndBreak: (user: string) =>
+    `Die Pause von ${user} jetzt beenden? Der PC bleibt gesperrt, bis ${user} ihn entsperrt.`,
+  breakEnded: (user: string) => `Die Pause von ${user} ist beendet.`,
+  breakNotRunning: 'Es läuft keine Pause mehr.',
+
   // ── Screen captures ──
   capturesTitle: 'Bildschirm',
   watchActive: 'Beobachtung aktiv (alle 10 s)',
@@ -272,7 +300,7 @@ export const de = {
 
   // ── Settings dialog ──
   settingsTitle: 'Einstellungen',
-  settingsText: 'Telegram-Nachrichten bei Anmeldungen und Texte für das Kind.',
+  settingsText: 'Telegram-Nachrichten bei Anmeldungen und Pausen, und Texte für das Kind.',
   telegramMissing:
     'Bot-Token oder Chat-ID von Telegram sind noch nicht eingerichtet. Richte sie in Parental Control Admin auf diesem PC ein.',
   notifySignIn: 'Nachricht bei Anmeldung eines Kinderkontos',
@@ -281,6 +309,10 @@ export const de = {
   promptPresetsLabel: 'Vorgefertigte Antworten auf Nachrichten (eine pro Zeile)',
   msgCategoryWarnLabel: 'Warnung an das Kind vor dem Kategorie-Limit. Platzhalter: {name}, {minutes}',
   msgCategorySuspendedLabel: 'Nachricht, wenn die Programme einer Kategorie pausieren. Platzhalter: {name}',
+  notifyBreak: 'Nachricht bei Beginn einer Pause',
+  msgBreakWarnLabel: 'Warnung an das Kind vor einer Pause. Platzhalter: {minutes}',
+  msgBreakStartLabel: 'Nachricht beim Beginn einer Pause. Platzhalter: {minutes}, {break_end}',
+  msgBreakRunningLabel: 'Nachricht, wenn das Kind den PC während der Pause entsperrt. Platzhalter: {minutes}, {break_end}',
   settingsSaved: 'Die Einstellungen sind gespeichert.',
   settingsSaveFailed: 'Die Einstellungen sind nicht gespeichert.',
   settingsLoadFailed: 'Die Einstellungen sind nicht geladen.',

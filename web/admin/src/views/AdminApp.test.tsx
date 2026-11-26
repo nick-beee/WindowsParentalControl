@@ -14,6 +14,9 @@ function routes(overrides: Record<string, unknown> = {}) {
     'GET /api/admin/app-rules': { rules },
     'GET /api/admin/captures/latest': { capture: null },
     'GET /api/admin/captures/recent': { captures: [] },
+    'GET /api/admin/breaks': [
+      { userId: 7, username: 'Kid', enabled: true, useMinutes: 45, breakMinutes: 10, continuousUseMinutes: 12, breakEndsAt: null },
+    ],
     ...overrides,
   }
 }
@@ -38,6 +41,8 @@ describe('AdminApp', () => {
     expect(screen.getByText(t.customDays(2))).toBeInTheDocument()
     expect(screen.getByText('roblox')).toBeInTheDocument()
     expect(screen.getByText('v1.6.0')).toBeInTheDocument()
+    const breaks = screen.getByRole('region', { name: new RegExp(t.breaksTitle) })
+    expect(await within(breaks).findByText(t.breakUse(12, 45))).toBeInTheDocument()
   })
 
   it('renders untrusted text as text, not as HTML', async () => {

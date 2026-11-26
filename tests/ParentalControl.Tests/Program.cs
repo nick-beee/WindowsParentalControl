@@ -1024,7 +1024,8 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
     var gateTracker = new ParentalControl.Service.SessionTracker(gateLogger);
     var gateHistory = new ForegroundHistory();
     var webHost = new ParentalControl.Service.Web.WebServerHost(gateTracker, gateTelegram, gateLogger, gateHistory,
-        new ParentalControl.Service.CategoryEnforcer(gateTracker, gateHistory, gateTelegram, gateLogger));
+        new ParentalControl.Service.CategoryEnforcer(gateTracker, gateHistory, gateTelegram, gateLogger),
+        new ParentalControl.Service.BreakEnforcer(gateLogger));
     var webBuilder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder();
     Microsoft.AspNetCore.Hosting.HostingAbstractionsWebHostBuilderExtensions.UseUrls(webBuilder.WebHost, "http://127.0.0.1:0");
     var webApp = webBuilder.Build();
@@ -1039,6 +1040,12 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
     {
         var isOpen = template is "/" or "/request" or "/api/request" or "/admin" or "/admin/assets/{file}" || template.StartsWith("/api/agent/", StringComparison.Ordinal);
         Debug.Assert(isOpen || AdminRoutePolicy.Classify(template) != AdminRouteClass.Open, $"Route {template} is neither a child route nor behind the admin gate");
+    }
+    // add-usage-breaks, task 7.1: the break routes exist and are admin routes.
+    foreach (var breakRoute in new[] { "/api/admin/breaks", "/api/admin/breaks/{userId:int}", "/api/admin/breaks/{userId:int}/end" })
+    {
+        Debug.Assert(routeTemplates.Contains(breakRoute), $"Route {breakRoute} should be mapped");
+        Debug.Assert(AdminRoutePolicy.Classify(breakRoute) == AdminRouteClass.Admin, $"Route {breakRoute} should be an admin route");
     }
 
     await webApp.StartAsync();
@@ -1060,6 +1067,14 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
                     .Select(v => v["pc_admin_session=".Length..]).FirstOrDefault()
             : null;
     int BonusToday() => UsageRepository.GetUsage(user.Id, DateOnly.FromDateTime(DateTime.Now))?.BonusMinutes ?? 0;
+    var breakSid = "S-1-5-21-999999999-999999999-999999999-9998";
+    var breakUser = UserRepository.Upsert(breakSid, "BreakChild", true);
+    var adminUser = UserRepository.Upsert("S-1-5-21-999999999-999999999-999999999-9997", "BreakAdmin", false);
+    ParentalControl.Domain.Breaks.BreakState RunningBreak()
+    {
+        var start = DateTime.UtcNow.AddMinutes(-2);
+        return new ParentalControl.Domain.Breaks.BreakState(0, start, start, start.AddMinutes(10), true, true);
+    }
     var grantBody = $$"""{"userId":{{user.Id}},"minutes":30}""";
 
     try
@@ -1090,6 +1105,15 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
             Debug.Assert(status == 401 || status == 404, $"Path variant {variant} should give 401 or 404, not {status}");
         }
         Debug.Assert(BonusToday() == bonusBefore, "Bonus Minutes should not change without a session");
+
+        // add-usage-breaks, task 7.4 in the test: a process of the child cannot end its own Break or change the rule.
+        BreakRepository.SaveState(breakUser.Id, RunningBreak());
+        var noSessionEnd = await Send(HttpMethod.Post, $"/api/admin/breaks/{breakUser.Id}/end");
+        Debug.Assert((int)noSessionEnd.StatusCode == 401, "Ending a Break without a session should give 401");
+        Debug.Assert(BreakRepository.GetState(breakUser.Id).IsBreakRunning(DateTime.UtcNow), "The Break should continue after a refused end");
+        var noSessionPut = await Send(HttpMethod.Put, $"/api/admin/breaks/{breakUser.Id}", content: Json("""{"enabled":false,"useMinutes":45,"breakMinutes":10}"""));
+        Debug.Assert((int)noSessionPut.StatusCode == 401 && BreakRepository.GetRule(breakUser.Id).Enabled, "Changing the Break Rule without a session should give 401 and no change");
+        Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/breaks")).StatusCode == 401, "Reading the Breaks without a session should give 401");
 
         // Child-facing routes stay open.
         var requestStatus = (int)(await Send(HttpMethod.Get, "/request")).StatusCode;
@@ -1131,6 +1155,90 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
         Debug.Assert(!(await settings.Content.ReadAsStringAsync()).Contains(gateSecret), "No route should show the secret");
         Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/settings")).StatusCode == 401, "No cookie should give 401");
         Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/settings", "0123456789ABCDEF")).StatusCode == 401, "An unknown token should give 401");
+
+        // add-usage-breaks, group 7: the break routes with a valid Admin Session.
+        {
+            var list = await Send(HttpMethod.Get, "/api/admin/breaks", cookie);
+            Debug.Assert((int)list.StatusCode == 200, "GET /api/admin/breaks should work with a session");
+            using var listDoc = System.Text.Json.JsonDocument.Parse(await list.Content.ReadAsStringAsync());
+            var item = listDoc.RootElement.EnumerateArray().Single(e => e.GetProperty("userId").GetInt32() == breakUser.Id);
+            Debug.Assert(item.GetProperty("username").GetString() == "BreakChild" && item.GetProperty("enabled").GetBoolean()
+                && item.GetProperty("useMinutes").GetInt32() == 45 && item.GetProperty("breakMinutes").GetInt32() == 10,
+                "The list should show the default rule 45/10/on");
+            Debug.Assert(item.GetProperty("breakEndsAt").GetString() is { } endsAt && endsAt.EndsWith("Z")
+                && DateTime.Parse(endsAt, null, System.Globalization.DateTimeStyles.RoundtripKind).ToUniversalTime() > DateTime.UtcNow,
+                "breakEndsAt should be the UTC end of the running Break");
+            Debug.Assert(!listDoc.RootElement.EnumerateArray().Any(e => e.GetProperty("userId").GetInt32() == adminUser.Id), "A user that is not restricted should not be listed");
+
+            // 400 for a value out of range, a missing field or a wrong type, with no change.
+            foreach (var bad in new[]
+            {
+                """{"enabled":true,"useMinutes":5,"breakMinutes":10}""",
+                """{"enabled":true,"useMinutes":241,"breakMinutes":10}""",
+                """{"enabled":true,"useMinutes":45,"breakMinutes":4}""",
+                """{"enabled":true,"useMinutes":45,"breakMinutes":121}""",
+                """{"enabled":true,"useMinutes":45}""",
+                """{"enabled":"yes","useMinutes":45,"breakMinutes":10}""",
+                """{"enabled":true,"useMinutes":45.5,"breakMinutes":10}""",
+                """[1,2]""",
+                """not json""",
+            })
+            {
+                var badPut = await Send(HttpMethod.Put, $"/api/admin/breaks/{breakUser.Id}", cookie, content: Json(bad));
+                Debug.Assert((int)badPut.StatusCode == 400, $"PUT {bad} should give 400, not {(int)badPut.StatusCode}");
+            }
+            Debug.Assert(BreakRepository.GetRule(breakUser.Id) == ParentalControl.Domain.Breaks.BreakRule.Default, "A refused PUT should keep the old rule");
+
+            // 404 for an unknown user and a user that is not restricted.
+            var goodRule = """{"enabled":true,"useMinutes":30,"breakMinutes":5}""";
+            Debug.Assert((int)(await Send(HttpMethod.Put, "/api/admin/breaks/999999", cookie, content: Json(goodRule))).StatusCode == 404, "PUT for an unknown user should give 404");
+            Debug.Assert((int)(await Send(HttpMethod.Put, $"/api/admin/breaks/{adminUser.Id}", cookie, content: Json(goodRule))).StatusCode == 404, "PUT for a user that is not restricted should give 404");
+            Debug.Assert((int)(await Send(HttpMethod.Post, "/api/admin/breaks/999999/end", cookie)).StatusCode == 404, "End for an unknown user should give 404");
+            Debug.Assert((int)(await Send(HttpMethod.Post, $"/api/admin/breaks/{adminUser.Id}/end", cookie)).StatusCode == 404, "End for a user that is not restricted should give 404");
+
+            // A foreign origin cannot change the rule or end the Break.
+            Debug.Assert((int)(await Send(HttpMethod.Put, $"/api/admin/breaks/{breakUser.Id}", cookie, "http://localhost:8000", Json(goodRule))).StatusCode == 403, "PUT from another origin should give 403");
+            Debug.Assert((int)(await Send(HttpMethod.Post, $"/api/admin/breaks/{breakUser.Id}/end", cookie, "http://localhost:8000")).StatusCode == 403, "End from another origin should give 403");
+            Debug.Assert(BreakRepository.GetState(breakUser.Id).IsBreakRunning(DateTime.UtcNow), "The Break should continue after a refused end");
+
+            // End the running Break: 200, then 409.
+            var ended = await Send(HttpMethod.Post, $"/api/admin/breaks/{breakUser.Id}/end", cookie);
+            Debug.Assert((int)ended.StatusCode == 200 && (await ended.Content.ReadAsStringAsync()).Contains("\"ended\":true"), "Ending a running Break should give 200");
+            var afterEnd = BreakRepository.GetState(breakUser.Id);
+            Debug.Assert(!afterEnd.IsBreakRunning(DateTime.UtcNow) && afterEnd.ContinuousUseMinutes == 0, "The Break should end and Continuous Use should be 0");
+            Debug.Assert((int)(await Send(HttpMethod.Post, $"/api/admin/breaks/{breakUser.Id}/end", cookie)).StatusCode == 409, "A second end should give 409");
+
+            // D11: a new N caps Continuous Use at N - 5 and resets the warnings.
+            BreakRepository.SetRule(breakUser.Id, new ParentalControl.Domain.Breaks.BreakRule(true, 60, 10));
+            BreakRepository.SaveState(breakUser.Id, new ParentalControl.Domain.Breaks.BreakState(40, DateTime.UtcNow, null, null, true, false));
+            var put = await Send(HttpMethod.Put, $"/api/admin/breaks/{breakUser.Id}", cookie, content: Json(goodRule));
+            Debug.Assert((int)put.StatusCode == 200, "A valid PUT should give 200");
+            using var putDoc = System.Text.Json.JsonDocument.Parse(await put.Content.ReadAsStringAsync());
+            Debug.Assert(putDoc.RootElement.GetProperty("useMinutes").GetInt32() == 30 && putDoc.RootElement.GetProperty("continuousUseMinutes").GetInt32() == 25
+                && putDoc.RootElement.GetProperty("breakEndsAt").ValueKind == System.Text.Json.JsonValueKind.Null, "A change of N from 60 to 30 with 40 minutes should give 25");
+            Debug.Assert(BreakRepository.GetRule(breakUser.Id) == new ParentalControl.Domain.Breaks.BreakRule(true, 30, 5), "The new rule should be stored");
+            Debug.Assert(!BreakRepository.GetState(breakUser.Id).Warned5, "A change of N should reset the warnings");
+
+            // D11: rule off ends a running Break at once.
+            BreakRepository.SaveState(breakUser.Id, RunningBreak());
+            var off = await Send(HttpMethod.Put, $"/api/admin/breaks/{breakUser.Id}", cookie, content: Json("""{"enabled":false,"useMinutes":30,"breakMinutes":5}"""));
+            Debug.Assert((int)off.StatusCode == 200 && !BreakRepository.GetState(breakUser.Id).IsBreakRunning(DateTime.UtcNow), "Rule off should end the running Break");
+            Debug.Assert(EventRepository.GetEvents(userSid: breakSid).Any(e => e.EventType == EventType.BREAK_ENDED), "The end should write BREAK_ENDED");
+
+            // Task 7.3: the break settings in the settings routes.
+            var breakSettings = await Send(HttpMethod.Post, "/api/admin/settings", cookie, content: Json("""{"telegramNotifyBreak":true,"msgBreakWarn":"  Noch {minutes} Minuten.  ","msgBreakStart":"","msgBreakRunning":"Pause bis {break_end}."}"""));
+            Debug.Assert((int)breakSettings.StatusCode == 200, "The settings POST with the break keys should work");
+            Debug.Assert(SettingsRepository.IsTelegramNotifyBreakEnabled(), "telegramNotifyBreak should be stored");
+            Debug.Assert(SettingsRepository.Get(SettingsRepository.KeyMsgBreakWarn) == "Noch {minutes} Minuten.", "msgBreakWarn should be stored trimmed");
+            Debug.Assert(SettingsRepository.Get(SettingsRepository.KeyMsgBreakRunning) == "Pause bis {break_end}.", "msgBreakRunning should be stored");
+            using var settingsDoc = System.Text.Json.JsonDocument.Parse(await (await Send(HttpMethod.Get, "/api/admin/settings", cookie)).Content.ReadAsStringAsync());
+            Debug.Assert(settingsDoc.RootElement.GetProperty("telegramNotifyBreak").GetBoolean(), "GET settings should show telegramNotifyBreak");
+            Debug.Assert(settingsDoc.RootElement.GetProperty("msgBreakWarn").GetString() == "Noch {minutes} Minuten.", "GET settings should show msgBreakWarn");
+            Debug.Assert(!string.IsNullOrWhiteSpace(settingsDoc.RootElement.GetProperty("msgBreakStart").GetString()), "An empty msgBreakStart should keep the old text");
+            SettingsRepository.Set(SettingsRepository.KeyTelegramNotifyBreak, "false");
+            SettingsRepository.Set(SettingsRepository.KeyMsgBreakWarn, "");
+            SettingsRepository.Set(SettingsRepository.KeyMsgBreakRunning, "");
+        }
 
         // Origin check.
         var foreign = await Send(HttpMethod.Post, "/api/admin/grant", cookie, "http://localhost:8000", Json(grantBody));
@@ -1212,6 +1320,8 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
         SettingsRepository.Set(SettingsRepository.KeyTotpEnabled, "false");
         SettingsRepository.Set(SettingsRepository.KeyTotpSecret, "");
         AdminAccessRepository.DeleteAllFailures();
+        UserRepository.DeleteBySid(breakSid);
+        UserRepository.DeleteBySid(adminUser.Sid);
     }
 }
 Console.WriteLine("✅ Admin Gate over HTTP Passed.");
@@ -1223,6 +1333,7 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
     var svcTracker = new ParentalControl.Service.SessionTracker(svcLogger);
     var svcHistory = new ForegroundHistory();
     var svcEnforcer = new ParentalControl.Service.CategoryEnforcer(svcTracker, svcHistory, svcTelegram, svcLogger);
+    var svcBreaks = new ParentalControl.Service.BreakEnforcer(svcLogger);
     var noEvents = new List<int>();
     var fakePrep = new DataFolderPreparation(tempDir, tempDir, null, null, null, null, null);
 
@@ -1371,7 +1482,7 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
 
     // N-f: the web server starts again when it ends without an error while the service runs.
     {
-        var nfHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, svcHistory, svcEnforcer)
+        var nfHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, svcHistory, svcEnforcer, svcBreaks)
         {
             RetryDelay = _ => TimeSpan.FromMilliseconds(20),
         };
@@ -1395,7 +1506,7 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
         alertHolder.ExclusiveAddressUse = true;
         alertHolder.Start();
         var alerts = 0;
-        var alertHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, svcHistory, svcEnforcer)
+        var alertHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, svcHistory, svcEnforcer, svcBreaks)
         {
             Port = ((System.Net.IPEndPoint)alertHolder.LocalEndpoint).Port,
             RetryDelay = _ => TimeSpan.FromMilliseconds(100),
@@ -1427,7 +1538,7 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
     IReadOnlyList<int> lastRealOwners = Array.Empty<int>();
     var portRecords = new List<string?>();
     var squatAlerts = 0;
-    var retryHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, svcHistory, svcEnforcer, squatGate)
+    var retryHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, svcHistory, svcEnforcer, svcBreaks, squatGate)
     {
         Port = busyPort,
         RetryDelay = _ => TimeSpan.FromMilliseconds(200),
@@ -1591,6 +1702,21 @@ Console.WriteLine("✅ Start Gate & Lockdown after a Failed Open Passed.");
     }
 }
 Console.WriteLine("✅ Loopback Connection Owner Passed.");
+
+// Breaks: the default rule without a row, a stored rule and a stored state.
+Console.WriteLine("\nTesting Break Repository...");
+Debug.Assert(BreakRepository.GetRule(user.Id) == ParentalControl.Domain.Breaks.BreakRule.Default, "A user without a rule row should get the default rule 45/10/on");
+Debug.Assert(BreakRepository.GetState(user.Id) == ParentalControl.Domain.Breaks.BreakState.Empty, "A user without a state row should get the empty state");
+BreakRepository.SetRule(user.Id, new ParentalControl.Domain.Breaks.BreakRule(false, 60, 15));
+Debug.Assert(BreakRepository.GetRule(user.Id) == new ParentalControl.Domain.Breaks.BreakRule(false, 60, 15), "The stored rule should read back");
+var breakStart = new DateTime(2026, 11, 26, 14, 0, 0, 123, DateTimeKind.Utc);
+var breakState = new ParentalControl.Domain.Breaks.BreakState(31, breakStart.AddMinutes(-1), breakStart, breakStart.AddMinutes(10), true, false);
+BreakRepository.SaveState(user.Id, breakState);
+Debug.Assert(BreakRepository.GetState(user.Id) == breakState, "The stored state should read back with the same UTC times");
+BreakRepository.SaveState(user.Id, breakState.ResetCycle());
+Debug.Assert(BreakRepository.GetState(user.Id).BreakEndsUtc is null, "A reset state should store no Break");
+Debug.Assert(SettingsRepository.IsTelegramNotifyBreakEnabled() == false, "telegram_notify_break should be off by default");
+Console.WriteLine("✅ Break Repository Passed.");
 
 // Cleanup test user
 UserRepository.DeleteBySid(testSid);
