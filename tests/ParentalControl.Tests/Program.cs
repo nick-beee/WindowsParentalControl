@@ -1087,6 +1087,31 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
         listener.Stop();
     }
 }
+// The service listens with ListenAnyIP: a dual-mode IPv6 socket. A request to 127.0.0.1 then shows
+// ::ffff:127.0.0.1 for both ends, and the client row is in the IPv4 table.
+{
+    var dual = new System.Net.Sockets.TcpListener(System.Net.IPAddress.IPv6Any, 0);
+    dual.Server.DualMode = true;
+    dual.Start();
+    try
+    {
+        var port = ((System.Net.IPEndPoint)dual.LocalEndpoint).Port;
+        foreach (var target in new[] { System.Net.IPAddress.Loopback, System.Net.IPAddress.IPv6Loopback })
+        {
+            using var client = new System.Net.Sockets.TcpClient(target.AddressFamily);
+            await client.ConnectAsync(target, port);
+            using var accepted = await dual.AcceptTcpClientAsync();
+            var serverSide = (System.Net.IPEndPoint)accepted.Client.LocalEndPoint!;
+            var clientSide = (System.Net.IPEndPoint)accepted.Client.RemoteEndPoint!;
+            Debug.Assert(TcpConnectionOwner.FindOwnerPid(clientSide, serverSide) == Environment.ProcessId,
+                $"The owner of a connection to {target} on a dual-mode socket should be this process ({clientSide} -> {serverSide})");
+        }
+    }
+    finally
+    {
+        dual.Stop();
+    }
+}
 Console.WriteLine("✅ Loopback Connection Owner Passed.");
 
 // Cleanup test user
