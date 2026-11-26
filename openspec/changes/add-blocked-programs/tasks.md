@@ -4,11 +4,11 @@ PR #20 (`add-german-child-texts`) is merged (design D14). Do not install a build
 
 ## 1. Domain: the block on an App Rule
 
-- [ ] 1.1 Add `bool IsBlocked` (default `false`) to `AppRule` in `src/ParentalControl.Domain/Categories/AppRule.cs`. Verify that `dotnet build -p:EnableWindowsTargeting=true` passes and that the existing Domain tests stay green (`dotnet test tests/ParentalControl.Domain.Tests`).
-- [ ] 1.2 Add the pure record `ProtectedPrograms` (Windows folder, install folder, `msedgewebview2.exe`) with `IsProtected(path)` (design D7). Verify with xUnit tests: an exe below each folder, `msedgewebview2.exe` in any folder, a similar folder name (`C:\WindowsApps2\x.exe`), and a path with `..` parts.
-- [ ] 1.3 Extend `AppRule.Validate` with the block rules of design D2 (System, protected folders, protected file names). Keep the error texts in the style of the existing ones. Verify with xUnit tests for each refused case and for a permitted blocked `notepad.exe` file rule.
-- [ ] 1.4 Add tests for the block through the resolver precedence: a file rule without the block below a blocked folder, the longest folder, and a blocked file rule over an unblocked folder (spec "The block follows the rule precedence"). Verify that `dotnet test tests/ParentalControl.Domain.Tests` passes.
-- [ ] 1.5 Make `CategoryLimitCalculator` leave out the App Limit of a blocked rule (design D1). Verify with xUnit tests: a blocked rule with an App Limit gives no App Limit status and no due warning; the exe uses its Category Limit; the App Limit applies again without the block.
+- [x] 1.1 Add `bool IsBlocked` (default `false`) to `AppRule` in `src/ParentalControl.Domain/Categories/AppRule.cs`. Verify that `dotnet build -p:EnableWindowsTargeting=true` passes and that the existing Domain tests stay green (`dotnet test tests/ParentalControl.Domain.Tests`).
+- [x] 1.2 Add the pure record `ProtectedPrograms` (Windows folder, install folder, `msedgewebview2.exe`) with `IsProtected(path)` (design D7). Verify with xUnit tests: an exe below each folder, `msedgewebview2.exe` in any folder, a similar folder name (`C:\WindowsApps2\x.exe`), and a path with `..` parts.
+- [x] 1.3 Extend `AppRule.Validate` with the block rules of design D2 (System, protected folders, protected file names). Keep the error texts in the style of the existing ones. Verify with xUnit tests for each refused case and for a permitted blocked `notepad.exe` file rule.
+- [x] 1.4 Add tests for the block through the resolver precedence: a file rule without the block below a blocked folder, the longest folder, and a blocked file rule over an unblocked folder (spec "The block follows the rule precedence"). Verify that `dotnet test tests/ParentalControl.Domain.Tests` passes.
+- [x] 1.5 Make `CategoryLimitCalculator` leave out the App Limit of a blocked rule (design D1). Verify with xUnit tests: a blocked rule with an App Limit gives no App Limit status and no due warning; the exe uses its Category Limit; the App Limit applies again without the block.
 
 ## 2. Domain: the decision "at its start"
 
