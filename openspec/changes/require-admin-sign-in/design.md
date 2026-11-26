@@ -87,7 +87,7 @@ A pure class `AdminSessionStore` in Domain keeps the sessions in memory. It gets
 - The store keeps at most 20 sessions (approved by the user) and removes the oldest one first. It removes expired sessions at each login.
 - A restart of the service clears the store. The tokens are not written to disk.
 - The logout becomes `POST /api/admin/logout`, and the dashboard sends it from a form.
-- The cookie stays HttpOnly and SameSite=Strict with an expiry of 12 hours. It gets no `Secure` flag while the server uses HTTP (#7).
+- The cookie stays HttpOnly and SameSite=Strict. It is a session cookie without `Expires` (security review S4): the browser drops it when it closes, and the server still ends the Admin Session after 12 hours. It gets no `Secure` flag while the server uses HTTP (#7).
 - *Alternative: tokens in SQLite, so a restart keeps the sessions.* Rejected: a token on disk is a further secret to protect, and a new login after a restart is a small cost.
 
 ### D8. `Origin` check
@@ -97,13 +97,20 @@ For each POST, PUT and DELETE below `/api/admin/` (the login and the logout incl
 - GET routes below `/api/admin/` change no data, with one exception: `GET /api/admin/logout`, which D7 changes to a POST.
 
 ### D9. Owner and access rules of the data folder at each start
-The service sets the owner and the access rules of the data folder at each start, not only when it creates it, and only when `PARENTAL_CONTROL_DATA_DIR` is not set (the tests use that variable).
-- Today the code reads the existing rules (`GetAccessControl`) and adds two rules. Explicit rules that are already there stay. A standard user can usually create a folder in `C:\ProgramData` and then owns it; the owner can always change the rules again. So the child could make `ParentalControl` before the install and read `data.db` later.
-- New: the service builds a new `DirectorySecurity`, not one from `GetAccessControl`. It sets the owner to `WellKnownSidType.BuiltinAdministratorsSid` (`SetOwner`), a protected DACL (`SetAccessRuleProtection(true, false)`) with full control for `LocalSystemSid` and `BuiltinAdministratorsSid` (container and object inherit), and writes it with `DirectoryInfo.SetAccessControl` (Win32 `SetNamedSecurityInfoW` with `OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION`).
-- To set the owner when another account owns the folder, the service enables `SeTakeOwnershipPrivilege` and `SeRestorePrivilege` on its token (`OpenProcessToken`, `LookupPrivilegeValueW`, `AdjustTokenPrivileges`). LocalSystem has both privileges.
-- Then the service resets each file and subfolder below the folder: owner Administrators, no explicit rules, inherited rules only (`FileSecurity` with `SetAccessRuleProtection(false, false)` and `File.SetAccessControl`).
-- If a step fails, the service logs an error at the level Error and treats the Remote Admin Interface as not set up (fail closed). The service still starts and still enforces the limits.
-- The Admin app also calls `DatabaseManager.Initialize`. It runs as an administrator, but without `SeTakeOwnershipPrivilege` enabled. Only the service runs the new code; the Admin app keeps the old code that sets the rules only for a new folder.
+The service secures the data folder at each start, before it opens the database or a log file, and only when `PARENTAL_CONTROL_DATA_DIR` is not set (the tests use that variable). The code is `DataFolderGuard` in Core; the trust decision is the pure class `DataFolderTrust` in Domain.
+- Threat: a standard user can create a folder, a junction or a symbolic link in `C:\ProgramData`, and the child can act before the install. The owner of a folder can always change its rules again, and an open handle keeps its access after a change of the rules.
+- Each check and each change uses a handle that `CreateFileW` opens with `FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS`, so no step follows a link and the item cannot change between the check and the change (S1). The service enables `SeTakeOwnershipPrivilege`, `SeRestorePrivilege` and `SeBackupPrivilege`; LocalSystem has them.
+- A link as the data folder (B1): the service opens the link itself, checks that it is the same object (volume serial and file index), and deletes it with `FileDispositionInfo`. The target does not change. Then it creates a new folder.
+- A new folder: `CreateDirectoryW` with a security descriptor, so the folder has its owner and rules from the first moment.
+- Untrusted content (B2): the service reads the owner and the DACL of the folder and of each item below it (links skipped). An item is trusted only if SYSTEM or the Administrators group owns it and no other account has an allow entry with a write right (`FILE_WRITE_DATA`, `FILE_APPEND_DATA`, `FILE_WRITE_EA`, `FILE_DELETE_CHILD`, `FILE_WRITE_ATTRIBUTES`, `DELETE`, `WRITE_DAC`, `WRITE_OWNER`, `GENERIC_WRITE`, `GENERIC_ALL`). Inherit-only, deny and audit entries are ignored; an entry of an unknown type is not trusted. Read rights are trusted: they leak, but they do not change the content, and the reset removes them.
+- If an item is not trusted, the service renames the folder through its handle to `ParentalControl.untrusted-<guid>`, locks the moved folder itself (not its content: a walk by path in a folder of the child could follow a link), and creates a new folder. The service then starts with a new database. The rename fails if a process holds a handle to the folder or to an item in it without delete sharing; then the start fails (fail closed). This also applies to an existing install on an upgrade.
+- A trusted folder: the service writes owner Administrators and a protected DACL (full control for SYSTEM and Administrators, inherited by all items) on the handle. For each item it writes owner Administrators and the inherited entries of the folder itself, with `SetKernelObjectSecurity`, so the result does not depend on the inheritance step of Windows.
+- Links inside the folder (S2): the service deletes each junction and symbolic link (the link only). The folders that it needs (`logs`, `captures`) are created again as real folders. A file with more than one name (a hard link) gets the locked rules first (so the other names lose access too) and is then replaced by a copy with one name. A link therefore never locks the Remote Admin Interface.
+- Fail closed: if a step fails, `DatabaseManager.Initialize` throws `DataFolderUnsafeException`. The service then writes an Error event to the Windows event log (source `ParentalControl.Service`) and the state to the registry, and stops with exit code 1 before it opens the database or a log file. The Service Control Manager starts it again (`sc failure`: 10 s, 30 s, then each 60 s), and each start tries again.
+- The logger writes only to `logs` in the secured data folder. The fallback to the TEMP folder is gone: `C:\Windows\Temp` is writable for each user, so a link there could send the writes of LocalSystem to any file.
+- The state for the Admin app (S3): the service writes `DataFolderState` (`Secured` or `Failed`), the error, the time and the last moved folder to `HKLM\SOFTWARE\ParentalControl`. Only an administrator or SYSTEM can write there. The registry is used because the database is not usable when the step fails. The Admin app shows "Set up on <date>" only when the state is `Secured` and the sign-in is set up; else it shows the error. It shows a warning while a moved folder exists. The dashboard banner uses the same state.
+- The Admin app does not change the rules. Before it opens the database it checks the folder and `data.db` with the same handle-based code: a link, a file with more than one name, or untrusted content stops the app with a message. It creates a missing folder with the final rules, as the service does.
+- The Telegram alert about a moved folder: right after the move the database is new and has no Telegram configuration. The service sends the alert at the first start after the parent configures Telegram again (setting `data_folder_quarantine_notified`). The event log and the Admin app show the move at once.
 
 ### D10. Telegram messages
 Two new methods in `TelegramBotService`. Both use `SendTextMessageAsync` and put the message into the Offline Notification Queue when the PC is offline, as `SendAdminSignInAlertAsync` does.
@@ -119,11 +126,18 @@ Two new methods in `TelegramBotService`. Both use `SendTextMessageAsync` and put
 
 ### D11. Admin app: the sign-in section
 The TOTP card in `SettingsView.xaml` becomes "Web admin sign-in":
-- The state: "Not set up" or "Set up on <date>" (new setting `totp_setup_at`).
+- The state: "Not set up", "Set up on <date>" (new setting `totp_setup_at`), or "Locked" with the error of the data folder step (D9). "Set up on <date>" shows only when the service secured the data folder.
 - "Set up sign-in" (or "Set up a new secret"): a dialog with the QR code, the Base32 text and a code field. On a valid code, one SQLite transaction writes `totp_secret`, `totp_last_step`, `totp_setup_at`, `totp_enabled = "true"`, increments `admin_session_epoch`, and deletes all rows of `admin_login_failures`. `SettingsRepository` gets a method that writes several keys in one transaction.
 - "Sign out all web sessions": increments `admin_session_epoch`.
 - "Clear login limit": deletes all rows of `admin_login_failures`.
-- The dashboard of the Admin app shows a banner while the sign-in is not set up: "The web admin is locked until you set up the sign-in."
+- The dashboard of the Admin app shows a banner while the web admin does not work: the sign-in is not set up, or the data folder step failed (D9).
+
+### D13. No admin sign-in from the session of the child
+The child must not use a session that the parent opens on the child's desktop, and the child must not use a stolen cookie from its own processes (security review S4).
+- For a connection from this PC (the source `local` of D6), the service finds the client process: `GetExtendedTcpTable` with `TCP_TABLE_OWNER_PID_CONNECTIONS` (IPv4 or IPv6), the row whose local end is the remote end of the request and whose remote end is the local end of the request. Then `ProcessIdToSessionId`, the user of the process token (`OpenProcess` with `PROCESS_QUERY_LIMITED_INFORMATION`, `TokenUser`) and the user of that session (WTS).
+- The pure class `LocalClientPolicy` in Domain refuses the request if the process user or the session user is a Restricted User (from the table `users`), if the process user is a service account (LocalSystem, LocalService, NetworkService: such a process can send requests for each user), or if the owner is not found. A connection from another device needs no check.
+- The check runs at the login and at each admin request with an Admin Session (`IsSessionValid`). A refused login gets 403 with a German text, counts no failure, and does not check the code. A refused admin request gets 401. `/admin` shows the German text with 403.
+- The parent signs in with the Admin app, from the own Windows account on this PC, or from a phone or a laptop on the LAN.
 
 ### D12. ADR
 ADR 0001 point 3 made TOTP optional. ADR 0010 records that the Remote Admin Interface always requires TOTP, set up only in the Admin app. This is hard to reverse for the parent, so it gets an ADR.
@@ -141,7 +155,14 @@ ADR 0001 point 3 made TOTP optional. ADR 0010 records that the Remote Admin Inte
 - [The child sees the parent type a code] → The code works one time only (D5).
 - [The child changes the clock to make old codes valid] → A standard account has no right to change the system time. Clock Tampering Detection also sends an alert.
 - [The child reboots the PC to sign the parent out] → The parent signs in again. The failure counts stay, because they are in SQLite.
-- [The child creates `C:\ProgramData\ParentalControl` before the install] → D9 takes the ownership and replaces all rules at each start. If that fails, the Remote Admin Interface stays locked.
+- [The child creates `C:\ProgramData\ParentalControl` before the install, as a folder or as a junction] → D9 deletes a link and moves an untrusted folder away at each start, then starts with a new database. The event log and the Admin app show it.
+- [The child holds a handle to its folder, so the service cannot move it] → The service stops (fail closed) and does not enforce limits until a start succeeds. The SCM starts it again each 60 seconds. At the next boot the service starts before the child logs on, so no process of the child holds a handle. The event log and the Admin app show the error.
+- [An existing install has a data folder that another account can change] → The service moves it away and the parent loses the settings, the limits and the sign-in. This is the safe choice: the child could have changed that data. The Admin app tells the parent to set up again.
+- [The owner of an item is an administrator account, not the Administrators group] → The check counts it as not trusted and moves the folder. This happens only when the policy "Default owner for objects created by members of the Administrators group" is set to "Object creator"; the default is the Administrators group.
+- [The moved folder keeps files of the child, or an old database] → The service locks the moved folder itself, but not the items in it. With "Bypass traverse checking", the child can still open an item by its full path if the rules of the item allow it. The secret in such a database was readable before. The warning tells the parent to delete the moved folder, and to set up a new secret.
+- [The parent signs in on the child's desktop] → D13 refuses it. The parent uses the own Windows account, the Admin app, or a phone.
+- [A program of the parent in the parent's session sends requests for the child] → D13 cannot see this. The child cannot start a program in the parent's session.
+- [WSL2 and new IPv6 addresses] → A WSL2 VM of the child connects through a NAT address, and Windows makes new temporary IPv6 addresses. Each such address is a new remote source for D6, so the child can reach the global limit of 30 failures and block the parent's remote login for 24 hours. The per-source limit still applies, the parent gets the Telegram alert, and "Clear login limit" in the Admin app ends the block. A standard user cannot install WSL without an administrator.
 - [A parent typed a short secret in the old Admin app] → A secret of 10 bytes or more keeps working. A shorter one needs a new setup after the upgrade, and the setup notice tells the parent.
 - [The parent never does the setup] → The Remote Admin Interface stays locked. The Telegram bot and the Admin app still work. This is the safe default.
 - [A secret that the old Admin app showed is still on a photo or in a screenshot] → The Telegram notice and the release notes tell the parent to set up a new secret if the old one was visible to others.
@@ -154,7 +175,7 @@ ADR 0001 point 3 made TOTP optional. ADR 0010 records that the Remote Admin Inte
    - `totp_enabled = "true"` and no valid secret (empty, other characters, or fewer than 10 bytes): the service sets `totp_enabled = "false"`. Today an empty secret accepts each code. The parent then does the setup again.
    - `totp_enabled` is not `"true"`: no change of data. The Remote Admin Interface is locked until the setup.
    - Not set up and Telegram configured: the service sends the setup notice one time (D10).
-3. `DatabaseManager.Initialize` creates the table `admin_login_failures` and sets the access rules of the data folder (D9).
+3. The service secures the data folder (D9) before it opens the database: it deletes links, moves an untrusted folder away, and sets the owner and the rules. Then `DatabaseManager.Initialize` creates the table `admin_login_failures`.
 4. Rollback: install the earlier version. It ignores the new table and the new settings. If the setup is complete, `totp_enabled` is `"true"` and the old version keeps TOTP on. If not, the old version is open again, as before this change.
 
 ## Decisions of the user
@@ -168,3 +189,15 @@ The user answered the open questions of the proposal:
 6. The term "Admin Session" goes into `GLOSSARY.md`.
 7. A minimum of 10 bytes for an existing secret (D3).
 8. The new texts of the web page and of Telegram are in German (D10, D10a).
+
+## Decisions after the security review
+
+The orchestrator decided these points on 2026-11-26, under the delegation of the user, after the security review of PR #21. Threat model: a 10-year-old with a standard Windows account on the same PC, who can act before the install.
+- B1 (blocker): a junction as the data folder made the service create `data.db` in the child's folder. Decision: delete the link itself, create a real folder, never open the database through a link, and fail closed for the database too (D9).
+- B2 (blocker): a folder that the child made before the install kept its planted content. Decision: check the owner and the DACL of the folder and of each item; move untrusted content to `ParentalControl.untrusted-<guid>`, start with a new database, log it, send a Telegram alert when Telegram is configured, and show it in the event log and the Admin app. Also on an upgrade (D9).
+- S1: check and change the folder through a handle opened with `FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS` (D9).
+- S2: delete links inside the folder, replace files with more than one name, and never lock the web admin because of a link. No TEMP fallback for the log (D9).
+- S3: the Admin app shows the real state of the folder step, from the registry (D9, D11).
+- S4: refuse a login and an Admin Session from a process of a Restricted User on this PC, and refuse when the owner is not known. The cookie becomes a session cookie (D7, D13).
+- Recorded as a risk only: WSL2 NAT addresses and new IPv6 temporary addresses count as new remote sources (Risks).
+- Out of scope here: the agent routes (#6) and the update URL (#8, PR #29).

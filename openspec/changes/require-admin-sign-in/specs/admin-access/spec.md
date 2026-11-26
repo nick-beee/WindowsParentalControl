@@ -110,7 +110,7 @@ The system SHALL send a Telegram message to the configured chat when a source or
 - **THEN** the parent gets one Telegram message about the blocked logins from this PC
 
 ### Requirement: Admin Session lifetime
-An Admin Session SHALL end 12 hours after the login, at a logout, and at a restart of the service. The system SHALL check the expiry on the server, not only through the cookie. The logout SHALL be a POST request.
+An Admin Session SHALL end 12 hours after the login, at a logout, and at a restart of the service. The system SHALL check the expiry on the server, not only through the cookie. The cookie SHALL be a session cookie without an expiry date, so the browser drops it when it closes. The logout SHALL be a POST request.
 
 #### Scenario: Session after 12 hours
 - **WHEN** a request uses an Admin Session that started more than 12 hours ago
@@ -146,6 +146,25 @@ The Admin app SHALL let an administrator of the PC set up a new secret and clear
 - **WHEN** this PC has reached the limit on failed logins and the parent selects "Clear login limit" in the Admin app
 - **THEN** the next valid code from this PC gives an Admin Session
 
+### Requirement: No admin sign-in from the session of the child
+The system SHALL refuse a login and each admin request with an Admin Session from a process on this PC that belongs to a Restricted User, runs in the session of a Restricted User, or runs as a service account. The system SHALL find the process from the TCP connection table. If it cannot find the process or its user, it SHALL refuse the request (fail closed). A refused login SHALL not count as a failed login.
+
+#### Scenario: Login from the child's session
+- **WHEN** the parent enters a valid code in a browser in the session of the Restricted User on `http://127.0.0.1:5050/admin`
+- **THEN** the system refuses the login with status 403, issues no Admin Session, and shows a German text that tells the parent to use the own Windows account, a phone or a laptop
+
+#### Scenario: Stolen cookie in the child's session
+- **WHEN** a process of the Restricted User sends an admin request with a valid Admin Session cookie
+- **THEN** the system refuses the request with status 401
+
+#### Scenario: Parent on this PC
+- **WHEN** the parent signs in from a browser in the parent's own Windows session on this PC
+- **THEN** the system checks the code as usual
+
+#### Scenario: Owner not found
+- **WHEN** the system cannot find the process of a connection from this PC
+- **THEN** the system refuses the login
+
 ### Requirement: No admin request from another origin
 The system SHALL refuse a state-changing admin request (POST, PUT or DELETE) and a login when the request has an `Origin` header that is not the origin of the Remote Admin Interface. A different port is a different origin.
 
@@ -166,23 +185,47 @@ The routes for the Restricted User and the Session Agent (`/`, `/request`, `/api
 - **THEN** the system answers as before, with no Admin Session
 
 ### Requirement: Restricted User cannot read the admin secret
-The data folder (`C:\ProgramData\ParentalControl`) and its files SHALL be owned by the Administrators group and accessible only to SYSTEM and the Administrators group. The service SHALL enforce this at each start, also for an existing folder. If it cannot, it SHALL log an error and treat the Remote Admin Interface as not set up.
+The data folder (`C:\ProgramData\ParentalControl`) and its files SHALL be owned by the Administrators group and accessible only to SYSTEM and the Administrators group. The service SHALL enforce this at each start, also for an existing folder, before it opens the database or a log file in the folder.
 
 #### Scenario: Child reads the database
 - **WHEN** a process of the Restricted User tries to open `data.db`
 - **THEN** Windows denies the access
 
 #### Scenario: Old install with open access rules
-- **WHEN** the folder or a file in it has an extra rule, for example read access for Users, and the service starts
-- **THEN** the folder and its files have only the rules for SYSTEM and the Administrators group
+- **WHEN** the folder or a file in it has an extra rule that gives no write right, for example read access for Users, and the service starts
+- **THEN** the folder and its files have only the rules for SYSTEM and the Administrators group, and the data stays
+
+### Requirement: Service never uses an unsafe data folder
+The service SHALL never follow a link (a junction, a symbolic link or a hard link) in the data folder, and SHALL never use content that an account other than SYSTEM or the Administrators group owns or can change. If the service cannot make the folder safe, it SHALL not open the database or a log file in the folder, SHALL report the error in the Windows event log and in the Admin app, and SHALL stop (fail closed).
 
 #### Scenario: Folder made by the child before the install
-- **WHEN** the Restricted User creates `C:\ProgramData\ParentalControl` before the install and the service starts
-- **THEN** the Administrators group owns the folder and the Restricted User cannot read `data.db` or change the access rules
+- **WHEN** the Restricted User creates `C:\ProgramData\ParentalControl` before the install, puts a `data.db` into it, and the service starts
+- **THEN** the service moves the folder to `C:\ProgramData\ParentalControl.untrusted-<guid>`
+- **AND** the service creates a new folder that the Administrators group owns, starts with a new database, and does not use the planted `data.db`
+- **AND** the event log and the Admin app show the move
 
-#### Scenario: Access rules cannot be set
-- **WHEN** the service cannot set the owner or the access rules of the data folder
-- **THEN** the service logs an error and each admin route refuses requests
+#### Scenario: Untrusted folder on an upgrade
+- **WHEN** an existing install has a data folder or a file in it that is not owned by SYSTEM or the Administrators group, or that another account can write, delete, or change the owner or the rules of
+- **THEN** the service moves the folder away and starts with a new database, as for a folder made by the child
+
+#### Scenario: Junction as the data folder
+- **WHEN** the Restricted User creates `C:\ProgramData\ParentalControl` as a junction or a symbolic link to a folder of the child before the service starts
+- **THEN** the service deletes the link itself, not its target, and creates a real folder with the rules for SYSTEM and the Administrators group
+- **AND** the service does not create, open or change a file in the target of the link
+
+#### Scenario: Link inside the data folder
+- **WHEN** an item in the data folder is a junction or a symbolic link, or a file has a second name (a hard link)
+- **THEN** the service deletes the link, or replaces the file with a copy that has one name, and does not change the target
+- **AND** the Remote Admin Interface stays usable
+
+#### Scenario: Untrusted folder that cannot be moved
+- **WHEN** a process holds a handle to the untrusted folder or to an item in it, so the service cannot move the folder
+- **THEN** the service does not open the database or a log file in the folder, writes the error to the event log and to the state of the Admin app, and stops
+- **AND** the Admin app shows the error, not "Set up on <date>"
+
+#### Scenario: Admin app and an unsafe folder
+- **WHEN** the parent opens the Admin app while the data folder is a link or is not trusted
+- **THEN** the Admin app shows the error and does not open the database
 
 ### Requirement: Upgrade of an install without the setup
 At the first start after the upgrade, an install with TOTP on and a valid secret SHALL keep its sign-in. Each other install SHALL get a Remote Admin Interface that is not set up. If Telegram is configured, the system SHALL send one German message that tells the parent to do the setup. A further start SHALL not send it again.
