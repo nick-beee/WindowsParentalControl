@@ -350,6 +350,7 @@ Debug.Assert(UpdateService.IsNewerVersion("1.5.0", "1.5.0") == false, "1.5.0 is 
 Debug.Assert(UpdateService.IsNewerVersion("1.4.1", "1.5.0") == false, "1.4.1 is not newer than 1.5.0");
 Debug.Assert(UpdateService.IsNewerVersion("1.4.0", "1.5.0") == false, "1.4.0 is not newer than 1.5.0");
 Debug.Assert(UpdateService.IsNewerVersion("1.3.0", "1.5.0") == false, "1.3.0 is not newer than 1.5.0");
+Debug.Assert(UpdateService.IsNewerVersion("zzz", "1.5.0") == false, "A tag that is not a version is never newer");
 Debug.Assert(UpdateService.IsNewerVersion("1.2.1", "1.4.1") == false, "1.2.1 is not newer than 1.4.1");
 Console.WriteLine("✅ AppVersion & UpdateService SemVer Comparison Verification Passed.");
 
@@ -372,17 +373,17 @@ if (shouldTestLiveDownload && !string.IsNullOrWhiteSpace(updateCheck?.DownloadUr
 {
     int lastPct = -1;
     var progress = new Progress<int>(pct => { lastPct = pct; });
-    var (downloadSuccess, downloadedPath, downloadMsg) = UpdateService.DownloadUpdateAsync(updateCheck.DownloadUrl, progress).GetAwaiter().GetResult();
+    var (downloadSuccess, downloadedPath, downloadMsg) = UpdateService.DownloadVerifiedUpdateAsync(progress).GetAwaiter().GetResult();
     Debug.Assert(downloadSuccess, $"Download should succeed: {downloadMsg}");
     Debug.Assert(File.Exists(downloadedPath), "Downloaded installer should exist");
     Debug.Assert(new FileInfo(downloadedPath!).Length > 1_000_000, "Downloaded installer should be > 1MB");
     Debug.Assert(lastPct == 100, "Progress should reach 100%");
-    Console.WriteLine($"✅ UpdateService DownloadUpdateAsync Live Verification Passed ({new FileInfo(downloadedPath!).Length} bytes, 100% progress).");
+    Console.WriteLine($"✅ UpdateService DownloadVerifiedUpdateAsync Live Verification Passed ({new FileInfo(downloadedPath!).Length} bytes, 100% progress).");
     try { File.Delete(downloadedPath!); } catch { }
 }
 else
 {
-    Console.WriteLine("ℹ️ UpdateService DownloadUpdateAsync live 137MB download skipped (set TEST_LIVE_DOWNLOAD=1 to run).");
+    Console.WriteLine("ℹ️ UpdateService DownloadVerifiedUpdateAsync live download skipped (set TEST_LIVE_DOWNLOAD=1 to run).");
 }
 
 // 16. Test Telegram Session Notification Toggles & Security Alert Events

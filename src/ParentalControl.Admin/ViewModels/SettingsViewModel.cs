@@ -482,7 +482,7 @@ public partial class SettingsViewModel : ObservableObject
 
         try
         {
-            var (success, installerPath, msg) = await UpdateService.DownloadUpdateAsync(DownloadUrl, progress);
+            var (success, installerPath, msg) = await UpdateService.DownloadVerifiedUpdateAsync(progress);
             IsInstallingUpdate = false;
 
             if (!success || string.IsNullOrWhiteSpace(installerPath))
