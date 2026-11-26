@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 
 namespace ParentalControl.Service.Web.Pages;
@@ -35,6 +36,10 @@ public static class RequestPage
         List<ScheduleDayView>? weeklySchedule = null,
         string? defaultScheduleSummary = null)
     {
+        // The user name, the status and the decline reason come from the database. Encode them before they go into HTML or JS.
+        var usernameHtml = WebUtility.HtmlEncode(username);
+        var usernameJs = JsonSerializer.Serialize(username);
+
         var sessionStatusBadge = "";
         if (!isSessionActive)
         {
@@ -55,10 +60,10 @@ public static class RequestPage
             var switchLinks = "";
             if (availableUsers != null && availableUsers.Count > 1)
             {
-                var links = string.Join(" | ", availableUsers.Select(u => $"<a href=\"/request?user={u}\" style=\"color:#38bdf8;text-decoration:underline\">{u}</a>"));
+                var links = string.Join(" | ", availableUsers.Select(u => $"<a href=\"/request?user={WebUtility.HtmlEncode(Uri.EscapeDataString(u))}\" style=\"color:#38bdf8;text-decoration:underline\">{WebUtility.HtmlEncode(u)}</a>"));
                 switchLinks = $"<div style=\"margin-top:0.4rem;font-size:0.8rem;opacity:0.9\">Ganti Akun Pengujian: {links}</div>";
             }
-            adminBanner = $"""<div class="banner banner-info" style="border-left:4px solid #38bdf8">🔧 <strong>Mode Uji Coba Administrator</strong>: Menampilkan status akun terbatas <strong>{username}</strong>.{switchLinks}</div>""";
+            adminBanner = $"""<div class="banner banner-info" style="border-left:4px solid #38bdf8">🔧 <strong>Mode Uji Coba Administrator</strong>: Menampilkan status akun terbatas <strong>{usernameHtml}</strong>.{switchLinks}</div>""";
         }
 
         var offlineAlert = isOffline
@@ -72,6 +77,7 @@ public static class RequestPage
             "DECLINED" => "Ditolak",
             _ => latestStatus ?? ""
         };
+        var statusLabelHtml = WebUtility.HtmlEncode(statusLabel);
 
         var requestLimitAlert = "";
         var disableForm = isOffline;
@@ -88,12 +94,12 @@ public static class RequestPage
         }
         else if (requestsSubmittedToday >= maxDailyRequests)
         {
-            requestLimitAlert = $"""<div class="banner banner-info">ℹ️ Anda telah mencapai batas maksimal ({maxDailyRequests}) permintaan untuk hari ini (Status terakhir: <strong>{statusLabel}</strong>).</div>""";
+            requestLimitAlert = $"""<div class="banner banner-info">ℹ️ Anda telah mencapai batas maksimal ({maxDailyRequests}) permintaan untuk hari ini (Status terakhir: <strong>{statusLabelHtml}</strong>).</div>""";
             disableForm = true;
         }
         else if (requestsSubmittedToday > 0)
         {
-            requestLimitAlert = $"""<div class="banner banner-info">ℹ️ Anda telah menggunakan {requestsSubmittedToday} dari {maxDailyRequests} permintaan hari ini (Status terakhir: <strong>{statusLabel}</strong>).</div>""";
+            requestLimitAlert = $"""<div class="banner banner-info">ℹ️ Anda telah menggunakan {requestsSubmittedToday} dari {maxDailyRequests} permintaan hari ini (Status terakhir: <strong>{statusLabelHtml}</strong>).</div>""";
         }
 
         var declineBanner = "";
@@ -106,7 +112,7 @@ public static class RequestPage
                         <span class="decline-icon">🚫</span>
                         <span class="decline-title">Catatan Penolakan dari Orang Tua{timeFormatted}</span>
                     </div>
-                    <div class="decline-text">"{latestDeclineReason}"</div>
+                    <div class="decline-text">"{WebUtility.HtmlEncode(latestDeclineReason)}"</div>
                 </div>
             """;
         }
@@ -140,9 +146,9 @@ public static class RequestPage
                 """);
             }
 
-            var defText = !string.IsNullOrWhiteSpace(defaultScheduleSummary)
+            var defTextHtml = WebUtility.HtmlEncode(!string.IsNullOrWhiteSpace(defaultScheduleSummary)
                 ? $"Standar: {defaultScheduleSummary}"
-                : "Standar: 120m (08:00–22:00)";
+                : "Standar: 120m (08:00–22:00)");
 
             daysJson = JsonSerializer.Serialize(weeklySchedule.Select(d => new
             {
@@ -160,7 +166,7 @@ public static class RequestPage
                 <div class="schedule-panel">
                     <div class="schedule-header">
                         <span class="schedule-title">📅 Jadwal Main Mingguan</span>
-                        <span class="schedule-baseline">{{defText}}</span>
+                        <span class="schedule-baseline">{{defTextHtml}}</span>
                     </div>
 
                     <!-- 7-Day Segmented Strip -->
@@ -626,14 +632,14 @@ public static class RequestPage
                     <h1>🎮 Waktu Layar</h1>
                     <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
                         {{sessionStatusBadge}}
-                        <div class="user-badge">Akun: <strong>{{username}}</strong></div>
+                        <div class="user-badge">Akun: <strong>{{usernameHtml}}</strong></div>
                     </div>
                 </div>
 
                 <div class="timer-panel">
                     <div class="timer-label">Sisa Waktu Penggunaan Hari Ini</div>
                     <div class="timer-value" id="countdownTimer">--:--</div>
-                    <div class="timer-curfew">Jadwal Jam Malam: <strong>{{curfew}}</strong></div>
+                    <div class="timer-curfew">Jadwal Jam Malam: <strong>{{WebUtility.HtmlEncode(curfew)}}</strong></div>
                 </div>
 
                 {{declineBanner}}
@@ -839,26 +845,26 @@ public static class RequestPage
                                 requestType: 'extension',
                                 minutes: parseInt(minutes),
                                 reason: reason,
-                                username: '{{username}}'
+                                username: {{usernameJs}}
                             })
                         });
                         const data = await res.json();
                         feedback.style.display = 'block';
                         if (res.ok && data.success) {
                             feedback.className = 'banner banner-success';
-                            feedback.innerHTML = '✅ ' + data.message;
+                            feedback.textContent = '✅ ' + data.message;
                             document.getElementById('formExt').style.display = 'none';
                             document.getElementById('formSched').style.display = 'none';
                         } else {
                             feedback.className = 'banner banner-error';
-                            feedback.innerHTML = '❌ ' + (data.error || 'Gagal mengirim permintaan.');
+                            feedback.textContent = '❌ ' + (data.error || 'Gagal mengirim permintaan.');
                             btn.disabled = false;
                             btn.innerText = 'Kirim Permintaan ke Orang Tua';
                         }
                     } catch (err) {
                         feedback.style.display = 'block';
                         feedback.className = 'banner banner-error';
-                        feedback.innerHTML = '❌ Gagal terhubung ke layanan parental control.';
+                        feedback.textContent = '❌ Gagal terhubung ke layanan parental control.';
                         btn.disabled = false;
                         btn.innerText = 'Kirim Permintaan ke Orang Tua';
                     }
@@ -889,26 +895,26 @@ public static class RequestPage
                                 requestedStart: start,
                                 requestedEnd: end,
                                 reason: reason,
-                                username: '{{username}}'
+                                username: {{usernameJs}}
                             })
                         });
                         const data = await res.json();
                         feedback.style.display = 'block';
                         if (res.ok && data.success) {
                             feedback.className = 'banner banner-success';
-                            feedback.innerHTML = '✅ ' + data.message;
+                            feedback.textContent = '✅ ' + data.message;
                             document.getElementById('formExt').style.display = 'none';
                             document.getElementById('formSched').style.display = 'none';
                         } else {
                             feedback.className = 'banner banner-error';
-                            feedback.innerHTML = '❌ ' + (data.error || 'Gagal mengajukan jadwal.');
+                            feedback.textContent = '❌ ' + (data.error || 'Gagal mengajukan jadwal.');
                             btn.disabled = false;
                             btn.innerText = 'Ajukan Perubahan Jadwal ke Orang Tua';
                         }
                     } catch (err) {
                         feedback.style.display = 'block';
                         feedback.className = 'banner banner-error';
-                        feedback.innerHTML = '❌ Gagal terhubung ke layanan parental control.';
+                        feedback.textContent = '❌ Gagal terhubung ke layanan parental control.';
                         btn.disabled = false;
                         btn.innerText = 'Ajukan Perubahan Jadwal ke Orang Tua';
                     }
@@ -921,6 +927,7 @@ public static class RequestPage
 
     public static string RenderUnrestricted(string username)
     {
+        var usernameHtml = WebUtility.HtmlEncode(username);
         return $$"""
         <!DOCTYPE html>
         <html lang="id">
@@ -942,7 +949,7 @@ public static class RequestPage
         <body>
             <div class="card">
                 <h1>🛡️ Parental Control</h1>
-                <div class="badge">Akun: {{username}} (Administrator / Tidak Dibatasi)</div>
+                <div class="badge">Akun: {{usernameHtml}} (Administrator / Tidak Dibatasi)</div>
                 <p>Akun ini tidak memiliki batasan waktu layar atau jam malam harian. Anda bebas menggunakan komputer kapan saja tanpa batas waktu.</p>
                 <a href="/admin" class="btn">Buka Web Admin Console &rarr;</a>
             </div>

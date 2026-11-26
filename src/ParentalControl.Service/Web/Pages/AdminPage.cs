@@ -1,3 +1,4 @@
+using System.Net;
 using ParentalControl.Core;
 
 namespace ParentalControl.Service.Web.Pages;
@@ -7,7 +8,7 @@ public static class AdminPage
     public static string RenderLogin(string? error = null)
     {
         var errorHtml = !string.IsNullOrEmpty(error)
-            ? $"""<div class="banner banner-error">❌ {error}</div>"""
+            ? $"""<div class="banner banner-error">❌ {WebUtility.HtmlEncode(error)}</div>"""
             : "";
 
         return $$"""
@@ -567,6 +568,7 @@ public static class AdminPage
                 let watchIntervalId = null;
                 let watchHeartbeatId = null;
                 let activeSessionUsernames = [];
+                let recentCaptures = [];
 
                 function getTodayIsoString() {
                     const d = new Date();
@@ -616,19 +618,19 @@ public static class AdminPage
                         const currentAppHtml = `
                             <div style="display:flex;align-items:center;gap:0.4rem;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
                                 ${liveIndicator}
-                                <span style="font-size:0.8rem;color:${s.isAppLive ? '#e2e8f0' : '#64748b'}" title="${s.currentApp}">${s.currentApp}</span>
+                                <span style="font-size:0.8rem;color:${s.isAppLive ? '#e2e8f0' : '#64748b'}" title="${esc(s.currentApp)}">${esc(s.currentApp)}</span>
                             </div>`;
 
                         if (!s.isRestricted) {
                             html += `<tr>
-                                <td><strong>${s.username}</strong> <span class="badge" style="background:#334155;color:#38bdf8">Admin</span><br><small style="color:#64748b">Session ${s.sessionId}</small></td>
+                                <td><strong>${esc(s.username)}</strong> <span class="badge" style="background:#334155;color:#38bdf8">Admin</span><br><small style="color:#64748b">Session ${s.sessionId}</small></td>
                                 <td>${currentAppHtml}</td>
                                 <td><span style="color:#64748b">—</span></td>
                                 <td><span style="color:#64748b">—</span></td>
                                 <td>
                                     <div style="display:flex;gap:0.35rem;flex-wrap:wrap">
-                                        <button class="btn" style="padding:0.25rem 0.5rem;background:#0284c7;color:white" onclick="openPromptModal('${s.username}')">💬 Tanya</button>
-                                        <button class="btn btn-warning" style="padding:0.25rem 0.5rem" onclick="openLockModal(${s.sessionId}, '${s.username}')">🔒 Lock</button>
+                                        <button class="btn" style="padding:0.25rem 0.5rem;background:#0284c7;color:white" data-user="${esc(s.username)}" onclick="openPromptModal(this.dataset.user)">💬 Tanya</button>
+                                        <button class="btn btn-warning" style="padding:0.25rem 0.5rem" data-user="${esc(s.username)}" onclick="openLockModal(${s.sessionId}, this.dataset.user)">🔒 Lock</button>
                                         <button class="btn btn-danger" style="padding:0.25rem 0.5rem" onclick="forceLogoff(${s.sessionId})">Logoff</button>
                                     </div>
                                 </td>
@@ -638,16 +640,16 @@ public static class AdminPage
                                 ? ' <span class="badge" style="background:#854d0e;color:#fef08a">Locked (Paused)</span>'
                                 : '';
                             html += `<tr>
-                                <td><strong>${s.username}</strong>${lockBadge}<br><small style="color:#64748b">Session ${s.sessionId}</small></td>
+                                <td><strong>${esc(s.username)}</strong>${lockBadge}<br><small style="color:#64748b">Session ${s.sessionId}</small></td>
                                 <td>${currentAppHtml}</td>
                                 <td><strong style="color:#38bdf8">${s.remainingMinutes}m</strong> / ${s.totalAllowed}m</td>
-                                <td>${s.curfew}</td>
+                                <td>${esc(s.curfew)}</td>
                                 <td>
                                     <div style="display:flex;gap:0.35rem;flex-wrap:wrap">
-                                        <button class="btn" style="padding:0.25rem 0.5rem;background:#0284c7;color:white" onclick="openPromptModal('${s.username}')">💬 Tanya</button>
-                                        <button class="btn btn-primary" style="padding:0.25rem 0.5rem" onclick="captureSessionScreen('${s.username}')">📸 Screen</button>
-                                        <button class="btn btn-secondary" style="padding:0.25rem 0.5rem" onclick="openScheduleModal(${s.userId}, '${s.username}')">📅 Schedule</button>
-                                        <button class="btn btn-warning" style="padding:0.25rem 0.5rem" onclick="openLockModal(${s.sessionId}, '${s.username}')">🔒 Lock</button>
+                                        <button class="btn" style="padding:0.25rem 0.5rem;background:#0284c7;color:white" data-user="${esc(s.username)}" onclick="openPromptModal(this.dataset.user)">💬 Tanya</button>
+                                        <button class="btn btn-primary" style="padding:0.25rem 0.5rem" data-user="${esc(s.username)}" onclick="captureSessionScreen(this.dataset.user)">📸 Screen</button>
+                                        <button class="btn btn-secondary" style="padding:0.25rem 0.5rem" data-user="${esc(s.username)}" onclick="openScheduleModal(${s.userId}, this.dataset.user)">📅 Schedule</button>
+                                        <button class="btn btn-warning" style="padding:0.25rem 0.5rem" data-user="${esc(s.username)}" onclick="openLockModal(${s.sessionId}, this.dataset.user)">🔒 Lock</button>
                                         <button class="btn btn-success" style="padding:0.25rem 0.5rem" onclick="grantTime(${s.userId}, 15)">+15m</button>
                                         <button class="btn btn-success" style="padding:0.25rem 0.5rem" onclick="grantTime(${s.userId}, 30)">+30m</button>
                                         <button class="btn btn-danger" style="padding:0.25rem 0.5rem" onclick="forceLogoff(${s.sessionId})">Logoff</button>
@@ -668,7 +670,7 @@ public static class AdminPage
                     let html = '<div class="table-responsive"><table><thead><tr><th style="min-width:100px">User</th><th style="min-width:60px">Req</th><th>Reason</th><th style="min-width:140px">Action</th></tr></thead><tbody>';
                     for (const r of requests) {
                         const isPending = r.status === 'PENDING';
-                        let actionHtml = `<span class="badge badge-${r.status.toLowerCase()}">${r.status}</span>`;
+                        let actionHtml = `<span class="badge badge-${esc(String(r.status).toLowerCase())}">${esc(r.status)}</span>`;
                         if (isPending) {
                             actionHtml = `
                                 <div style="display:flex;gap:0.35rem">
@@ -677,9 +679,9 @@ public static class AdminPage
                                 </div>`;
                         }
                         html += `<tr>
-                            <td><strong>${r.username}</strong><br><small style="color:#64748b">${r.createdAt}</small></td>
+                            <td><strong>${esc(r.username)}</strong><br><small style="color:#64748b">${esc(r.createdAt)}</small></td>
                             <td>+${r.requestedMinutes}m</td>
-                            <td style="max-width:180px;word-break:break-word">${r.reason}</td>
+                            <td style="max-width:180px;word-break:break-word">${esc(r.reason)}</td>
                             <td>${actionHtml}</td>
                         </tr>`;
                     }
@@ -693,7 +695,7 @@ public static class AdminPage
                     if (users) {
                         for (const u of users) {
                             const isActive = selectedUser.toLowerCase() === u.toLowerCase();
-                            html += `<button class="pill-btn ${isActive ? 'active' : ''}" onclick="setUserFilter('${u}')">${u}</button>`;
+                            html += `<button class="pill-btn ${isActive ? 'active' : ''}" data-user="${esc(u)}" onclick="setUserFilter(this.dataset.user)">${esc(u)}</button>`;
                         }
                     }
                     container.innerHTML = html;
@@ -799,6 +801,7 @@ public static class AdminPage
                     for (let i = 0; i < apps.length; i++) {
                         const a = apps[i];
                         const color = COLOR_PALETTE[i % COLOR_PALETTE.length];
+                        const selectAttrs = 'data-process="' + esc(a.processName) + '" onchange="assignCategory(this)"';
                         html += `<tr>
                             <td><strong>${esc(a.username)}</strong></td>
                             <td>
@@ -815,7 +818,7 @@ public static class AdminPage
                                 </div>
                             </td>
                             <td><strong>${formatMinutes(a.minutes)}</strong></td>
-                            <td>${categorySelect(a.fileRuleCategory, 'data-process="' + esc(a.processName) + '" onchange="assignCategory(this)"', true)}</td>
+                            <td>${categorySelect(a.fileRuleCategory, selectAttrs, true)}</td>
                         </tr>`;
                     }
                     html += '</tbody></table></div>';
@@ -1032,7 +1035,7 @@ public static class AdminPage
                             ph.style.display = 'none';
                             bar.style.display = 'flex';
 
-                            metaUserTime.innerHTML = `<strong>👤 ${c.username}</strong> &bull; ⏰ ${c.timestamp}`;
+                            metaUserTime.innerHTML = captureUserTimeHtml(c.username, c.timestamp);
                             const kb = Math.round(c.fileSizeBytes / 1024);
                             metaDetails.textContent = `${c.width}×${c.height} • ${kb} KB • ${c.triggerType}`;
                         }
@@ -1060,13 +1063,14 @@ public static class AdminPage
 
                         if (countBadge) countBadge.textContent = `${data.captures.length} recent`;
 
+                        recentCaptures = data.captures;
                         let html = '';
                         for (const item of data.captures) {
                             const isActive = item.id === currentCaptureId ? 'active' : '';
                             html += `
                                 <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
-                                    <img src="${item.url}" class="cap-thumb ${isActive}" title="${item.username} @ ${item.timestamp} (${item.width}x${item.height})" onclick="selectCapture(${item.id}, '${item.url}', '${item.username} &bull; ⏰ ${item.timestamp}', '${item.width}×${item.height} • ${Math.round(item.fileSizeBytes/1024)} KB')" />
-                                    <span style="font-size:0.65rem;color:#64748b">${item.timestamp}</span>
+                                    <img src="${esc(item.url)}" class="cap-thumb ${isActive}" title="${esc(item.username)} @ ${esc(item.timestamp)} (${item.width}x${item.height})" onclick="selectCapture(${item.id})" />
+                                    <span style="font-size:0.65rem;color:#64748b">${esc(item.timestamp)}</span>
                                 </div>`;
                         }
                         strip.innerHTML = html;
@@ -1075,13 +1079,19 @@ public static class AdminPage
                     }
                 }
 
-                function selectCapture(id, url, userTime, details) {
-                    currentCaptureId = id;
-                    currentCaptureUrl = url;
+                function captureUserTimeHtml(username, timestamp) {
+                    return `<strong>👤 ${esc(username)}</strong> &bull; ⏰ ${esc(timestamp)}`;
+                }
+
+                function selectCapture(id) {
+                    const item = recentCaptures.find(c => c.id === id);
+                    if (!item) return;
+                    currentCaptureId = item.id;
+                    currentCaptureUrl = item.url;
                     const img = document.getElementById('captureImg');
-                    img.src = `${url}?t=${Date.now()}`;
-                    document.getElementById('captureMetaUserTime').innerHTML = userTime;
-                    document.getElementById('captureMetaDetails').textContent = details;
+                    img.src = `${item.url}?t=${Date.now()}`;
+                    document.getElementById('captureMetaUserTime').innerHTML = captureUserTimeHtml(item.username, item.timestamp);
+                    document.getElementById('captureMetaDetails').textContent = `${item.width}×${item.height} • ${Math.round(item.fileSizeBytes / 1024)} KB`;
 
                     // Update active thumbnail border
                     document.querySelectorAll('.cap-thumb').forEach(el => el.classList.remove('active'));
@@ -1131,12 +1141,12 @@ public static class AdminPage
                             ? `<span class="badge" style="background:#4c1d95;color:#ddd6fe">${u.customCount} custom days</span>`
                             : `<span class="badge" style="background:#1e293b;color:#94a3b8">All standard</span>`;
                         html += `<tr>
-                            <td><strong>${u.username}</strong></td>
+                            <td><strong>${esc(u.username)}</strong></td>
                             <td><strong style="color:#38bdf8">${u.baseMinutes} mins</strong></td>
-                            <td>${u.baseStart} – ${u.baseEnd}</td>
+                            <td>${esc(u.baseStart)} – ${esc(u.baseEnd)}</td>
                             <td>${customBadge}</td>
                             <td>
-                                <button class="btn btn-primary" style="padding:0.3rem 0.75rem" onclick="openScheduleModal(${u.id}, '${u.username}')">⚙️ Manage Schedule</button>
+                                <button class="btn btn-primary" style="padding:0.3rem 0.75rem" data-user="${esc(u.username)}" onclick="openScheduleModal(${u.id}, this.dataset.user)">⚙️ Manage Schedule</button>
                             </td>
                         </tr>`;
                     }
@@ -1185,7 +1195,7 @@ public static class AdminPage
 
                         html += `
                             <tr style="border-bottom:1px solid #1e293b">
-                                <td style="padding:0.5rem;font-weight:600">${d.dayName}</td>
+                                <td style="padding:0.5rem;font-weight:600">${esc(d.dayName)}</td>
                                 <td style="padding:0.5rem;text-align:center">
                                     <input type="checkbox" id="chk_${i}" ${isChecked} onchange="toggleDayCustom(${i}, this.checked)" />
                                 </td>
@@ -1194,9 +1204,9 @@ public static class AdminPage
                                 </td>
                                 <td style="padding:0.5rem">
                                     <div style="display:flex;gap:0.3rem;align-items:center;${opacityStyle}">
-                                        <input type="time" id="start_${i}" value="${d.scheduleStart}" style="background:#131c2e;border:1px solid #334155;color:#fff;padding:0.25rem 0.4rem;border-radius:0.3rem" ${disabledAttr} onchange="currentSchDays[${i}].scheduleStart = this.value" />
+                                        <input type="time" id="start_${i}" value="${esc(d.scheduleStart)}" style="background:#131c2e;border:1px solid #334155;color:#fff;padding:0.25rem 0.4rem;border-radius:0.3rem" ${disabledAttr} onchange="currentSchDays[${i}].scheduleStart = this.value" />
                                         <span style="color:#64748b">–</span>
-                                        <input type="time" id="end_${i}" value="${d.scheduleEnd}" style="background:#131c2e;border:1px solid #334155;color:#fff;padding:0.25rem 0.4rem;border-radius:0.3rem" ${disabledAttr} onchange="currentSchDays[${i}].scheduleEnd = this.value" />
+                                        <input type="time" id="end_${i}" value="${esc(d.scheduleEnd)}" style="background:#131c2e;border:1px solid #334155;color:#fff;padding:0.25rem 0.4rem;border-radius:0.3rem" ${disabledAttr} onchange="currentSchDays[${i}].scheduleEnd = this.value" />
                                     </div>
                                 </td>
                             </tr>`;
@@ -1223,9 +1233,9 @@ public static class AdminPage
                     for (const e of currentSchExceptions) {
                         html += `
                             <tr style="border-bottom:1px solid #1e293b">
-                                <td style="padding:0.4rem;font-weight:600;color:#f472b6">${e.date}</td>
+                                <td style="padding:0.4rem;font-weight:600;color:#f472b6">${esc(e.date)}</td>
                                 <td style="padding:0.4rem">${e.dailyMinutes}m</td>
-                                <td style="padding:0.4rem">${e.scheduleStart} – ${e.scheduleEnd}</td>
+                                <td style="padding:0.4rem">${esc(e.scheduleStart)} – ${esc(e.scheduleEnd)}</td>
                                 <td style="padding:0.4rem;text-align:center">
                                     <button type="button" class="btn btn-secondary" style="font-size:0.7rem;padding:0.15rem 0.4rem;color:#ef4444" onclick="deleteScheduleException(${e.id})">🗑️ Delete</button>
                                 </td>
@@ -1409,7 +1419,7 @@ public static class AdminPage
                     }
 
                     if (data.error) {
-                        body.innerHTML = `<div style="padding:0.75rem;background:#7f1d1d;color:#fecaca;border-radius:0.4rem">Gagal memeriksa pembaruan: ${data.error}</div>`;
+                        body.innerHTML = `<div style="padding:0.75rem;background:#7f1d1d;color:#fecaca;border-radius:0.4rem">Gagal memeriksa pembaruan: ${esc(data.error)}</div>`;
                         applyBtn.style.display = 'none';
                     } else if (data.hasUpdate) {
                         pendingUpdateDownloadUrl = data.downloadUrl;
@@ -1418,11 +1428,11 @@ public static class AdminPage
                         for (const line of lines) {
                             const t = line.trim();
                             if (t.startsWith('* ') || t.startsWith('- ')) {
-                                formattedNotes += `<div style="margin-bottom:0.25rem">&bull; ${t.substring(2)}</div>`;
+                                formattedNotes += `<div style="margin-bottom:0.25rem">&bull; ${esc(t.substring(2))}</div>`;
                             } else if (t.startsWith('**Full Changelog**')) {
                                 continue;
                             } else {
-                                formattedNotes += `<div style="margin-bottom:0.25rem">${t}</div>`;
+                                formattedNotes += `<div style="margin-bottom:0.25rem">${esc(t)}</div>`;
                             }
                         }
                         if (!formattedNotes) formattedNotes = '<div>Perbaikan performa dan fitur baru.</div>';
@@ -1431,8 +1441,8 @@ public static class AdminPage
                         body.innerHTML = `
                             <div style="margin-bottom:0.75rem">
                                 <span class="badge" style="background:#15803d;color:#dcfce7">Versi Baru Tersedia!</span>
-                                <div style="font-size:1.1rem;font-weight:700;color:#38bdf8;margin-top:0.4rem">${data.releaseTitle || 'v' + data.latestVersion}</div>
-                                <div style="font-size:0.8rem;color:#94a3b8">Versi saat ini: ${data.currentVersion} &bull; Rilis baru: v${data.latestVersion}</div>
+                                <div style="font-size:1.1rem;font-weight:700;color:#38bdf8;margin-top:0.4rem">${esc(data.releaseTitle || 'v' + data.latestVersion)}</div>
+                                <div style="font-size:0.8rem;color:#94a3b8">Versi saat ini: ${esc(data.currentVersion)} &bull; Rilis baru: v${esc(data.latestVersion)}</div>
                             </div>
                             <div style="background:#090d16;border:1px solid #1e293b;border-radius:0.4rem;padding:0.75rem;font-size:0.8rem;color:#cbd5e1;max-height:180px;overflow-y:auto;margin-bottom:0.75rem">${formattedNotes}</div>
                             <p style="font-size:0.8rem;color:#fef08a">⚠️ Pembaruan akan mengunduh file installer dan memuat ulang layanan serta agent secara otomatis.</p>
@@ -1441,7 +1451,7 @@ public static class AdminPage
                     } else {
                         body.innerHTML = `
                             <div style="padding:0.75rem;background:#064e3b;color:#a7f3d0;border-radius:0.4rem;margin-bottom:0.5rem">
-                                ✅ Aplikasi sudah menggunakan versi terbaru (<strong>${data.currentVersion}</strong>).
+                                ✅ Aplikasi sudah menggunakan versi terbaru (<strong>${esc(data.currentVersion)}</strong>).
                             </div>
                         `;
                         applyBtn.style.display = 'none';
@@ -1535,7 +1545,9 @@ public static class AdminPage
                 }
 
                 // ═══ App Categories ═══
-                // Exe names, paths and window titles come from the child's computer: escape them before any innerHTML.
+                // Exe names, paths, window titles, user names and request reasons come from the child's computer.
+                // Telegram, GitHub and the database also supply text. Escape each such value before any innerHTML.
+                // In an onclick attribute, put the value in a data-* attribute and read this.dataset: esc() does not protect a JS string there.
                 function esc(value) {
                     return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
                 }
@@ -1545,7 +1557,7 @@ public static class AdminPage
                 function categorySelect(selected, attrs, withEmpty) {
                     let html = `<select class="cat-input" style="width:auto" ${attrs}>`;
                     if (withEmpty) html += `<option value="" ${selected ? '' : 'selected'}>(no file rule)</option>`;
-                    for (const c of CATEGORIES) html += `<option value="${c}" ${c === selected ? 'selected' : ''}>${c}</option>`;
+                    for (const c of CATEGORIES) html += `<option value="${esc(c)}" ${c === selected ? 'selected' : ''}>${esc(c)}</option>`;
                     return html + '</select>';
                 }
 
@@ -1585,7 +1597,7 @@ public static class AdminPage
                             <td><input id="limWd_${c.category}" class="cat-input" type="number" min="0" max="1440" value="${c.weekdayMinutes ?? ''}" placeholder="no limit" ${dis}></td>
                             <td><input id="limWe_${c.category}" class="cat-input" type="number" min="0" max="1440" value="${c.weekendMinutes ?? ''}" placeholder="no limit" ${dis}></td>
                             <td style="color:#cbd5e1">${used}</td>
-                            <td>${c.editable ? `<button class="btn btn-secondary" onclick="saveCategoryLimit('${c.category}')">💾 Save</button>` : ''}</td>
+                            <td>${c.editable ? `<button class="btn btn-secondary" data-category="${esc(c.category)}" onclick="saveCategoryLimit(this.dataset.category)">💾 Save</button>` : ''}</td>
                         </tr>`;
                     }
                     document.getElementById('categoryLimitsContainer').innerHTML = html + '</tbody></table></div>';
