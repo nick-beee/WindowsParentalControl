@@ -1,6 +1,6 @@
 # Tasks
 
-Before you start: PR #20 (`add-german-child-texts`) must be merged (design D14). Do not install a build of this change on the child's PC before PR #21 and PR #22 are merged.
+PR #20 (`add-german-child-texts`) is merged (design D14). Do not install a build of this change on the child's PC before PR #21 and PR #22 are merged.
 
 ## 1. Domain: the block on an App Rule
 
@@ -8,6 +8,7 @@ Before you start: PR #20 (`add-german-child-texts`) must be merged (design D14).
 - [ ] 1.2 Add the pure record `ProtectedPrograms` (Windows folder, install folder, `msedgewebview2.exe`) with `IsProtected(path)` (design D7). Verify with xUnit tests: an exe below each folder, `msedgewebview2.exe` in any folder, a similar folder name (`C:\WindowsApps2\x.exe`), and a path with `..` parts.
 - [ ] 1.3 Extend `AppRule.Validate` with the block rules of design D2 (System, protected folders, protected file names). Keep the error texts in the style of the existing ones. Verify with xUnit tests for each refused case and for a permitted blocked `notepad.exe` file rule.
 - [ ] 1.4 Add tests for the block through the resolver precedence: a file rule without the block below a blocked folder, the longest folder, and a blocked file rule over an unblocked folder (spec "The block follows the rule precedence"). Verify that `dotnet test tests/ParentalControl.Domain.Tests` passes.
+- [ ] 1.5 Make `CategoryLimitCalculator` leave out the App Limit of a blocked rule (design D1). Verify with xUnit tests: a blocked rule with an App Limit gives no App Limit status and no due warning; the exe uses its Category Limit; the App Limit applies again without the block.
 
 ## 2. Domain: the decision "at its start"
 
@@ -49,7 +50,7 @@ Before you start: PR #20 (`add-german-child-texts`) must be merged (design D14).
 - [ ] 7.3 Add `BlockEnforcer`: the consumer of the channel, the block epoch from its start and `CategoryConfigCache.Changed`, the `BlockedStartDecider`, the close through `ProcessControl.Terminate`, `RequestTick` of `CategoryEnforcer` after a failed close, the upsert in `blocked_starts`, the event log entry, the child message and the Telegram notice with their dedupe flags (design D4, D5, D10, D11, D12). Verify that the build passes and in task 7.7.
 - [ ] 7.4 In `CategoryEnforcer.Tick`, run the decider for each listed process before the planner, give `Close` results to `BlockEnforcer`, mark them as a pending close for the planner, and set `IsBlocked` in the verdict. A blocked suspension updates `blocked_starts` and sends the child message once. Verify that the build passes and in task 7.7.
 - [ ] 7.5 Wire the watcher and the enforcer in `Program.cs` / `UsageMonitorWorker`, start them after the database, and stop them before `ResumeAll` at a service stop. Verify on VM 102 that a service stop leaves no blocked process suspended.
-- [ ] 7.6 Add the message key `msg_program_blocked` with the de, en and id texts of design D10 to the catalog of PR #20, with `{name}`. Verify that the catalog tests of PR #20 (same placeholders in each preset) pass with the new key.
+- [ ] 7.6 Add the message key `msg_program_blocked` with the de, en and id texts of design D10 to `ChildMessageKeys` and `MessageCatalog` in `src/ParentalControl.Domain/Messages`, with `{name}`. Verify that the catalog tests (same placeholders in each preset) pass with the new key, and add a test for the German text of the spec scenario "German message".
 - [ ] 7.7 Manual check on VM 102 (console, not RDP) as `Kid`, after a rollback to `test-base` and an install of the build:
   - Start Edge from the Start menu. Expected: the Edge window closes within 2 seconds; `Kid` gets one German message; `blocked_starts` has one row for `msedge.exe` with `closed_count` 1; the event log has one `PROGRAM_BLOCKED` entry.
   - Start Edge again. Expected: it closes; no second message; `closed_count` 2.

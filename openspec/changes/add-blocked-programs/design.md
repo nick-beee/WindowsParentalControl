@@ -13,7 +13,9 @@ The current code has these properties:
 - `app_rules` has `UNIQUE(match_type, pattern COLLATE NOCASE)`. The one-time seed of the default rules runs while the settings key `categories_seeded` is absent. On the child's PC, stage 1 already set this key.
 - The service runs as LocalSystem in session 0. The Session Agent channel has no authentication (#6).
 - `EventRepository` stores `EventType` as text.
-- The draft PR #20 (`add-german-child-texts`) moves the child texts into a catalog in `ParentalControl.Domain/Messages`. The draft PR #21 (`require-admin-sign-in`) puts one Admin Session gate in front of each `/api/admin/*` route. The draft PR #22 (`resume-suspended-apps-at-session-end`) resumes each record of `suspended_processes` when the session ends.
+- PR #20 (`add-german-child-texts`) is merged. The child texts are in the catalog `ChildMessageKeys` / `MessageCatalog` in `ParentalControl.Domain/Messages` (spec `child-messages`). At each start, `SettingsRepository.SeedChildMessages` writes the default text of the current preset for a key that has no stored text. A new key thus reaches an existing install without a migration.
+- PR #28 sends an App Limit warning only while a process of the app is in the process list of the service (`CategoryEnforcer.RunningExes`, `DayLimits.DueWarnings`). A suspended process is still in that list.
+- The draft PR #21 (`require-admin-sign-in`) puts one Admin Session gate in front of each `/api/admin/*` route. The draft PR #22 (`resume-suspended-apps-at-session-end`) resumes each record of `suspended_processes` when the session ends.
 
 Each decision below was decided by the orchestrator under the user's delegation (2026-11-26).
 
@@ -38,6 +40,8 @@ Decided by the orchestrator under the user's delegation (2026-11-26).
 New column `app_rules.is_blocked INTEGER NOT NULL DEFAULT 0`. `AppRule` gets `bool IsBlocked`. `CategoryResolution` already returns the selected rule, so `resolution.Rule?.IsBlocked == true` is the block of the exe. The precedence of `app-categories` thus also decides the block: a file rule without the block makes an exception below a blocked folder.
 
 The rule keeps its category and its App Limit while the block is on. They have no effect while the block is on: a Blocked Start closes, and a blocked suspension does not depend on time. When the parent removes the block, they apply again. The parent can thus switch a block on and off without a loss of settings.
+
+"No effect" for the App Limit: `CategoryLimitCalculator` leaves out the App Limit of a blocked rule, so the exe falls back to its Category Limit. Without this, a suspended blocked browser with an App Limit stays in the process list, and the App Limit warning of PR #28 tells the child that the blocked program ends soon. The exe still counts in its category, like each other exe of the category.
 
 Rejected alternatives:
 - *A new category "Blocked"*: the spec fixes the set of seven categories. The rule would also lose its real category, so a switch back would need a second edit.
@@ -177,7 +181,7 @@ Rejected alternatives:
 ### D10. The child message
 Decided by the orchestrator under the user's delegation (2026-11-26).
 
-New child message key `msg_program_blocked` with the placeholder `{name}` in the catalog of PR #20 (`ChildMessageKeys`, `MessageCatalog`). The parent can edit it like the other `msg_*` keys.
+New child message key `msg_program_blocked` with the placeholder `{name}` in the catalog (`ChildMessageKeys`, `MessageCatalog` in `ParentalControl.Domain/Messages`). The parent can edit it like the other `msg_*` keys. `SeedChildMessages` writes the text of the current preset on an existing install, and a preset switch changes it like the other keys (spec `child-messages`).
 
 | Preset | Text |
 |---|---|
@@ -230,7 +234,7 @@ New settings key `notify_blocked_telegram`, default `1`. At the first blocked st
 Rejected alternatives:
 - *Off by default*: the parent asked to know about tries, and one notice per program and day limits the noise.
 - *A notice for each start*: too many messages.
-- *Use the language rule of PR #20 for parent texts (id or en)*: PR #21 is the newer decision for new parent texts.
+- *Use the language rule of `child-messages` for parent texts*: PR #21 is the newer decision for new parent texts.
 
 ### D13. The admin API
 Decided by the orchestrator under the user's delegation (2026-11-26).
@@ -249,7 +253,7 @@ Rejected alternative: *separate routes for blocked rules*: two ways to change on
 ### D14. Order of the work and the dependencies
 Decided by the orchestrator under the user's delegation (2026-11-26).
 
-- PR #20 (the text catalog) merges before `/opsx:apply` of this change, because D10 adds a key to that catalog.
+- PR #20 (the text catalog) is merged. D10 adds a key to that catalog.
 - PR #22 merges before this change reaches the child's PC. Without it, a suspended blocked browser has the sign-out problem of issue #4.
 - PR #21 is not a code dependency (D13), but the child's PC needs it, because without it the child can remove a block through the API (#18).
 - Issue #26 is a dependency of the UI tasks only.

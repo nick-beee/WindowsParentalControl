@@ -13,6 +13,10 @@ An App Rule SHALL have a block switch. When the block is on, each exe that the r
 - **WHEN** a file rule for `chrome.exe` has the block on and the child runs `C:\Program Files\Google\Chrome\Application\chrome.exe`
 - **THEN** the exe is a Blocked Program
 
+#### Scenario: No App Limit warning for a blocked program
+- **WHEN** the rule for `chrome.exe` has the block on and an App Limit, a suspended Chrome process is in the session of the child, and the App Limit has 5 minutes left
+- **THEN** the child gets no warning that Chrome ends
+
 #### Scenario: Block removed
 - **WHEN** the parent removes the block from the rule for `chrome.exe`, which has the category Video
 - **THEN** `chrome.exe` is not a Blocked Program
@@ -164,7 +168,7 @@ When the command line of a Blocked Program process contains `--no-startup-window
 - **AND** the child gets the blocked program message
 
 ### Requirement: Tell the child about a blocked program
-When the system closes or suspends a process of a Blocked Program, and the action is not silent, it SHALL send one session message per program, Restricted User and day. The message SHALL name the program by its exe file name without `.exe` and SHALL say that the parent blocked it. The text SHALL follow the Language Preset, and the parent SHALL be able to edit it.
+When the system closes or suspends a process of a Blocked Program, and the action is not silent, it SHALL send one session message per program, Restricted User and day. The message SHALL name the program by its exe file name without `.exe` and SHALL say that the parent blocked it. The text SHALL follow the Language Preset of `child-messages`, and the parent SHALL be able to edit it.
 
 #### Scenario: German message
 - **WHEN** the preset is "de" and the system closes a Blocked Start of `chrome.exe` for the first time today

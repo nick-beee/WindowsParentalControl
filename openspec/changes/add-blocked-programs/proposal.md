@@ -40,10 +40,10 @@ The parent wants to block some programs fully. For now, this includes all web br
 
 ## Impact
 
-- `src/ParentalControl.Domain/Categories`: `AppRule` gets the block; a new pure decision for a Blocked Start; one never-block check that the suspension planner and the block decision both use; the planner keeps a blocked suspension; the default blocked rules. New xUnit tests.
+- `src/ParentalControl.Domain/Categories`: `AppRule` gets the block; `CategoryLimitCalculator` ignores the App Limit of a blocked rule; a new pure decision for a Blocked Start; one never-block check that the suspension planner and the block decision both use; the planner keeps a blocked suspension; the default blocked rules. New xUnit tests.
 - `src/ParentalControl.Core`: `app_rules.is_blocked`, `suspended_processes.reason`, a new table `blocked_starts`, new settings keys, a new `EventType` value, `ProcessControl.Terminate` and `ProcessControl.QueryCommandLine`, new P/Invokes.
 - `src/ParentalControl.Service`: a new process start watcher (WMI), a block enforcer, the tick fallback, the routes in `WebServerHost.cs`.
 - New NuGet dependency `System.Management` (Microsoft, MIT) in the Service project.
-- The text catalog of change `add-german-child-texts` (PR #20) gets one new child message key.
+- The child text catalog (`src/ParentalControl.Domain/Messages`, spec `child-messages`) gets one new child message key.
 - `GLOSSARY.md`: new terms Blocked Program and Blocked Start; a wider definition of Suspended App.
-- Dependencies: PR #20 (text catalog), PR #21 (Admin Session), PR #22 (resume at session end), issue #26 (React admin UI).
+- Dependencies: PR #21 (Admin Session), PR #22 (resume at session end), issue #26 (React admin UI). PR #20 (text catalog) is merged.
