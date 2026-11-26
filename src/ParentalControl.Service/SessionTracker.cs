@@ -3,6 +3,7 @@ using ParentalControl.Core.Data;
 using ParentalControl.Core.Models;
 using ParentalControl.Core.Platform;
 using ParentalControl.Core.Services;
+using ParentalControl.Domain.Sessions;
 namespace ParentalControl.Service;
 
 public sealed record ActiveSession(int SessionId, string UserSid, string Username, DateTime LastTick, bool IsLocked = false);
@@ -43,9 +44,13 @@ public sealed class SessionTracker
     public void Initialize()
     {
         var sessions = SessionManager.GetLoggedOnSessions();
-        foreach (var (sessionId, username, sid, isLocked) in sessions)
+        foreach (var (sessionId, username, sid, isDisconnected) in sessions)
         {
             if (sid is null) continue;
+
+            // The connect state does not show a Win+L lock. Read the lock flag of Windows too.
+            var (flag, rawFlags) = SessionManager.QueryLockFlag(sessionId);
+            var isLocked = SessionLockRules.InitialLockState(isDisconnected, flag);
 
             var user = UserRepository.GetBySid(sid);
             if (user is null)
@@ -54,8 +59,8 @@ public sealed class SessionTracker
             }
 
             _activeSessions.TryAdd(sessionId, new ActiveSession(sessionId, sid, username, DateTime.Now, isLocked));
-            _logger.Information("Recovered existing session: {Username} (SID: {Sid}) on session {SessionId} (Locked: {IsLocked})",
-                username, sid, sessionId, isLocked);
+            _logger.Information("Recovered existing session: {Username} (SID: {Sid}) on session {SessionId} (Locked: {IsLocked}, Disconnected: {IsDisconnected}, LockFlag: {LockFlag}, SessionFlags: {RawFlags})",
+                username, sid, sessionId, isLocked, isDisconnected, flag, rawFlags);
 
             if (!isLocked)
             {
@@ -71,17 +76,21 @@ public sealed class SessionTracker
             var loggedOn = SessionManager.GetLoggedOnSessions();
             var loggedOnIds = new HashSet<int>();
 
-            foreach (var (sessionId, username, sid, isLocked) in loggedOn)
+            foreach (var (sessionId, username, sid, isDisconnected) in loggedOn)
             {
                 if (sid is null) continue;
                 loggedOnIds.Add(sessionId);
 
+                // The connect state does not show a Win+L lock, so it never sets a session to unlocked (issue #9).
+                var (flag, rawFlags) = SessionManager.QueryLockFlag(sessionId);
+
                 if (!_activeSessions.TryGetValue(sessionId, out var existing))
                 {
+                    var isLocked = SessionLockRules.InitialLockState(isDisconnected, flag);
                     var user = UserRepository.GetBySid(sid) ?? UserRepository.Upsert(sid, username, false);
                     _activeSessions.TryAdd(sessionId, new ActiveSession(sessionId, sid, username, DateTime.Now, isLocked));
-                    _logger.Information("Synchronized session for {Username} on session {SessionId} (Locked: {IsLocked})",
-                        username, sessionId, isLocked);
+                    _logger.Information("Synchronized session for {Username} on session {SessionId} (Locked: {IsLocked}, Disconnected: {IsDisconnected}, LockFlag: {LockFlag}, SessionFlags: {RawFlags})",
+                        username, sessionId, isLocked, isDisconnected, flag, rawFlags);
 
                     if (!isLocked)
                     {
@@ -90,9 +99,18 @@ public sealed class SessionTracker
                 }
                 else
                 {
-                    if (existing.IsLocked != isLocked)
+                    switch (SessionLockRules.Reconcile(existing.IsLocked, isDisconnected, flag))
                     {
-                        _activeSessions[sessionId] = existing with { IsLocked = isLocked };
+                        case LockReconcileAction.MarkLocked:
+                            _logger.Information("Session {SessionId} ({Username}) is locked in Windows but tracked as unlocked (Disconnected: {IsDisconnected}, LockFlag: {LockFlag}, SessionFlags: {RawFlags})",
+                                sessionId, existing.Username, isDisconnected, flag, rawFlags);
+                            OnSessionLock(sessionId, isDisconnected ? "Windows session disconnected" : "Windows session locked");
+                            break;
+                        case LockReconcileAction.RunUnlockCheck:
+                            _logger.Information("Session {SessionId} ({Username}) is unlocked in Windows but tracked as locked (LockFlag: {LockFlag}, SessionFlags: {RawFlags}); running the unlock check",
+                                sessionId, existing.Username, flag, rawFlags);
+                            OnSessionUnlock(sessionId);
+                            break;
                     }
                 }
             }
@@ -351,20 +369,73 @@ public sealed class SessionTracker
         SessionUnlocked?.Invoke(sessionId);
     }
 
+    /// <summary>
+    /// A console or remote connect. After an Enforced Workstation Lock (a disconnect), the child signs in again and
+    /// the session connects. If Windows then shows the session as unlocked, the unlock check runs.
+    /// If the session still shows the lock screen, the unlock event comes later.
+    /// </summary>
+    public void OnSessionReconnect(int sessionId)
+    {
+        if (!_activeSessions.TryGetValue(sessionId, out var session) || !session.IsLocked)
+        {
+            return;
+        }
+
+        var (flag, rawFlags) = SessionManager.QueryLockFlag(sessionId);
+        _logger.Information("Session {SessionId} ({Username}) connected while tracked as locked (LockFlag: {LockFlag}, SessionFlags: {RawFlags})",
+            sessionId, session.Username, flag, rawFlags);
+        if (flag == WtsLockFlag.Unlocked)
+        {
+            OnSessionUnlock(sessionId);
+        }
+    }
+
+    /// <summary>
+    /// True if the Session Agent runs in the session: a process in that session from the agent exe of this installation.
+    /// A process with the same name from another path is not the agent.
+    /// </summary>
+    public bool IsAgentRunning(int sessionId)
+    {
+        var agentPath = GetAgentExecutablePath();
+        return agentPath != null && FindAgent(sessionId, agentPath).AgentPids.Count > 0;
+    }
+
+    private static (List<int> AgentPids, List<(int Pid, string? ImagePath)> Others) FindAgent(int sessionId, string agentPath)
+    {
+        var agents = new List<int>();
+        var others = new List<(int, string?)>();
+        foreach (var (pid, imagePath) in SessionManager.FindProcessesByExeName(agentPath, sessionId))
+        {
+            if (SessionAgentMatch.IsSessionAgent(sessionId, imagePath, sessionId, agentPath))
+                agents.Add(pid);
+            else
+                others.Add((pid, imagePath));
+        }
+        return (agents, others);
+    }
+
     public void EnsureAgentRunning(int sessionId)
     {
         try
         {
-            if (SessionManager.IsProcessRunningInSession("ParentalControl.Agent", sessionId))
-            {
-                return;
-            }
-
             var agentPath = GetAgentExecutablePath();
             if (agentPath == null)
             {
                 _logger.Warning("Agent executable not found; cannot launch in session {SessionId}", sessionId);
                 return;
+            }
+
+            var (agentPids, others) = FindAgent(sessionId, agentPath);
+            if (agentPids.Count > 0)
+            {
+                return;
+            }
+
+            foreach (var (pid, imagePath) in others)
+            {
+                // The agent takes a mutex per user name, so a process with the agent name can stop the real agent.
+                _logger.Warning("Process {Pid} in session {SessionId} has the agent name but is not the agent exe ({ImagePath})",
+                    pid, sessionId, imagePath ?? "path not readable");
             }
 
             var launched = SessionManager.LaunchProcessInSession(sessionId, agentPath);
