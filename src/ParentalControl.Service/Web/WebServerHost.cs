@@ -1132,18 +1132,19 @@ public sealed class WebServerHost : BackgroundService
             }
         });
 
-        // Web Admin Page: the setup text before the setup, else the login form or the dashboard.
+        // Web Admin Page: the single-page app of web/admin (ADR 0009). The service selects its view: the setup text
+        // before the setup, the refused text for a process of a Restricted User, else the login form or the dashboard.
         app.MapGet("/admin", (HttpContext ctx) =>
         {
             if (!_adminAccess.IsSetUp)
-                return Results.Content(AdminPage.RenderSetupNeeded(), "text/html; charset=utf-8");
+                return AdminSpa.Page(ctx, AdminSpa.ViewSetup);
             if (_adminAccess.CheckClient(ctx.Connection) != LocalClientDecision.Allow)
-                return Results.Content(AdminPage.RenderLogin(AdminAccessTexts.LocalClientRefused), "text/html; charset=utf-8",
-                    statusCode: StatusCodes.Status403Forbidden);
+                return AdminSpa.Page(ctx, AdminSpa.ViewRefused);
             if (!_adminAccess.IsSessionValid(ctx))
-                return Results.Content(AdminPage.RenderLogin(), "text/html; charset=utf-8");
-            return Results.Content(AdminPage.RenderDashboard(), "text/html; charset=utf-8");
+                return AdminSpa.Page(ctx, AdminSpa.ViewLogin);
+            return AdminSpa.Page(ctx, AdminSpa.ViewApp);
         });
+        app.MapGet("/admin/assets/{file}", (HttpContext ctx, string file) => AdminSpa.Asset(ctx, file));
 
         // Web Admin Login API. The gate has checked the Origin.
         app.MapPost("/api/admin/login", async (HttpContext ctx) =>
