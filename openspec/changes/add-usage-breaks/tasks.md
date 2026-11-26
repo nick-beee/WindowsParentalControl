@@ -62,7 +62,7 @@ For each VM step: check that the snapshot `test-base` exists before you install 
 
 ## 9. Documentation
 
-- [ ] 9.1 Add to `GLOSSARY.md`: Break Rule, Break, Continuous Use and Rest, with the definitions of the spec. Verify: each term in `specs/usage-breaks/spec.md` that is not in `GLOSSARY.md` or `CONTEXT.md` before has an entry.
+- [x] 9.1 Add to `GLOSSARY.md`: Break Rule, Break, Continuous Use and Rest, with the definitions of the spec. Verify: each term in `specs/usage-breaks/spec.md` that is not in `GLOSSARY.md` or `CONTEXT.md` before has an entry.
 - [ ] 9.2 Update `docs/ROADMAP.md` (stage 2: breaks done, per-category breaks as a follow-up) and the release notes of the version: breaks are on after the update (design D2). Verify: the diff of the two files names both points.
 
 ## 10. Integration check on the VM

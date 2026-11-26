@@ -65,3 +65,15 @@ A new data folder `C:\ProgramData\ParentalControl-<32 random hex digits>` that t
 
 ## Data Folder Lockdown
 The state of the service while no data folder works. The service does not stop: it applies the Enforced Workstation Lock to each active session of a user who is not an administrator, and it tries the data folder step again every minute. It never closes or kills a program.
+
+## Break Rule
+The rule of one Restricted User for the whole session: on or off, N minutes of use (10 to 240) and M minutes of break (5 to 120). A Restricted User without a stored rule has the default rule: on, 45 minutes of use, 10 minutes of break. An Administrator or an unrestricted user has no Break.
+
+## Continuous Use
+The whole minutes of use of a Restricted User since the last Rest or Break. The service counts the same unlocked session minutes that it adds to the Allowance Time. It never uses data from the Session Agent for this count.
+
+## Rest
+A time without use: the session is locked or disconnected, the user is signed out, or the PC sleeps or is off. A Rest of at least M minutes sets Continuous Use to 0.
+
+## Break
+A time of M minutes after N minutes of Continuous Use. The service sends a message with the end time and locks the session with the Enforced Workstation Lock. It locks the session again after each unlock and each sign-in until the end. A Break never closes, kills or suspends a program, and it ends at the latest at the end of the Schedule Window. The parent can end a running Break.
