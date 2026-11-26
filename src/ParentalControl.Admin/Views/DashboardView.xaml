@@ -32,6 +32,12 @@
                 </StackPanel>
             </Border>
 
+            <!-- ═══ The Windows time zone differs from the Control Time Zone (control-clock) ═══ -->
+            <Border Visibility="{Binding HasTimeZoneWarning, Converter={StaticResource BooleanToVisibilityConverter}}"
+                    Background="#FFF4E5" BorderBrush="#E65100" BorderThickness="1" CornerRadius="6" Padding="12,10" Margin="0,0,0,12">
+                <TextBlock Text="{Binding TimeZoneWarningText}" Foreground="#BF360C" TextWrapping="Wrap" />
+            </Border>
+
             <!-- ═══ Standard Users ═══ -->
             <md:ColorZone Mode="PrimaryMid" Padding="8,6" CornerRadius="4" Margin="0,0,0,8">
                 <DockPanel>

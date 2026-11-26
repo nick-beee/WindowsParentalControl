@@ -3,6 +3,7 @@ using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using ParentalControl.Core.Data;
+using ParentalControl.Core;
 using ParentalControl.Core.Models;
 
 namespace ParentalControl.Admin.ViewModels;
@@ -69,7 +70,7 @@ public partial class UserDetailViewModel : ObservableObject
     private ObservableCollection<ScheduleException> _upcomingExceptions = [];
 
     [ObservableProperty]
-    private DateTime _newExceptionDate = DateTime.Today.AddDays(1);
+    private DateTime _newExceptionDate = ControlTime.Current.StartOfToday.AddDays(1); // a day of the Control Time Zone
 
     [ObservableProperty]
     private int _newExceptionMinutes = 120;
@@ -112,7 +113,7 @@ public partial class UserDetailViewModel : ObservableObject
         LoadLimitFields();
         EditableUsageMinutes = User.TodayMinutesUsed;
 
-        var today = DateOnly.FromDateTime(DateTime.Now);
+        var today = ControlTime.Current.Today;
         var usage = UsageRepository.GetUsage(User.Id, today);
         TodayBonusMinutes = usage?.BonusMinutes ?? 0;
     }
@@ -128,7 +129,7 @@ public partial class UserDetailViewModel : ObservableObject
 
     private void GrantBonus(int minutes)
     {
-        var today = DateOnly.FromDateTime(DateTime.Now);
+        var today = ControlTime.Current.Today;
         UsageRepository.AddBonusMinutes(User.Id, today, minutes);
         EventRepository.LogEvent(User.Sid, EventType.LOGIN, $"Admin granted +{minutes}m bonus time");
         RefreshUser();
@@ -223,7 +224,7 @@ public partial class UserDetailViewModel : ObservableObject
     [RelayCommand]
     public void LoadUpcomingExceptions()
     {
-        var today = DateOnly.FromDateTime(DateTime.Now);
+        var today = ControlTime.Current.Today;
         var list = ScheduleExceptionRepository.GetUpcomingForUser(User.Id, today);
         UpcomingExceptions = new ObservableCollection<ScheduleException>(list);
     }
@@ -313,7 +314,7 @@ public partial class UserDetailViewModel : ObservableObject
 
     public void LoadAppUsage()
     {
-        var today = DateOnly.FromDateTime(DateTime.Now);
+        var today = ControlTime.Current.Today;
         var apps = AppUsageRepository.GetForUserAndDate(User.Id, today);
         AppUsageRecords = new ObservableCollection<AppUsageRecord>(apps);
     }
@@ -340,7 +341,7 @@ public partial class UserDetailViewModel : ObservableObject
             return;
         }
 
-        var today = DateOnly.FromDateTime(DateTime.Now);
+        var today = ControlTime.Current.Today;
         UsageRepository.SetUsage(User.Id, today, EditableUsageMinutes);
         User.RefreshUsage();
         EditableUsageMinutes = User.TodayMinutesUsed;

@@ -38,6 +38,13 @@ public partial class DashboardViewModel : ObservableObject
     [ObservableProperty]
     private bool _isSetupLockActive;
 
+    /// <summary>A warning while the Windows time zone differs from the Control Time Zone (control-clock).</summary>
+    [ObservableProperty]
+    private bool _hasTimeZoneWarning;
+
+    [ObservableProperty]
+    private string _timeZoneWarningText = string.Empty;
+
     public DashboardViewModel(Action<UserRow> navigateToDetail)
     {
         _navigateToDetail = navigateToDetail;
@@ -57,9 +64,29 @@ public partial class DashboardViewModel : ObservableObject
             : credentialSetUp
                 ? ParentalControl.Domain.DataFolder.AdminSignInStatus.Describe(credentialSetUp, null, folder, TimeZoneInfo.Local)
                 : "Open Settings and select \"Set up sign-in\" under \"Web admin sign-in\".";
+        RefreshTimeZone();
         RefreshUsers();
         RefreshEvents();
         RefreshSetupLock();
+    }
+
+    private void RefreshTimeZone()
+    {
+        try
+        {
+            var control = ParentalControl.Core.ControlTime.ReadZone(ParentalControl.Core.Platform.DataFolderRegistry.Default);
+            ParentalControl.Core.ControlTime.Use(control);
+            var system = ParentalControl.Core.Platform.SystemTimeZone.CurrentZone();
+            HasTimeZoneWarning = !string.Equals(control.Id, system.Id, StringComparison.OrdinalIgnoreCase);
+            TimeZoneWarningText = HasTimeZoneWarning
+                ? $"🕒 The limits use the Control Time Zone \"{control.DisplayName}\", but Windows now uses \"{system.DisplayName}\". " +
+                  "If the family did not move or travel, a user changed the Windows time zone. Change the Control Time Zone in Settings."
+                : string.Empty;
+        }
+        catch
+        {
+            HasTimeZoneWarning = false;
+        }
     }
 
     private void RefreshSetupLock()
