@@ -68,6 +68,19 @@ A request from the Session Agent is not authenticated, so the system SHALL grant
 - **WHEN** the child signs out with a suspended game, signs in again, and signs out again 5 minutes later with a suspended game
 - **THEN** the system grants the second hold, because the first hold ended with a sign-out
 
+### Requirement: Report an unconfirmed Session End Hold
+When a Session End Hold ends and the session still exists (a cancel or the timeout of the hold), the system SHALL write an event to the event log. It SHALL also send the parent a Telegram alert that the sign-out did not complete, at most one alert per Restricted User per day.
+
+#### Scenario: Sign-out does not complete
+- **WHEN** the system granted a hold and the hold ends by its timeout while the session still exists
+- **THEN** the system writes an event to the event log
+- **AND** the parent gets a Telegram alert, if the child had no such alert today
+
+#### Scenario: Second unconfirmed hold on the same day
+- **WHEN** the parent got an alert for an unconfirmed hold today, and a later hold of the same child also ends without the end of the session
+- **THEN** the system writes an event to the event log
+- **AND** the system does not send a second Telegram alert today
+
 ### Requirement: Resume before a Forced Logoff
 Before the system logs off a session itself (Forced Logoff), it SHALL resume the Suspended Apps of that session and start a Session End Hold for it. The rate limit of agent requests SHALL NOT apply to this hold.
 

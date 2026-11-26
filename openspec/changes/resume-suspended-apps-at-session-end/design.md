@@ -58,13 +58,15 @@ New pure class `SessionEndHolds` in `ParentalControl.Domain/Categories` (no WinA
 - `Request(sessionId, userId, now, trusted)` returns Granted or Refused. A hold lasts `HoldDuration` (default 60 seconds).
 - A request that is not `trusted` (from the agent) is refused if the user has an *unconfirmed* hold in the last `UnconfirmedWindow` (default 15 minutes). A hold is unconfirmed if it ended by a cancel or by its timeout while the session still existed. A hold that ended with the end of the session is confirmed and does not count. So "sign out, sign in, sign out again" works.
 - `Cancel(sessionId, now)` ends the hold as unconfirmed. `SessionEnded(sessionId)` ends it as confirmed. `IsHeld(sessionId, now)` tells the planner.
+- Each end of a hold as unconfirmed (cancel or timeout) returns whether the parent gets a Telegram alert: yes for the first unconfirmed hold of the user on a local date, no for each later one on the same date. The class keeps the date of the last alert per user.
 - The hold state is in memory in `CategoryEnforcer`. No new table and no new column.
 
 `SuspensionPlanner` gets a new input `HeldSessions`. It does not suspend a process in a held session, new or recorded. A recorded process in a held session keeps its record. A resume because time is available again still happens.
 
 The end of a hold:
-- Timeout: the enforcer schedules `RequestTick()` at the end of the hold. If the session still exists, the tick suspends again each process whose exe has no time left. A Telegram alert names the user ("a sign-out did not complete"), at most one per hold.
+- Timeout: the enforcer schedules `RequestTick()` at the end of the hold. If the session still exists, the tick suspends again each process whose exe has no time left.
 - Cancel: `POST /api/agent/session-end-cancelled` ends the hold and calls `RequestTick()` at once.
+- After a timeout or a cancel (an unconfirmed hold), the enforcer writes an event to the `events` table. If `SessionEndHolds` says so, it also sends a Telegram alert that names the user ("a sign-out did not complete"). So the parent gets at most one such alert per Restricted User per day.
 - Session end: `SessionTracker.OnUserLogoff` and `SynchronizeSessions` (a stale session) raise a new event `SessionEnded(sessionId)`. The enforcer ends the hold as confirmed.
 
 **Trade-off.** The session-ending request is unauthenticated. The child can send it with `curl`, or can send a fake `WM_QUERYENDSESSION` to the agent window. A granted fake request gains the child at most `HoldDuration` plus one requested tick (about 70 seconds) per 15 minutes, about 8% of the time. A refused request gains nothing through the service. Through the agent, it gains at most the existing 60 seconds until the tick suspends again. This equals what a tool already gives the child today (the spec accepts it, "Keep a suspended process suspended"). Each request, refusal and unconfirmed hold goes to the log and to the event table, and an unconfirmed hold alerts the parent. The cancel request can only make enforcement stricter, so the service accepts it without a limit. Only the request that makes enforcement looser has a limit.
@@ -107,7 +109,13 @@ On each status poll (5 seconds), for each Suspended App of the list in the agent
 - An old agent with the new service sends no session-end request: the behavior stays as before. A new agent with an old service gets 404 for the new routes: the local resume still works, without a hold.
 - Rollback: install the previous version. Stop the service before, so that it resumes all Suspended Apps.
 
+## Decisions of the parent (review of the proposal)
+
+1. `HoldDuration` = 60 seconds and at most one unconfirmed hold per Restricted User in 15 minutes (`UnconfirmedWindow`): approved. Both are constants.
+2. An unconfirmed hold writes an event to the event log and sends a Telegram alert, at most one alert per Restricted User per day (D4).
+3. When the child signs out, Windows closes the resumed game like every other program. This is acceptable: it is the action of the child, not of a limit.
+4. A repeated resume of a Suspended App with a tool stays out of scope. GitHub issue #24 tracks it.
+
 ## Open Questions
 
-- The default values `HoldDuration` = 60 seconds and `UnconfirmedWindow` = 15 minutes. They are constants; the parent can choose other values without a change of the approach.
-- Whether the parent wants the Telegram alert for an unconfirmed hold (D4), or only the event log.
+- None. The results of the VM checks of group 1 are in the section "VM results" when they exist.
