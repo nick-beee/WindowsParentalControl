@@ -33,7 +33,7 @@ Current state that shapes the approach:
 ### D1. The credential: Authenticator TOTP only
 The Remote Admin Interface uses Authenticator TOTP as its only credential. It is already in the code and in the authenticator app of a parent who turned it on.
 - *Alternative: a password.* Rejected. The child can see the parent type it on the PC, and the parent can use the same password in other places. Over plain HTTP (#7) a password that a device on the LAN reads stays valid. A TOTP code is valid for about 90 seconds and, with D5, for one login only.
-- *Alternative: a password and TOTP.* Rejected for now: a second secret to keep and to recover, for one parent on a home network. The limit in D6 makes a TOTP guess too slow. This is an open question for the user.
+- *Alternative: a password and TOTP.* Rejected: a second secret to keep and to recover, for one parent on a home network. The limit in D6 makes a TOTP guess too slow. The user decided on TOTP only.
 - *Alternative: sign in with the Windows account of the parent (Negotiate/NTLM).* Rejected: it does not work from the parent's phone, and the browser on the child's PC can ask the child for the credentials of another account.
 
 ### D2. Setup only in the WPF Admin app
@@ -48,7 +48,7 @@ The setup happens only in the Admin app. The app runs with administrator rights,
 ### D3. Meaning of `totp_enabled`
 The setting `totp_enabled` now means "the setup is complete". There is no switch any more.
 - The Remote Admin Interface is set up when `totp_enabled` is `"true"` and `totp_secret` is a valid secret: only Base32 characters after the removal of spaces and `=`, and at least 10 bytes (80 bits) after the decode. The check does not use `FromBase32String` alone, because that method skips characters that are not Base32 without an error.
-- A new setup always makes 20 bytes. The limit of 10 bytes is low on purpose: the old Admin app let the parent type any secret, and a stricter limit would lock out a parent with a short old secret. A secret below 10 bytes or with other characters is not valid; the upgrade then treats the install as not set up (see Migration Plan).
+- A new setup always makes 20 bytes. The user approved the limit of 10 bytes. It is low on purpose: the old Admin app let the parent type any secret, and a stricter limit would lock out a parent with a short old secret. A secret below 10 bytes or with other characters is not valid; the upgrade then treats the install as not set up (see Migration Plan).
 - Not set up means: `/admin` shows the setup text, each admin route answers 401, and the login refuses each code.
 - *Alternative: a new key such as `admin_totp_enrolled`.* Rejected: the old key already has the right value on each install where TOTP was on, so the upgrade needs no data migration for that case. A downgrade to the old version also keeps TOTP on.
 
@@ -84,7 +84,7 @@ A pure class `AdminSessionStore` in Domain keeps the sessions in memory. It gets
 - A session has a token (32 random bytes, hex, as today), the issue time and the session epoch at the time of the login.
 - A session is valid when its age is less than 12 hours and its epoch equals the current value of the setting `admin_session_epoch`. The middleware reads this setting at each admin request, as `CheckAuth` reads `totp_enabled` today.
 - The Admin app increments `admin_session_epoch` at a new setup and at "Sign out all web sessions". The service then refuses all older sessions without a restart and without a channel between the two processes.
-- The store keeps at most 20 sessions and removes the oldest one first. It removes expired sessions at each login.
+- The store keeps at most 20 sessions (approved by the user) and removes the oldest one first. It removes expired sessions at each login.
 - A restart of the service clears the store. The tokens are not written to disk.
 - The logout becomes `POST /api/admin/logout`, and the dashboard sends it from a form.
 - The cookie stays HttpOnly and SameSite=Strict with an expiry of 12 hours. It gets no `Secure` flag while the server uses HTTP (#7).
@@ -109,6 +109,13 @@ The service sets the owner and the access rules of the data folder at each start
 Two new methods in `TelegramBotService`. Both use `SendTextMessageAsync` and put the message into the Offline Notification Queue when the PC is offline, as `SendAdminSignInAlertAsync` does.
 - `SendAdminLoginBlockedAlertAsync(source, blockedUntil)`: when a source or all sources reach the limit (D6).
 - `SendAdminSetupNeededNoticeAsync()`: one time, at a start when the Remote Admin Interface is not set up and Telegram is configured. The new setting `admin_setup_notice_sent` stops a second message.
+- The two messages are in German, because the parent speaks German. They do not follow the language preset (`id` or `en`); issue #11 changes the default language of the child texts separately.
+- There is no Telegram command that clears the login limit. The parent clears it in the Admin app (D11).
+
+### D10a. Language of the new texts
+- The texts that the web server shows to the parent are new German texts: the setup text on `/admin`, the login errors ("Ungültiger Code."), and the block message with its end time. They are fixed texts in `AdminPage`, not language preset messages.
+- The setup text is: "Die Web-Verwaltung ist gesperrt. Richte die Anmeldung in Parental Control Admin auf diesem PC ein."
+- The new texts of the WPF Admin app (D11) stay in English, as all other texts of that app.
 
 ### D11. Admin app: the sign-in section
 The TOTP card in `SettingsView.xaml` becomes "Web admin sign-in":
@@ -129,7 +136,7 @@ ADR 0001 point 3 made TOTP optional. ADR 0009 records that the Remote Admin Inte
 - [A script of the child guesses TOTP codes] → Each guess has a chance of 3 in 1,000,000, because the server accepts three time steps. With 10 guesses a day from this PC, that is 3,650 guesses a year, a chance of about 1.1 % a year. The parent gets a Telegram message each day that the child reaches the limit. For comparison, 5 guesses a minute would give 7,200 guesses a day and about 2 % a day.
 - [The child has a second source, for example a tablet on the LAN or a VM] → Each source adds 10 guesses a day, but the global limit stops at 30 a day (about 3.2 % a year). Then the child can also block the parent's login from the phone for 24 hours. The parent clears the limit in the Admin app, and the Telegram bot still approves Grace Requests without the web.
 - [The child blocks the source `local`] → The parent cannot sign in from the browser of this PC for up to 24 hours. The parent uses the phone or clears the limit in the Admin app.
-- [Stored XSS (#5) runs a script in the signed-in page of the parent] → This change does not fix it. The fix of #5 must merge before or with this change. A Content Security Policy is an open question.
+- [Stored XSS (#5) runs a script in the signed-in page of the parent] → PR #23 fixed it on `main`, separately from this change. A Content Security Policy is out of scope and tracked as issue #25.
 - [A device on the LAN reads the cookie over HTTP (#7)] → The session is valid for 12 hours at most. "Sign out all web sessions" ends it. #7 handles the transport.
 - [The child sees the parent type a code] → The code works one time only (D5).
 - [The child changes the clock to make old codes valid] → A standard account has no right to change the system time. Clock Tampering Detection also sends an alert.
@@ -150,7 +157,14 @@ ADR 0001 point 3 made TOTP optional. ADR 0009 records that the Remote Admin Inte
 3. `DatabaseManager.Initialize` creates the table `admin_login_failures` and sets the access rules of the data folder (D9).
 4. Rollback: install the earlier version. It ignores the new table and the new settings. If the setup is complete, `totp_enabled` is `"true"` and the old version keeps TOTP on. If not, the old version is open again, as before this change.
 
-## Open Questions
+## Decisions of the user
 
-- The text of the setup page, of the login messages and of the two Telegram messages. It follows the language preset; the default language changes in #11.
-- The limit of 20 Admin Sessions in memory. Any small number works.
+The user answered the open questions of the proposal:
+1. TOTP only, no password (D1).
+2. The limits as proposed: 10 failed codes per source and 30 from all sources in 24 hours, an Admin Session of 12 hours, at most 20 sessions (D6, D7).
+3. #5 is fixed separately in PR #23, merged before this change.
+4. A Content Security Policy is out of scope (issue #25).
+5. The one-time Telegram notice on upgrade: yes. A Telegram command to clear the login limit: no (D10).
+6. The term "Admin Session" goes into `GLOSSARY.md`.
+7. A minimum of 10 bytes for an existing secret (D3).
+8. The new texts of the web page and of Telegram are in German (D10, D10a).

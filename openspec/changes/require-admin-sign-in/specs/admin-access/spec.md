@@ -46,7 +46,7 @@ The system SHALL let the parent set up the Authenticator TOTP secret only in the
 - **THEN** the app shows that the sign-in is set up, but not the secret or the QR code
 
 ### Requirement: Remote Admin Interface before the setup
-The Remote Admin Interface SHALL be set up only when TOTP is on and a valid secret is saved. A valid secret has only Base32 characters (spaces and `=` ignored) and decodes to at least 10 bytes. Before that, the system SHALL show on `/admin` only a text that tells the parent to set up the sign-in in the Admin app on this PC, with no form. The login SHALL refuse each code.
+The Remote Admin Interface SHALL be set up only when TOTP is on and a valid secret is saved. A valid secret has only Base32 characters (spaces and `=` ignored) and decodes to at least 10 bytes. Before that, the system SHALL show on `/admin` only a German text that tells the parent to set up the sign-in in the Admin app on this PC, with no form. The login SHALL refuse each code.
 
 #### Scenario: Admin page on a fresh install
 - **WHEN** someone opens `/admin` before the setup
@@ -103,7 +103,7 @@ The system SHALL allow at most 10 failed logins from one source and at most 30 f
 - **THEN** the system refuses each code from each source until the oldest of these failures is 24 hours old
 
 ### Requirement: Alert on blocked logins
-The system SHALL send a Telegram message to the configured chat when a source or all sources reach the limit on failed logins. The message SHALL name the source address and the time. Without a Telegram configuration, the system SHALL write the event to the log only.
+The system SHALL send a Telegram message to the configured chat when a source or all sources reach the limit on failed logins. The message SHALL be in German and SHALL name the source address and the time when the block ends. Without a Telegram configuration, the system SHALL write the event to the log only. No Telegram command SHALL clear the limit.
 
 #### Scenario: Limit reached
 - **WHEN** this PC reaches the limit on failed logins and Telegram is configured
@@ -185,7 +185,7 @@ The data folder (`C:\ProgramData\ParentalControl`) and its files SHALL be owned 
 - **THEN** the service logs an error and each admin route refuses requests
 
 ### Requirement: Upgrade of an install without the setup
-At the first start after the upgrade, an install with TOTP on and a valid secret SHALL keep its sign-in. Each other install SHALL get a Remote Admin Interface that is not set up. If Telegram is configured, the system SHALL send one message that tells the parent to do the setup.
+At the first start after the upgrade, an install with TOTP on and a valid secret SHALL keep its sign-in. Each other install SHALL get a Remote Admin Interface that is not set up. If Telegram is configured, the system SHALL send one German message that tells the parent to do the setup. A further start SHALL not send it again.
 
 #### Scenario: TOTP was on
 - **WHEN** an install with TOTP on and a valid secret gets the upgrade
@@ -199,6 +199,10 @@ At the first start after the upgrade, an install with TOTP on and a valid secret
 #### Scenario: Short or invalid secret while TOTP was on
 - **WHEN** an install with TOTP on has a saved secret that is not valid
 - **THEN** the Remote Admin Interface is not set up and the parent gets the Telegram message about the setup, if Telegram is configured
+
+#### Scenario: Second start after the upgrade
+- **WHEN** the service starts again and the Remote Admin Interface is still not set up
+- **THEN** the parent gets no second Telegram message about the setup
 
 #### Scenario: Old secret while TOTP was off
 - **WHEN** an install with TOTP off has an old saved secret

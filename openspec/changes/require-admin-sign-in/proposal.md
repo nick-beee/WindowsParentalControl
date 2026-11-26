@@ -8,9 +8,10 @@ The Remote Admin Interface has no sign-in while Authenticator TOTP is off, and T
 
 - **BREAKING:** The Remote Admin Interface always requires a signed-in admin. The "Enable Authenticator 2FA" switch goes away. No `/api/admin/*` route works without an Admin Session, also on a fresh install.
 - The admin credential is Authenticator TOTP. The parent sets it up only in the WPF Admin app (Parental Control Admin), which runs as an administrator. The parent confirms one code from the phone before the app saves the secret. The web server has no first-run setup page.
-- Before the setup, the `/admin` page shows only a short text: "Set up the sign-in in Parental Control Admin on this PC." Every admin route refuses. The child-facing routes work as before.
+- Before the setup, the `/admin` page shows only a short text in German: "Richte die Anmeldung in Parental Control Admin auf diesem PC ein." ("Set up the sign-in in Parental Control Admin on this PC.") Every admin route refuses. The child-facing routes work as before.
 - The login refuses every code while no credential is set up. Today it accepts any code when the secret is empty.
 - The login accepts each TOTP code one time only.
+- New texts that the parent reads on the web page and in Telegram are in German, because the parent and the child speak German. The texts of the Admin app stay in English, as the rest of that app.
 - Failed logins have a limit: at most 10 failed codes in 24 hours from one source, where all addresses of this PC count as one source. At most 30 failed codes in 24 hours from all sources together. The counters survive a restart of the service and of the PC. The service sends a Telegram alert when a source reaches the limit.
 - An Admin Session has a server-side expiry of 12 hours. A restart of the service ends all Admin Sessions. A new secret or the button "Sign out all web sessions" in the WPF Admin app ends all Admin Sessions at once.
 - A state-changing admin request from a page of another origin is refused (an `Origin` check). The logout becomes a POST.
@@ -22,8 +23,9 @@ The Remote Admin Interface has no sign-in while Authenticator TOTP is off, and T
 
 - The web server still listens on all IP addresses over plain HTTP (#7). So the session cookie has no `Secure` flag, and a device on the LAN can see a TOTP code or a cookie. A TOTP code is useless after about 90 seconds and after its first use.
 - Authentication of the Session Agent routes (`/api/agent/*`, #6). They stay open in this change.
-- The stored XSS in the Grace Request table (#5). It is a separate fix, but this change depends on it: a script in the child's text runs in the signed-in page of the parent. The fix of #5 must merge before or with this change.
-- A Content Security Policy for the admin page.
+- The stored XSS in the Grace Request table (#5). PR #23 fixed it on `main`, separately from this change.
+- A Content Security Policy for the admin page (issue #25).
+- A Telegram command that clears the login limit. The parent clears it in the Admin app only.
 - `update/apply` with a URL from the request (#8). It stays an admin-only route.
 - The Telegram bot. It already checks the configured chat ID.
 - A password, more than one admin account, and a sign-in from the Windows account of the parent.
