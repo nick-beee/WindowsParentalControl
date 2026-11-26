@@ -66,6 +66,7 @@ New pure class `ControlClock` in `src/ParentalControl.Domain/Time`. It takes a `
 `ActiveSession` keeps `LastTickUtc` and `LastTickMono` (`Environment.TickCount64`) instead of the local `LastTick`. The elapsed minutes come from the monotonic difference. The check "Clock went backwards" compares UTC times only. The routes that show the elapsed seconds of the current minute use UTC too.
 - So the end of daylight saving time adds no hour and does not lock the child, and the start of daylight saving time is not a gap of 60 minutes.
 - `GetTickCount64` includes the time of sleep and hibernation. The existing rule "a gap of more than 2 minutes adds 1 minute" stays for that case.
+- A step back of the UTC clock of up to 60 seconds (the threshold of the clock watchdog) is a clock correction, not "Clock went backwards". The elapsed minutes come from the monotonic clock, so such a step gives no time.
 - The elapsed seconds of the current minute in the agent status and the remaining time, and the sleep length in `OnWake`, also come from UTC and the monotonic clock.
 
 ### D4. No change of `SeTimeZonePrivilege`
