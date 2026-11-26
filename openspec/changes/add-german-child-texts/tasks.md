@@ -40,8 +40,8 @@
 
 ## 6. WPF Admin
 
-- [ ] 6.1 Add the button "🇩🇪 Deutsch Preset" and the command `ApplyPresetDe` to `SettingsView.xaml` and `SettingsViewModel`. The status line of each preset button shows the kept keys. `LoadSettings` uses `GetLanguagePreset()`. Verify that `dotnet build -p:EnableWindowsTargeting=true` succeeds.
-- [ ] 6.2 Remove `MainViewModel.CheckFirstLaunchLanguagePreset` and its call. Verify that `dotnet build -p:EnableWindowsTargeting=true` succeeds and that `grep -rn CheckFirstLaunchLanguagePreset src` gives no result.
+- [x] 6.1 Add the button "🇩🇪 Deutsch Preset" and the command `ApplyPresetDe` to `SettingsView.xaml` and `SettingsViewModel`. The status line of each preset button shows the kept keys. `LoadSettings` uses `GetLanguagePreset()`. Verify that `dotnet build -p:EnableWindowsTargeting=true` succeeds.
+- [x] 6.2 Remove `MainViewModel.CheckFirstLaunchLanguagePreset` and its call. Verify that `dotnet build -p:EnableWindowsTargeting=true` succeeds and that `grep -rn CheckFirstLaunchLanguagePreset src` gives no result.
 
 ## 7. Checks on the test VM (Windows only)
 

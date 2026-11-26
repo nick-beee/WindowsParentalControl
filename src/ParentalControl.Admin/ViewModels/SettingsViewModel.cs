@@ -163,19 +163,22 @@ public partial class SettingsViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void ApplyPresetId()
-    {
-        SettingsRepository.ApplyLanguagePreset("id");
-        LoadSettings();
-        TestStatus = "Applied Indonesian message preset.";
-    }
+    private void ApplyPresetDe() => ApplyPreset("de", "German");
 
     [RelayCommand]
-    private void ApplyPresetEn()
+    private void ApplyPresetId() => ApplyPreset("id", "Indonesian");
+
+    [RelayCommand]
+    private void ApplyPresetEn() => ApplyPreset("en", "English");
+
+    /// <summary>Applies a Language Preset. The texts that the parent edited stay; the status line names them.</summary>
+    private void ApplyPreset(string preset, string name)
     {
-        SettingsRepository.ApplyLanguagePreset("en");
+        var kept = SettingsRepository.ApplyLanguagePreset(preset);
         LoadSettings();
-        TestStatus = "Applied English message preset.";
+        TestStatus = kept.Count == 0
+            ? $"Applied {name} preset."
+            : $"Applied {name} preset. {kept.Count} edited text(s) kept: {string.Join(", ", kept)}.";
     }
 
     [RelayCommand]
