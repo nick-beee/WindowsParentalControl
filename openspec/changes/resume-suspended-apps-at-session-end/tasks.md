@@ -5,8 +5,11 @@ All VM checks run on test VM 102 as `Kid` in the Proxmox console (noVNC or SPICE
 ## 1. VM spike: Windows behaviour that the design assumes
 
 - [ ] 1.1 Build a small test program for the VM (outside the product, in `scripts/vm/`): it calls `SetProcessShutdownParameters(0x3FF, SHUTDOWN_NORETRY)`, logs each `WM_QUERYENDSESSION` with time and `lParam`, and resumes a given suspended pid in the handler. Verify on the VM: with a suspended test game, a sign-out logs the query of the test program before the game is queried, and Windows does not show "This app is preventing you from signing out". Also run it without `SetProcessShutdownParameters` and record whether the blocking screen closes without a click after the late resume. Record both results in the PR.
+  - Result 2026-11-26 (design.md, R1 and R2): the order holds and no game blocked the sign-out. Windows ends each program right after its query, so the agent gets no `WM_ENDSESSION(FALSE)` after a cancel. Not run: a completed sign-out and the fallback without the shutdown level (needs a `Kid` logon).
 - [ ] 1.2 With the same program, call `ShowWindowAsync(hwnd, SW_FORCEMINIMIZE)` on the windows of a suspended process: a normal window, a borderless full-screen window, and a window that Windows shows as "Not Responding". Verify on the VM: each window minimizes and the desktop is usable. If one does not minimize, stop and run `/opsx:update` for the two-phase suspension of design D7 before group 4.
-- [ ] 1.3 Log the time of `SERVICE_CONTROL_PRESHUTDOWN` in a test service build and the time of the `WM_QUERYENDSESSION` from 1.1 during a shutdown. Verify on the VM: the query comes first, as design D1 assumes. Record the result in the PR.
+  - Result 2026-11-26 (design.md, R3): failed. No window minimized. A short resume with `SW_MINIMIZE` worked. The parent must choose an option before group 2.
+- [x] 1.3 Log the time of `SERVICE_CONTROL_PRESHUTDOWN` in a test service build and the time of the `WM_QUERYENDSESSION` from 1.1 during a shutdown. Verify on the VM: the query comes first, as design D1 assumes. Record the result in the PR.
+  - Result 2026-11-26 (design.md, R4): passed. The query came 35 s before `PRESHUTDOWN`.
 
 ## 2. Session End Hold (pure logic)
 

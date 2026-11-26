@@ -118,4 +118,98 @@ On each status poll (5 seconds), for each Suspended App of the list in the agent
 
 ## Open Questions
 
-- None. The results of the VM checks of group 1 are in the section "VM results" when they exist.
+- D7 failed on the VM, and the cancel path of D1 does not work as designed. Both need a decision of the parent before group 2 starts. See "VM results of group 1" for the options.
+
+## VM results of group 1 (2026-11-26)
+
+Test VM 102, Windows 10 22H2 (19045), Fast Startup on. The test program is `scripts/vm/tools/EndSessionSpike`. It runs as `Kid` in the console session. The product service was stopped during the tests. The games are WinForms windows: `SpikeGame` (normal window), `SpikeFull` (borderless full-screen window) and `TestGame`. Each one was suspended with `NtSuspendProcess` as `Kid`. All times are UTC.
+
+### R1. Order of the end-session query (task 1.1): passed
+
+The agent ran with `SetProcessShutdownParameters(0x3FF, SHUTDOWN_NORETRY)` and a hidden `WS_POPUP` window. Three games were suspended, `Other.exe` and Edge ran, and Notepad had unsaved text. `Kid` signed out with `shutdown /l`.
+
+```
+14:19:05.418 agent WM_QUERYENDSESSION wParam=0x0 lParam=0x80000000
+14:19:05.420 NtResumeProcess status=0x0   (SpikeFull, SpikeGame, TestGame, done at .423)
+14:19:05.423 agent WM_QUERYENDSESSION return TRUE
+14:19:05.448 agent WM_ENDSESSION wParam=0x1 lParam=0x80000000
+14:19:05.470 game (SpikeFull) WM_QUERYENDSESSION ... return 0x1
+14:19:05.472 game (SpikeGame) WM_QUERYENDSESSION ... return 0x1
+14:19:05.567 game (SpikeGame) WM_ENDSESSION wParam=0x1, exit
+14:19:05.584 game (SpikeFull) WM_ENDSESSION wParam=0x1, exit
+```
+
+- The hidden window gets the query. The agent gets it about 50 ms before the games.
+- The local resume takes 5 ms for three processes.
+- Windows then showed "Closing 1 app and signing out" with Notepad only. No game was in the list.
+- Not run: a sign-out that completes (without Notepad), and the run without `SetProcessShutdownParameters` or with a late resume. Both need a new `Kid` logon (see "Not run").
+
+### R2. Windows ends each program before it queries the next one: the cancel path of D1 fails
+
+Windows sends `WM_ENDSESSION(TRUE)` to a program right after that program answers the query (see 14:19:05.448 above). It does not wait until all programs answered. So when Notepad blocks the sign-out, Windows already ended every program that it queried before Notepad.
+
+- After the sign-out was cancelled, the session had Notepad and the shell programs only. The three games, `Other.exe`, Edge, OneDrive and the agent itself were closed.
+- The agent got no `WM_ENDSESSION(FALSE)`. The cancel request of D4 is thus never sent.
+- Nobody clicked on the screen of Notepad. After about 60 s, Windows cancelled the sign-out and locked the session (`SESSIONCHANGE` lock at 14:20:10.598).
+- This is the normal sign-out order of Windows and is not caused by the suspension. With this change, the resumed games close like the other programs. This agrees with decision 3 of the parent.
+
+### R3. SW_FORCEMINIMIZE on a suspended window (task 1.2): failed
+
+`ShowWindowAsync(hwnd, SW_FORCEMINIMIZE)` returned TRUE for each window, but no window was minimized:
+
+| Window | After 1.5 s | Screen |
+|---|---|---|
+| `SpikeFull`, full screen, foreground | `iconic=False` | not changed |
+| `SpikeGame`, normal | `iconic=False` | not changed |
+| `TestGame`, normal | `iconic=False` | not changed |
+
+- `IsHungAppWindow` stayed FALSE for a suspended window, also after 5 minutes, a mouse click, a key and a posted `WM_NULL`. Windows showed no "Not Responding" ghost window. So the case "a window that Windows shows as Not Responding" does not occur. A second `SW_FORCEMINIMIZE` after a posted `WM_NULL` and 6 s also failed.
+- Windows queues the request. The window minimized as soon as the process ran again.
+- After Alt+Tab, Windows marked the two minimized normal windows as hung. Alt+Tab did not restore a minimized suspended window, and the desktop stayed usable.
+
+Alternative that worked (`minimize-resume` mode of the test program): resume the process, call `ShowWindowAsync(hwnd, SW_MINIMIZE)`, wait until `IsIconic`, wait a settle time, and suspend again.
+
+| Window | Iconic after | Run time | Result |
+|---|---|---|---|
+| `SpikeFull`, full screen | 28 ms | 341 ms (settle 300 ms) | minimized, desktop usable |
+| `SpikeGame`, normal | 4 ms | 310 ms (settle 300 ms) | minimized |
+| `TestGame`, normal | 5 ms | 315 ms (settle 300 ms) | minimized |
+| `SpikeFull`, full screen | 4 ms | 4 ms (no settle) | `iconic=True`, but the screen kept the frozen image until the next resume |
+
+After each run, all threads were suspended again (12/12, 13/13, 8/8).
+
+### R4. Service controls during a restart and a shutdown (task 1.3): passed
+
+Test service `EndSessionSpike` (LocalSystem, accepts PRESHUTDOWN, SHUTDOWN and session changes) and the agent in the locked `Kid` session.
+
+```
+Restart (shutdown /r /t 0 from SSH):
+14:21:18.665 agent WM_QUERYENDSESSION wParam=0x0 lParam=0x40000000
+14:21:18.666 agent WM_ENDSESSION wParam=0x1 lParam=0x40000000
+14:21:24.310 service SESSIONCHANGE event=6 (logoff) session=1
+14:21:53.822 service PRESHUTDOWN
+Shutdown with Fast Startup (shutdown /s /hybrid /t 0, no user session):
+14:23:14.007 service PRESHUTDOWN
+```
+
+- The query comes 35 s before `PRESHUTDOWN`. D1 is correct: the service control is too late.
+- For this restart, `lParam` was `ENDSESSION_CRITICAL` (0x40000000), not 0. The handler must treat each query without `ENDSESSION_CLOSEAPP` as an end of the session.
+- A Fast Startup shutdown also sent `PRESHUTDOWN`, and the service process started again at the next boot.
+
+### Not run
+
+These checks need a new `Kid` logon in the console. The `Kid` session ended with the restart of R4, and the `Kid` password is not available to the agent that ran the tests.
+
+- A sign-out with a suspended game that completes (task 1.1, the main case).
+- A sign-out without `SetProcessShutdownParameters`, and with a resume 8 s after the query (task 1.1, the fallback of D2).
+
+### Options for the parent
+
+D7 (minimize):
+1. **Two-phase suspension** (the fallback of D7). The service marks a process as pending, the agent minimizes it while it runs, and the service suspends it 10 s later. The bound "suspend within 60 seconds" becomes 70 seconds. Spec change.
+2. **Short resume in the agent** (R3). The agent resumes a Suspended App for about 0.3 s, minimizes it, and suspends it again. The 60-second bound stays. The spec must permit that the agent runs a Suspended App for at most 1 s to minimize it. The agent must not resume a process that the service did not suspend.
+3. **No minimization.** Remove the requirement "Minimize the windows of a Suspended App". The frozen window stays on the screen, as today. Alt+Tab, Start and the other windows work.
+
+Cancel path (R2):
+- Remove `POST /api/agent/session-end-cancelled` and the agent report of a cancel. A cancelled sign-out ends the hold by its timeout. The tick at the end of the hold then suspends again each process that still exists. Change the scenario "Sign-out cancelled by the child": Windows closes the resumed game before the cancel, and a process that is still there is suspended again within 10 s after the end of the hold.
+- A cancelled sign-out then always gives an unconfirmed hold and the daily alert. This is correct: the sign-out did not complete.
