@@ -8,6 +8,7 @@ using ParentalControl.Core.Security;
 using ParentalControl.Core.Services;
 using ParentalControl.Core;
 using ParentalControl.Domain.AdminAccess;
+using ParentalControl.Domain.DataFolder;
 
 namespace ParentalControl.Admin.ViewModels;
 
@@ -33,6 +34,13 @@ public partial class SettingsViewModel : ObservableObject
 
     [ObservableProperty]
     private string _signInStatusText = string.Empty;
+
+    /// <summary>The warning about a data folder that the service moved away, or empty (finding B2).</summary>
+    [ObservableProperty]
+    private string _dataFolderWarningText = string.Empty;
+
+    [ObservableProperty]
+    private bool _hasDataFolderWarning;
 
     [ObservableProperty]
     private string _setupButtonText = "Set up sign-in";
@@ -202,10 +210,15 @@ public partial class SettingsViewModel : ObservableObject
     private void RefreshSignInState()
     {
         IsSignInSetUp = AdminAccessRepository.IsCredentialSetUp();
-        var setupAt = AdminAccessRepository.GetSetupTime();
-        SignInStatusText = IsSignInSetUp
-            ? (setupAt is { } at ? $"Set up on {at.ToLocalTime():yyyy-MM-dd HH:mm}" : "Set up")
-            : "Not set up. The web admin is locked until you set up the sign-in.";
+        // The state of the data folder step comes from the service (registry), so the text shows the real state of
+        // the web admin and not only the saved setup (finding S3).
+        var folder = Core.Platform.DataFolderStatusStore.Read();
+        SignInStatusText = AdminSignInStatus.Describe(IsSignInSetUp, AdminAccessRepository.GetSetupTime(), folder, TimeZoneInfo.Local);
+        var warning = folder.QuarantinedTo is { } moved && Directory.Exists(moved)
+            ? AdminSignInStatus.QuarantineWarning(folder, TimeZoneInfo.Local)
+            : null;
+        DataFolderWarningText = warning ?? string.Empty;
+        HasDataFolderWarning = warning is not null;
         SetupButtonText = IsSignInSetUp ? "Set up a new secret" : "Set up sign-in";
     }
 

@@ -13,9 +13,9 @@
             <Border Visibility="{Binding IsWebAdminLocked, Converter={StaticResource BooleanToVisibilityConverter}}"
                     Background="#FEF3C7" BorderBrush="#F59E0B" BorderThickness="1" CornerRadius="6" Padding="12,10" Margin="0,0,0,12">
                 <StackPanel>
-                    <TextBlock Text="🔒 The web admin is locked until you set up the sign-in."
+                    <TextBlock Text="🔒 The web admin is locked."
                                FontWeight="SemiBold" Foreground="#78350F" TextWrapping="Wrap" />
-                    <TextBlock Text="Open Settings and select &quot;Set up sign-in&quot; under &quot;Web admin sign-in&quot;."
+                    <TextBlock Text="{Binding WebAdminLockedHint}"
                                Foreground="#78350F" TextWrapping="Wrap" Margin="0,4,0,0" />
                 </StackPanel>
             </Border>

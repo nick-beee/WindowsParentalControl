@@ -15,11 +15,7 @@ public static class AdminAccessStartup
     /// </summary>
     public static async Task RunAsync(TelegramBotService telegram, Serilog.ILogger logger)
     {
-        if (!DatabaseManager.DataFolderSecured)
-        {
-            logger.Error(DatabaseManager.DataFolderSecurityError,
-                "The service could not set the owner and the access rules of the data folder. The Remote Admin Interface stays locked.");
-        }
+        await AlertQuarantineAsync(telegram, logger);
 
         var plan = AdminSetup.PlanStart(
             SettingsRepository.Get(SettingsRepository.KeyTotpEnabled, "false"),
@@ -51,6 +47,29 @@ public static class AdminAccessStartup
         catch (Exception ex)
         {
             logger.Error(ex, "Could not send the Telegram notice about the setup of the admin sign-in.");
+        }
+    }
+
+    /// <summary>
+    /// Tells the parent one time on Telegram that the service moved an untrusted data folder away (finding B2).
+    /// Right after the move the database is new and has no Telegram configuration; the message then goes out at the
+    /// first start after the parent configures Telegram again. The event log and the Admin app show the move at once.
+    /// </summary>
+    private static async Task AlertQuarantineAsync(TelegramBotService telegram, Serilog.ILogger logger)
+    {
+        var report = Core.Platform.DataFolderStatusStore.Read();
+        if (string.IsNullOrEmpty(report.QuarantinedTo)
+            || SettingsRepository.Get(SettingsRepository.KeyDataFolderQuarantineNotified) == report.QuarantinedTo)
+            return;
+        try
+        {
+            var when = (report.QuarantinedAtUtc ?? DateTimeOffset.UtcNow).ToLocalTime().DateTime;
+            if (await telegram.SendDataFolderQuarantinedAlertAsync(report.QuarantinedTo, when))
+                SettingsRepository.Set(SettingsRepository.KeyDataFolderQuarantineNotified, report.QuarantinedTo);
+        }
+        catch (Exception ex)
+        {
+            logger.Error(ex, "Could not send the Telegram alert about the moved data folder.");
         }
     }
 }

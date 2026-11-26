@@ -1,5 +1,3 @@
-using System.Security.AccessControl;
-using System.Security.Principal;
 using Microsoft.Data.Sqlite;
 
 namespace ParentalControl.Core.Data;
@@ -17,6 +15,9 @@ public static class DatabaseManager
 
     public static string ConnectionString => $"Data Source={DatabasePath}";
 
+    /// <summary>The folder of the log files. It is in the data folder, so it has the same owner and rules.</summary>
+    public static string LogsDirectory => Path.Combine(DataDirectory, "logs");
+
     /// <summary>
     /// True when the owner and the access rules of the data folder are known to be safe: the service set them
     /// at this start, or the tests use their own folder (<c>PARENTAL_CONTROL_DATA_DIR</c>). While it is false,
@@ -24,68 +25,35 @@ public static class DatabaseManager
     /// </summary>
     public static bool DataFolderSecured { get; private set; }
 
-    /// <summary>The error of the last try to secure the data folder, or null.</summary>
-    public static Exception? DataFolderSecurityError { get; private set; }
+    /// <summary>The result of the data folder step of the service at this start, or null.</summary>
+    public static Platform.DataFolderResult? DataFolderResult { get; private set; }
 
     private static bool UsesCustomDataDirectory => !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("PARENTAL_CONTROL_DATA_DIR"));
 
     /// <param name="enforceDataFolderSecurity">
-    /// True only in the service (LocalSystem): it makes the Administrators group the owner of the data folder and
-    /// replaces all access rules of the folder and its files. The Admin app passes false and only protects a new folder.
+    /// True only in the service (LocalSystem): it removes links, moves an untrusted data folder away, makes the
+    /// Administrators group the owner of the data folder and replaces all access rules of the folder and its files.
+    /// The Admin app passes false: it only checks the folder and creates a missing one with the final rules.
     /// </param>
+    /// <exception cref="Platform.DataFolderUnsafeException">
+    /// The data folder is not safe. The method then does not open the database (fail closed).
+    /// </exception>
     public static void Initialize(bool enforceDataFolderSecurity = false)
     {
-        var dirInfo = new DirectoryInfo(DataDirectory);
         if (UsesCustomDataDirectory)
         {
+            Directory.CreateDirectory(DataDirectory);
             DataFolderSecured = true;
-            DataFolderSecurityError = null;
         }
         else if (enforceDataFolderSecurity)
         {
-            if (!dirInfo.Exists)
-                Directory.CreateDirectory(DataDirectory);
-            try
-            {
-                Platform.DataFolderSecurity.Apply(DataDirectory);
-                DataFolderSecured = true;
-                DataFolderSecurityError = null;
-            }
-            catch (Exception ex)
-            {
-                DataFolderSecured = false;
-                DataFolderSecurityError = ex;
-            }
+            DataFolderSecured = false;
+            DataFolderResult = Platform.DataFolderGuard.Secure(DataDirectory);
+            DataFolderSecured = true;
         }
-
-        if (!Directory.Exists(DataDirectory))
+        else
         {
-            Directory.CreateDirectory(DataDirectory);
-            if (!UsesCustomDataDirectory)
-            {
-                try
-                {
-                    var security = dirInfo.GetAccessControl();
-                    security.SetAccessRuleProtection(true, false);
-                    security.AddAccessRule(new FileSystemAccessRule(
-                        new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
-                        FileSystemRights.FullControl,
-                        InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                        PropagationFlags.None,
-                        AccessControlType.Allow));
-                    security.AddAccessRule(new FileSystemAccessRule(
-                        new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
-                        FileSystemRights.FullControl,
-                        InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                        PropagationFlags.None,
-                        AccessControlType.Allow));
-                    dirInfo.SetAccessControl(security);
-                }
-                catch
-                {
-                    // Best-effort ACL for environments without elevation
-                }
-            }
+            Platform.DataFolderGuard.EnsureSafeToOpen(DataDirectory, DatabaseFileName);
         }
 
         if (!Directory.Exists(CapturesDirectory))

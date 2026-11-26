@@ -41,3 +41,10 @@ public sealed class AdminSetupNeededPayload
 {
     public string MachineName { get; set; } = string.Empty;
 }
+
+public sealed class DataFolderQuarantinedPayload
+{
+    public string MachineName { get; set; } = string.Empty;
+    public string MovedTo { get; set; } = string.Empty;
+    public DateTime WhenLocal { get; set; }
+}

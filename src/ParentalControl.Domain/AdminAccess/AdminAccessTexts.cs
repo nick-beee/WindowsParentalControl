@@ -15,6 +15,7 @@ public static class AdminAccessTexts
     public const string SetupText = "Die Web-Verwaltung ist gesperrt. Richte die Anmeldung in Parental Control Admin auf diesem PC ein.";
     public const string SetupHint = "Öffne Parental Control Admin, gehe zu Settings und wähle \"Set up sign-in\". Scanne den QR-Code mit deiner Authenticator-App und gib den angezeigten Code ein.";
     public const string InvalidCode = "Ungültiger Code. Bitte versuche es noch einmal.";
+    public const string LocalClientRefused = "Die Anmeldung aus diesem Windows-Konto ist nicht möglich. Melde dich mit deinem eigenen Windows-Konto auf diesem PC an, oder nutze ein Handy oder einen Laptop im Heimnetz.";
 
     public static string FormatTime(DateTime localTime) => localTime.ToString("dd.MM.yyyy, HH:mm", German) + " Uhr";
 
@@ -48,4 +49,11 @@ public static class AdminAccessTexts
         + "So richtest du sie ein: Öffne Parental Control Admin auf diesem PC, gehe zu Settings und wähle \"Set up sign-in\". Scanne den QR-Code mit deiner Authenticator-App und gib den angezeigten Code ein.\n\n"
         + "Anfragen für mehr Zeit kannst du weiter hier in Telegram beantworten.\n"
         + "Falls dein altes Geheimnis für andere sichtbar war (zum Beispiel auf einem Foto), richte ein neues ein.";
+
+    /// <summary>The Telegram alert after the service moved an untrusted data folder away (finding B2).</summary>
+    public static string TelegramDataFolderQuarantined(string machineName, string movedTo, DateTime whenLocal) =>
+        "⚠️ *Datenordner ersetzt*\n\n"
+        + $"Parental Control auf {machineName} hat am {whenLocal:dd.MM.yyyy} um {whenLocal:HH:mm} Uhr einen Datenordner gefunden, dem es nicht vertraut: ein anderes Konto konnte ihn ändern. "
+        + $"Der Dienst hat ihn nach {movedTo} verschoben und mit einer neuen Datenbank begonnen.\n\n"
+        + "Prüfe in Parental Control Admin die Limits, die Regeln und die Anmeldung. Lösche den verschobenen Ordner, wenn du ihn nicht mehr brauchst.";
 }

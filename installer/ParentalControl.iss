@@ -43,6 +43,8 @@ Source: "..\publish\agent\*"; DestDir: "{app}\agent"; Flags: ignoreversion recur
 
 [Registry]
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "ParentalControlAgent"; ValueData: """{app}\agent\{#AgentExeName}"""; Flags: uninsdeletevalue
+; The service writes the state of the data folder here (require-admin-sign-in). Remove it at uninstall.
+Root: HKLM; Subkey: "Software\ParentalControl"; Flags: uninsdeletekey dontcreatekey
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\admin\{#MyAppExeName}"; \

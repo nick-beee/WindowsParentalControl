@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.NetworkInformation;
 using Microsoft.AspNetCore.Http;
 using ParentalControl.Core.Data;
+using ParentalControl.Core.Platform;
 using ParentalControl.Core.Services;
 using ParentalControl.Domain.AdminAccess;
 
@@ -13,6 +14,8 @@ public enum AdminLoginOutcome
     NotSetUp,
     InvalidCode,
     Blocked,
+    /// <summary>The client is a process of a Restricted User on this PC, or its owner is not known (finding S4).</summary>
+    RefusedClient,
 }
 
 /// <param name="Token">The token of the new Admin Session, for <see cref="AdminLoginOutcome.Success"/> only.</param>
@@ -51,7 +54,10 @@ public sealed class AdminAccessService
     /// </summary>
     public bool IsSetUp => DatabaseManager.DataFolderSecured && AdminAccessRepository.IsCredentialSetUp();
 
-    /// <summary>True if the request has a valid Admin Session of the current session epoch.</summary>
+    /// <summary>
+    /// True if the request has a valid Admin Session of the current session epoch and does not come from a process of a
+    /// Restricted User on this PC (finding S4).
+    /// </summary>
     public bool IsSessionValid(HttpContext ctx)
     {
         if (!ctx.Request.Cookies.TryGetValue(CookieName, out var token) || string.IsNullOrEmpty(token))
@@ -59,7 +65,47 @@ public sealed class AdminAccessService
         if (!IsSetUp)
             return false;
         var epoch = AdminAccessRepository.GetSessionEpoch();
-        return epoch is not null && _sessions.IsValid(token, epoch.Value);
+        if (epoch is null || !_sessions.IsValid(token, epoch.Value))
+            return false;
+        return CheckClient(ctx.Connection) == LocalClientDecision.Allow;
+    }
+
+    /// <summary>
+    /// Maps a connection from this PC to its owner process and decides with <see cref="LocalClientPolicy"/>.
+    /// A connection from another device is allowed here; the login limit and the TOTP code protect it.
+    /// </summary>
+    public LocalClientDecision CheckClient(ConnectionInfo connection)
+    {
+        var remote = connection.RemoteIpAddress;
+        var source = SourceOf(remote);
+        if (source != LoginSource.Local && source != LoginSource.Unknown)
+            return LocalClientDecision.Allow;
+
+        ConnectionOwner? owner = null;
+        if (remote is not null && connection.LocalIpAddress is { } local)
+            owner = TcpConnectionOwner.Find(new IPEndPoint(remote, connection.RemotePort), new IPEndPoint(local, connection.LocalPort));
+        var restricted = UserRepository.GetAll().Where(u => u.IsRestricted).Select(u => u.Sid)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var decision = LocalClientPolicy.Decide(source, owner, restricted);
+        if (decision != LocalClientDecision.Allow)
+        {
+            _logger.Warning("Admin request from this PC refused ({Decision}): process {Pid}, session {Session}, user {User}, session user {SessionUser}",
+                decision, owner?.ProcessId, owner?.SessionId, owner?.UserSid, owner?.SessionUserSid);
+        }
+        return decision;
+    }
+
+    /// <summary>
+    /// The login of the web route: first the check of the client process (finding S4), then the TOTP code with the
+    /// login limit. A refused client does not count as a failed login and its code is not checked.
+    /// </summary>
+    public AdminLoginResult TryLogin(string? code, ConnectionInfo connection)
+    {
+        if (!IsSetUp)
+            return new AdminLoginResult(AdminLoginOutcome.NotSetUp);
+        if (CheckClient(connection) != LocalClientDecision.Allow)
+            return new AdminLoginResult(AdminLoginOutcome.RefusedClient);
+        return TryLogin(code, connection.RemoteIpAddress);
     }
 
     public void Logout(HttpContext ctx)
@@ -68,6 +114,7 @@ public sealed class AdminAccessService
             _sessions.End(token);
     }
 
+    /// <summary>The check of the code and the login limit only. The web route uses the overload with the connection.</summary>
     public AdminLoginResult TryLogin(string? code, IPAddress? remoteAddress)
     {
         if (!IsSetUp)

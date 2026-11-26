@@ -853,6 +853,9 @@ public sealed class WebServerHost : BackgroundService
         {
             if (!_adminAccess.IsSetUp)
                 return Results.Content(AdminPage.RenderSetupNeeded(), "text/html; charset=utf-8");
+            if (_adminAccess.CheckClient(ctx.Connection) != LocalClientDecision.Allow)
+                return Results.Content(AdminPage.RenderLogin(AdminAccessTexts.LocalClientRefused), "text/html; charset=utf-8",
+                    statusCode: StatusCodes.Status403Forbidden);
             if (!_adminAccess.IsSessionValid(ctx))
                 return Results.Content(AdminPage.RenderLogin(), "text/html; charset=utf-8");
             return Results.Content(AdminPage.RenderDashboard(), "text/html; charset=utf-8");
@@ -862,19 +865,23 @@ public sealed class WebServerHost : BackgroundService
         app.MapPost("/api/admin/login", async (HttpContext ctx) =>
         {
             var code = await ReadLoginCodeAsync(ctx);
-            var result = _adminAccess.TryLogin(code, ctx.Connection.RemoteIpAddress);
+            var result = _adminAccess.TryLogin(code, ctx.Connection);
             switch (result.Outcome)
             {
                 case AdminLoginOutcome.Success:
+                    // A session cookie (no Expires): the browser drops it when it closes. The server ends the Admin
+                    // Session after 12 hours in any case (AdminSessionStore).
                     ctx.Response.Cookies.Append(AdminAccessService.CookieName, result.Token!, new CookieOptions
                     {
                         HttpOnly = true,
-                        SameSite = SameSiteMode.Strict,
-                        Expires = DateTimeOffset.UtcNow.Add(AdminSessionStore.Lifetime)
+                        SameSite = SameSiteMode.Strict
                     });
                     return Results.Redirect("/admin");
                 case AdminLoginOutcome.NotSetUp:
                     return Results.Content(AdminPage.RenderSetupNeeded(), "text/html; charset=utf-8", statusCode: StatusCodes.Status401Unauthorized);
+                case AdminLoginOutcome.RefusedClient:
+                    return Results.Content(AdminPage.RenderLogin(AdminAccessTexts.LocalClientRefused), "text/html; charset=utf-8",
+                        statusCode: StatusCodes.Status403Forbidden);
                 case AdminLoginOutcome.Blocked:
                     var until = (result.Limit!.BlockedUntilUtc ?? DateTimeOffset.UtcNow).ToLocalTime().DateTime;
                     return Results.Content(AdminPage.RenderLogin(AdminAccessTexts.Blocked(result.Limit.Scope, until)), "text/html; charset=utf-8",

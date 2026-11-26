@@ -16,6 +16,7 @@ public static class SettingsRepository
     public const string KeyTotpSetupAt = "totp_setup_at"; // UTC time of the last setup, ISO 8601
     public const string KeyAdminSessionEpoch = "admin_session_epoch"; // Admin Sessions of an earlier epoch are not valid
     public const string KeyAdminSetupNoticeSent = "admin_setup_notice_sent"; // "true" after the one-time setup notice
+    public const string KeyDataFolderQuarantineNotified = "data_folder_quarantine_notified"; // the moved folder of the last Telegram alert
     public const string KeyAlertIntervals = "alert_intervals"; // e.g. "15,5,1"
     public const string KeyMaxDailyRequests = "max_daily_requests"; // default: 1
     public const string KeyLanguagePreset = "language_preset"; // a Language Preset: "de", "en" or "id"

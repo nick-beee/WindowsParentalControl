@@ -23,9 +23,13 @@ public partial class DashboardViewModel : ObservableObject
 
     public Dictionary<string, string> SidToUsername { get; private set; } = new();
 
-    /// <summary>True while the web admin sign-in is not set up. The dashboard then shows a banner.</summary>
+    /// <summary>True while the web admin does not work (sign-in not set up or data folder not secured). The dashboard then shows a banner.</summary>
     [ObservableProperty]
     private bool _isWebAdminLocked;
+
+    /// <summary>The second line of the banner: what the parent must do.</summary>
+    [ObservableProperty]
+    private string _webAdminLockedHint = string.Empty;
 
     public DashboardViewModel(Action<UserRow> navigateToDetail)
     {
@@ -34,7 +38,12 @@ public partial class DashboardViewModel : ObservableObject
 
     public void LoadAll()
     {
-        IsWebAdminLocked = !AdminAccessRepository.IsCredentialSetUp();
+        var credentialSetUp = AdminAccessRepository.IsCredentialSetUp();
+        var folder = ParentalControl.Core.Platform.DataFolderStatusStore.Read();
+        IsWebAdminLocked = !ParentalControl.Domain.DataFolder.AdminSignInStatus.IsWebAdminUsable(credentialSetUp, folder);
+        WebAdminLockedHint = credentialSetUp
+            ? ParentalControl.Domain.DataFolder.AdminSignInStatus.Describe(credentialSetUp, null, folder, TimeZoneInfo.Local)
+            : "Open Settings and select \"Set up sign-in\" under \"Web admin sign-in\".";
         RefreshUsers();
         RefreshEvents();
     }

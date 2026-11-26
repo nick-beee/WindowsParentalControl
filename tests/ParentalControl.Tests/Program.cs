@@ -414,7 +414,7 @@ EventRepository.LogEvent(testSid, EventType.SECURITY_ALERT, "Unauthorized admini
 var secEvents = EventRepository.GetEvents(userSid: testSid);
 Debug.Assert(secEvents.Any(e => e.EventType == EventType.SECURITY_ALERT), "SECURITY_ALERT event should be stored and retrievable");
 
-var testLogger = ParentalControl.Core.Logging.LoggingConfig.CreateLogger("Test");
+var testLogger = ParentalControl.Core.Logging.LoggingConfig.CreateLogger("Test", Path.Combine(tempDir, "logs"));
 var botService = new TelegramBotService(testLogger);
 var resSignIn = botService.SendUserSignInNotificationAsync("testuser", "TEST-PC", DateTime.Now, 120, new TimeOnly(8, 0), new TimeOnly(20, 0)).GetAwaiter().GetResult();
 Debug.Assert(!resSignIn, "SendUserSignInNotificationAsync should return false gracefully when token is unconfigured");
@@ -748,72 +748,146 @@ Console.WriteLine("✅ Process List, Suspend & Resume Passed.");
 }
 Console.WriteLine("✅ Admin Sign-In Storage & Start Check Passed.");
 
-// Data folder owner and access rules (require-admin-sign-in D9). Needs an elevated administrator (CI, SSH as nick).
+// Data folder owner and access rules (require-admin-sign-in D9, findings B1, B2, S1, S2). Needs an elevated administrator (CI, SSH as nick).
 {
-    var aclRoot = Path.Combine(Path.GetTempPath(), "PcAclTest_" + Guid.NewGuid().ToString("N"));
-    var aclOutside = Path.Combine(Path.GetTempPath(), "PcAclOutside_" + Guid.NewGuid().ToString("N"));
+    var aclBase = Path.Combine(Path.GetTempPath(), "PcAclTest_" + Guid.NewGuid().ToString("N"));
+    var aclRoot = Path.Combine(aclBase, "ParentalControl");
+    var aclOutside = Path.Combine(aclBase, "Outside");
     var usersSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinUsersSid, null);
     var systemSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.LocalSystemSid, null);
     var adminsSid = new System.Security.Principal.SecurityIdentifier(System.Security.Principal.WellKnownSidType.BuiltinAdministratorsSid, null);
-    void GrantUsersRead(FileSystemInfo item, bool inherit)
+    // Test items get an explicit owner and DACL, so the result does not depend on the default owner of the test account.
+    void SetSddl(FileSystemInfo item, string sddl)
     {
-        var rule = new System.Security.AccessControl.FileSystemAccessRule(usersSid, System.Security.AccessControl.FileSystemRights.Read,
-            inherit ? System.Security.AccessControl.InheritanceFlags.ContainerInherit | System.Security.AccessControl.InheritanceFlags.ObjectInherit : System.Security.AccessControl.InheritanceFlags.None,
-            System.Security.AccessControl.PropagationFlags.None, System.Security.AccessControl.AccessControlType.Allow);
-        if (item is DirectoryInfo d) { var sec = d.GetAccessControl(); sec.AddAccessRule(rule); d.SetAccessControl(sec); }
-        else if (item is FileInfo f) { var sec = f.GetAccessControl(); sec.AddAccessRule(rule); f.SetAccessControl(sec); }
+        const System.Security.AccessControl.AccessControlSections sections =
+            System.Security.AccessControl.AccessControlSections.Owner | System.Security.AccessControl.AccessControlSections.Access;
+        if (item is DirectoryInfo d) { var sec = new System.Security.AccessControl.DirectorySecurity(); sec.SetSecurityDescriptorSddlForm(sddl, sections); d.SetAccessControl(sec); }
+        else if (item is FileInfo f) { var sec = new System.Security.AccessControl.FileSecurity(); sec.SetSecurityDescriptorSddlForm(sddl, sections); f.SetAccessControl(sec); }
     }
+    // A folder of an install: owner Administrators, SYSTEM and Administrators, plus read for Users (an old, open rule).
+    const string trustedWithUsersRead = "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)";
+    // A folder that a standard user could change: Users have full access.
+    const string usersCanWrite = "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;BU)";
     List<System.Security.AccessControl.FileSystemAccessRule> RulesOf(System.Security.AccessControl.FileSystemSecurity sec, bool explicitOnly) =>
         sec.GetAccessRules(true, !explicitOnly, typeof(System.Security.Principal.SecurityIdentifier)).Cast<System.Security.AccessControl.FileSystemAccessRule>()
            .Where(r => !explicitOnly || !r.IsInherited).ToList();
+    bool OnlySystemAndAdmins(IEnumerable<System.Security.AccessControl.FileSystemAccessRule> rules) =>
+        rules.Any() && rules.All(r => r.IdentityReference.Equals(systemSid) || r.IdentityReference.Equals(adminsSid));
+    void AssertSecuredRoot(string path, string what)
+    {
+        var info = new DirectoryInfo(path);
+        Debug.Assert(info.Exists && !info.Attributes.HasFlag(FileAttributes.ReparsePoint), $"{what}: the data folder should be a real folder");
+        var sec = info.GetAccessControl();
+        Debug.Assert(sec.GetOwner(typeof(System.Security.Principal.SecurityIdentifier))!.Equals(adminsSid), $"{what}: the folder owner should be Administrators");
+        Debug.Assert(sec.AreAccessRulesProtected, $"{what}: the folder DACL should be protected");
+        var rules = RulesOf(sec, explicitOnly: false);
+        Debug.Assert(rules.Count == 2 && OnlySystemAndAdmins(rules),
+            $"{what}: the folder should have only SYSTEM and Administrators: " + string.Join(", ", rules.Select(r => r.IdentityReference.Value)));
+    }
+    void RunCmd(string arguments)
+    {
+        using var p = Process.Start(new ProcessStartInfo("cmd.exe", "/c " + arguments) { CreateNoWindow = true, UseShellExecute = false })!;
+        p.WaitForExit(10000);
+        Debug.Assert(p.ExitCode == 0, "cmd /c " + arguments + " failed");
+    }
     try
     {
+        Directory.CreateDirectory(aclBase);
+        var outsideDir = Directory.CreateDirectory(aclOutside);
+        SetSddl(outsideDir, trustedWithUsersRead);
+        File.WriteAllText(Path.Combine(aclOutside, "target.txt"), "outside");
+
+        // 1. An install with open read rules, a link inside and a hard link to data.db (D9, S2).
         var rootDir = Directory.CreateDirectory(aclRoot);
-        var subDir = Directory.CreateDirectory(Path.Combine(aclRoot, "captures"));
-        File.WriteAllText(Path.Combine(aclRoot, "data.db"), "secret");
-        File.WriteAllText(Path.Combine(subDir.FullName, "x.png"), "x");
-        GrantUsersRead(rootDir, inherit: true);
-        GrantUsersRead(new FileInfo(Path.Combine(aclRoot, "data.db")), inherit: false);
-        GrantUsersRead(subDir, inherit: true);
+        SetSddl(rootDir, trustedWithUsersRead);
+        var subDir = Directory.CreateDirectory(Path.Combine(aclRoot, "logs"));
+        var dbPath = Path.Combine(aclRoot, "data.db");
+        File.WriteAllText(dbPath, "secret");
+        File.WriteAllText(Path.Combine(subDir.FullName, "x.log"), "x");
+        foreach (FileSystemInfo item in new FileSystemInfo[] { subDir, new FileInfo(dbPath), new FileInfo(Path.Combine(subDir.FullName, "x.log")) })
+            SetSddl(item, "O:BAD:AI(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;;FR;;;BU)");
+        var hardLink = Path.Combine(aclOutside, "data-hardlink.db");
+        Debug.Assert(TestNative.CreateHardLinkW(hardLink, dbPath, IntPtr.Zero), "The test hard link should be created");
+        RunCmd($"mklink /J \"{Path.Combine(aclRoot, "captures")}\" \"{aclOutside}\"");
+        Directory.CreateSymbolicLink(Path.Combine(aclRoot, "link"), aclOutside);
 
-        try { DataFolderSecurity.Apply(aclRoot); }
-        catch (Exception ex) { Debug.Fail("DataFolderSecurity.Apply failed (the test needs an elevated administrator): " + ex.Message); }
-
-        var rootSec = rootDir.GetAccessControl();
-        Debug.Assert(rootSec.GetOwner(typeof(System.Security.Principal.SecurityIdentifier))!.Equals(adminsSid), "The folder owner should be Administrators");
-        Debug.Assert(rootSec.AreAccessRulesProtected, "The folder DACL should be protected");
-        var rootRules = RulesOf(rootSec, explicitOnly: false);
-        Debug.Assert(rootRules.Count == 2 && rootRules.All(r => r.IdentityReference.Equals(systemSid) || r.IdentityReference.Equals(adminsSid)),
-            "The folder should have only SYSTEM and Administrators: " + string.Join(", ", rootRules.Select(r => r.IdentityReference.Value)));
-        var children = new FileSystemInfo[] { subDir, new FileInfo(Path.Combine(aclRoot, "data.db")), new FileInfo(Path.Combine(subDir.FullName, "x.png")) };
-        foreach (var child in children)
+        DataFolderResult secured = null!;
+        try { secured = DataFolderGuard.Secure(aclRoot); }
+        catch (Exception ex) { Debug.Fail("DataFolderGuard.Secure failed (the test needs an elevated administrator): " + ex); }
+        Debug.Assert(secured.QuarantinedTo is null, "A trusted folder should not be moved: " + secured.QuarantineReason);
+        AssertSecuredRoot(aclRoot, "Open read rules");
+        foreach (var child in new FileSystemInfo[] { subDir, new FileInfo(dbPath), new FileInfo(Path.Combine(subDir.FullName, "x.log")) })
         {
             System.Security.AccessControl.FileSystemSecurity sec = child is DirectoryInfo cd ? cd.GetAccessControl() : ((FileInfo)child).GetAccessControl();
             Debug.Assert(sec.GetOwner(typeof(System.Security.Principal.SecurityIdentifier))!.Equals(adminsSid), $"The owner of {child.Name} should be Administrators");
             Debug.Assert(!sec.AreAccessRulesProtected, $"{child.Name} should inherit the rules of the folder");
             Debug.Assert(RulesOf(sec, explicitOnly: true).Count == 0, $"{child.Name} should have no explicit rule");
             var all = RulesOf(sec, explicitOnly: false);
-            Debug.Assert(all.Count > 0 && all.All(r => r.IdentityReference.Equals(systemSid) || r.IdentityReference.Equals(adminsSid)),
+            Debug.Assert(OnlySystemAndAdmins(all),
                 $"{child.Name} should have only SYSTEM and Administrators: " + string.Join(", ", all.Select(r => r.IdentityReference.Value)));
         }
+        Debug.Assert(!Directory.Exists(Path.Combine(aclRoot, "captures")) && !File.Exists(Path.Combine(aclRoot, "link")), "The links in the folder should be deleted");
+        Debug.Assert(File.ReadAllText(Path.Combine(aclOutside, "target.txt")) == "outside", "The target of a link should keep its content");
+        Debug.Assert(RulesOf(outsideDir.GetAccessControl(), explicitOnly: true).Any(r => r.IdentityReference.Equals(usersSid)), "The target of a link should keep its rules");
+        Debug.Assert(secured.Repairs.Count >= 3, "The result should list the deleted links and the replaced hard link: " + string.Join(" | ", secured.Repairs));
+        Debug.Assert(File.ReadAllText(dbPath) == "secret", "data.db should keep its content after the copy");
+        Debug.Assert(TestNative.LinkCount(dbPath) == 1, "data.db should have one name after the repair");
+        // A second start finds nothing to repair: no permanent lockout because of a link.
+        var again = DataFolderGuard.Secure(aclRoot);
+        Debug.Assert(again.QuarantinedTo is null && again.Repairs.Count == 0, "A second start should change nothing");
+        DataFolderGuard.EnsureSafeToOpen(aclRoot, "data.db"); // the check of the Admin app passes
 
-        // A link inside the folder: the service does not follow it and fails closed.
-        var outsideDir = Directory.CreateDirectory(aclOutside);
-        GrantUsersRead(outsideDir, inherit: true);
-        Directory.CreateSymbolicLink(Path.Combine(aclRoot, "link"), aclOutside);
-        var linkRefused = false;
-        try { DataFolderSecurity.Apply(aclRoot); } catch (InvalidOperationException) { linkRefused = true; }
-        Debug.Assert(linkRefused, "A link in the data folder should make Apply fail");
-        Debug.Assert(RulesOf(outsideDir.GetAccessControl(), explicitOnly: true).Any(r => r.IdentityReference.Equals(usersSid)), "The target of the link should keep its rules");
-        var rootLinkRefused = false;
-        try { DataFolderSecurity.Apply(Path.Combine(aclRoot, "link")); } catch (InvalidOperationException) { rootLinkRefused = true; }
-        Debug.Assert(rootLinkRefused, "A data folder that is a link should make Apply fail");
+        // 2. B1: a junction as the data folder, with a planted data.db in its target.
+        Directory.Delete(aclRoot, true);
+        File.WriteAllText(Path.Combine(aclOutside, "data.db"), "planted");
+        RunCmd($"mklink /J \"{aclRoot}\" \"{aclOutside}\"");
+        var adminAppRefused = false;
+        try { DataFolderGuard.EnsureSafeToOpen(aclRoot, "data.db"); } catch (DataFolderUnsafeException) { adminAppRefused = true; }
+        Debug.Assert(adminAppRefused, "The Admin app should not open a data folder that is a junction");
+        var junctionResult = DataFolderGuard.Secure(aclRoot);
+        AssertSecuredRoot(aclRoot, "Junction");
+        Debug.Assert(!File.Exists(Path.Combine(aclRoot, "data.db")), "The new data folder should be empty");
+        Debug.Assert(File.ReadAllText(Path.Combine(aclOutside, "data.db")) == "planted", "The target of the junction should not change");
+        Debug.Assert(RulesOf(outsideDir.GetAccessControl(), explicitOnly: true).Any(r => r.IdentityReference.Equals(usersSid)), "The target of the junction should keep its rules");
+        Debug.Assert(junctionResult.Repairs.Count == 1, "The result should report the deleted junction");
+
+        // 3. B2: a folder that Users can change (as one that the child made before the install), with a planted data.db.
+        Directory.Delete(aclRoot, true);
+        var plantedRoot = Directory.CreateDirectory(aclRoot);
+        SetSddl(plantedRoot, usersCanWrite);
+        File.WriteAllText(Path.Combine(aclRoot, "data.db"), "planted");
+        var plantedRefused = false;
+        try { DataFolderGuard.EnsureSafeToOpen(aclRoot, "data.db"); } catch (DataFolderUnsafeException) { plantedRefused = true; }
+        Debug.Assert(plantedRefused, "The Admin app should not open a folder that Users can change");
+
+        // While a process holds the folder without delete sharing, the move fails and the start fails (fail closed).
+        using (var held = TestNative.OpenDirectoryWithoutDeleteSharing(aclRoot))
+        {
+            Debug.Assert(!held.IsInvalid, "The test should hold the folder");
+            var heldRefused = false;
+            try { DataFolderGuard.Secure(aclRoot); } catch (DataFolderUnsafeException) { heldRefused = true; }
+            Debug.Assert(heldRefused, "Secure should fail while the untrusted folder cannot be moved");
+            Debug.Assert(File.ReadAllText(Path.Combine(aclRoot, "data.db")) == "planted", "Nothing should change when the move fails");
+        }
+
+        var plantedResult = DataFolderGuard.Secure(aclRoot);
+        Debug.Assert(plantedResult.QuarantinedTo is { } moved && Directory.Exists(moved) && Path.GetFileName(moved).StartsWith("ParentalControl.untrusted-"),
+            "The untrusted folder should be moved to ParentalControl.untrusted-<guid>");
+        Debug.Assert(File.ReadAllText(Path.Combine(plantedResult.QuarantinedTo!, "data.db")) == "planted", "The moved folder should keep its content");
+        Debug.Assert(plantedResult.QuarantineReason!.Contains(usersSid.Value), "The reason should name the account with write rights: " + plantedResult.QuarantineReason);
+        AssertSecuredRoot(aclRoot, "Planted folder");
+        Debug.Assert(!File.Exists(Path.Combine(aclRoot, "data.db")), "The service should start with a new, empty folder");
+        AssertSecuredRoot(plantedResult.QuarantinedTo!, "Moved folder");
+
+        // 4. A missing folder is created with its final rules.
+        Directory.Delete(aclRoot, true);
+        Debug.Assert(DataFolderGuard.Secure(aclRoot).Repairs.Count == 0, "A new folder needs no repair");
+        AssertSecuredRoot(aclRoot, "New folder");
     }
     finally
     {
-        try { Directory.Delete(Path.Combine(aclRoot, "link")); } catch { }
-        try { Directory.Delete(aclRoot, true); } catch { }
-        try { Directory.Delete(aclOutside, true); } catch { }
+        try { Directory.Delete(aclRoot); } catch { } // a junction: delete the link only
+        try { Directory.Delete(aclBase, true); } catch { }
     }
 }
 Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
@@ -906,6 +980,8 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
         var login = await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(code));
         var cookie = CookieOf(login);
         Debug.Assert((int)login.StatusCode == 302 && cookie != null, "A valid code should give an Admin Session");
+        Debug.Assert(login.Headers.GetValues("Set-Cookie").All(v => !v.Contains("expires=", StringComparison.OrdinalIgnoreCase) && !v.Contains("max-age", StringComparison.OrdinalIgnoreCase)),
+            "The admin cookie should be a session cookie (no Expires)");
         var replay = await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(code));
         Debug.Assert((int)replay.StatusCode == 401 && CookieOf(replay) is null, "The same code a second time should fail");
         Debug.Assert((int)(await Send(HttpMethod.Post, "/api/admin/login", content: Json("{}"))).StatusCode == 401, "A JSON login without a code should fail, not crash");
@@ -922,6 +998,28 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
         var sameOrigin = await Send(HttpMethod.Post, "/api/admin/settings", cookie, baseUrl, Json("{}"));
         Debug.Assert((int)sameOrigin.StatusCode == 200, "A POST from the same origin should work");
         Debug.Assert((int)(await Send(HttpMethod.Post, "/api/admin/login", origin: "http://localhost:8000", content: CodeForm(WrongCode()))).StatusCode == 403, "A login from another origin should give 403");
+
+        // S4: a login and an Admin Session from a process of a Restricted User on this PC are refused.
+        // The test process is the client; for this check its own account becomes a Restricted User.
+        var selfSid = System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value;
+        Debug.Assert(TcpConnectionOwner.ReadProcess(Environment.ProcessId).UserSid == selfSid, "The owner lookup should read the user of this process");
+        UserRepository.Upsert(selfSid, "SelfAsChild", true);
+        try
+        {
+            AdminAccessRepository.SetLastUsedStep(Totp.StepAt(DateTimeOffset.UtcNow) - 2);
+            var failuresBefore = AdminAccessRepository.GetRecentFailures(DateTimeOffset.UtcNow).Count;
+            var childLogin = await Send(HttpMethod.Post, "/api/admin/login", content: CodeForm(CurrentCode()));
+            Debug.Assert((int)childLogin.StatusCode == 403 && CookieOf(childLogin) is null, "A login from a process of a Restricted User should give 403 and no session");
+            Debug.Assert((await childLogin.Content.ReadAsStringAsync()).Contains("Windows-Konto"), "The page should tell the parent to use another account or device");
+            Debug.Assert(AdminAccessRepository.GetRecentFailures(DateTimeOffset.UtcNow).Count == failuresBefore, "A refused client should not count as a failed login");
+            Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/settings", cookie)).StatusCode == 401, "An Admin Session used from a process of a Restricted User should give 401");
+            Debug.Assert((int)(await Send(HttpMethod.Get, "/admin", cookie)).StatusCode == 403, "/admin should refuse a process of a Restricted User");
+        }
+        finally
+        {
+            UserRepository.DeleteBySid(selfSid);
+        }
+        Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/settings", cookie)).StatusCode == 200, "The session should work again from a process of the parent");
 
         // Logout is a POST and ends the session.
         Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/logout", cookie)).StatusCode == 405, "GET logout should give 405");
@@ -967,6 +1065,30 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
 }
 Console.WriteLine("✅ Admin Gate over HTTP Passed.");
 
+// The owner of a loopback connection (finding S4): the row of the TCP table gives the process of the client end.
+{
+    var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+    listener.Start();
+    try
+    {
+        using var client = new System.Net.Sockets.TcpClient();
+        await client.ConnectAsync(System.Net.IPAddress.Loopback, ((System.Net.IPEndPoint)listener.LocalEndpoint).Port);
+        using var accepted = await listener.AcceptTcpClientAsync();
+        var serverSide = (System.Net.IPEndPoint)accepted.Client.LocalEndPoint!;
+        var clientSide = (System.Net.IPEndPoint)accepted.Client.RemoteEndPoint!;
+        Debug.Assert(TcpConnectionOwner.FindOwnerPid(clientSide, serverSide) == Environment.ProcessId, "The client end should belong to this process");
+        var owner = TcpConnectionOwner.Find(clientSide, serverSide);
+        Debug.Assert(owner is not null && owner.ProcessId == Environment.ProcessId && owner.UserSid == System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value,
+            "The owner should be this process and its user");
+        Debug.Assert(TcpConnectionOwner.FindOwnerPid(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 1), serverSide) is null, "An unknown connection should have no owner");
+    }
+    finally
+    {
+        listener.Stop();
+    }
+}
+Console.WriteLine("✅ Loopback Connection Owner Passed.");
+
 // Cleanup test user
 UserRepository.DeleteBySid(testSid);
 ScheduleRepository.DeleteForUser(user.Id);
@@ -984,4 +1106,36 @@ finally
         }
     }
     catch { }
+}
+
+static class TestNative
+{
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    public static extern bool CreateHardLinkW(string newLink, string existing, IntPtr reserved);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle file, out ByHandleInfo info);
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct ByHandleInfo
+    {
+        public uint Attributes;
+        public long Creation, Access, Write;
+        public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+    }
+
+    /// <summary>A handle to a folder with read and write sharing but without delete sharing, as a process of the child could hold it.</summary>
+    public static Microsoft.Win32.SafeHandles.SafeFileHandle OpenDirectoryWithoutDeleteSharing(string path) =>
+        CreateFileW(path, 0x80 /* FILE_READ_ATTRIBUTES */ | 0x1 /* FILE_LIST_DIRECTORY */, 0x1 | 0x2, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
+
+    public static uint LinkCount(string path)
+    {
+        using var handle = CreateFileW(path, 0x80, 0x7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
+        return GetFileInformationByHandle(handle, out var info) ? info.Links : 0;
+    }
 }

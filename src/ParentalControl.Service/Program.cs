@@ -5,10 +5,13 @@ using ParentalControl.Core.Data;
 using ParentalControl.Core.Logging;
 using ParentalControl.Service;
 
-// Only the service sets the owner and the access rules of the data folder at each start (require-admin-sign-in D9).
-DatabaseManager.Initialize(enforceDataFolderSecurity: true);
-var logger = LoggingConfig.CreateLogger("Service");
+// Only the service secures the data folder at each start (require-admin-sign-in D9). If the folder is not safe, the
+// service stops before it opens the database or a log file in it (fail closed); the Service Control Manager starts it again.
+if (!DataFolderStartup.TryInitialize())
+    return 1;
+var logger = LoggingConfig.CreateLogger("Service", DatabaseManager.LogsDirectory);
 logger.Information("Parental Control Service starting");
+DataFolderStartup.Log(logger);
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -45,3 +48,4 @@ sessionTracker.Initialize();
 _ = AdminAccessStartup.RunAsync(host.Services.GetRequiredService<TelegramBotService>(), logger);
 
 host.Run();
+return 0;
