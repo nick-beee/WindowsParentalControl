@@ -80,7 +80,7 @@ The system SHALL send a session message to the child when 5 minutes and when 1 m
 - **THEN** the child gets one message that Games time ends in 5 minutes
 
 ### Requirement: Suspend the programs of an exhausted category
-When the Category Usage of a category reaches the limit of the day of an exe (its App Limit or else its Category Limit), the system SHALL suspend, within 70 seconds, each process of that exe in the session of that Restricted User, if the exe was a Foreground Window of that user today. The 70 seconds include the 10 seconds of the Pending Suspension. During a Session End Hold of the session, the system SHALL NOT suspend a process of that session. The session SHALL stay unlocked. The system SHALL NOT close or kill any of these processes.
+When the Category Usage of a category reaches the limit of the day of an exe (its App Limit or else its Category Limit), the system SHALL suspend, within 70 seconds, each process of that exe in the session of that Restricted User, if the exe was a Foreground Window of that user today. The 70 seconds include the 10 seconds of the Pending Suspension. The requirement "Session End Hold" adds an exception. The session SHALL stay unlocked. The system SHALL NOT close or kill any of these processes.
 
 #### Scenario: Games limit ends while a game runs
 - **WHEN** Games usage reaches the Category Limit while a Steam game and a Study program run
