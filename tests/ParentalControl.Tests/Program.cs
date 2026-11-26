@@ -950,6 +950,63 @@ Console.WriteLine("✅ Admin Sign-In Storage & Start Check Passed.");
         Directory.Delete(aclRoot, true);
         Debug.Assert(DataFolderGuard.Secure(aclRoot).Repairs.Count == 0, "A new folder needs no repair");
         AssertSecuredRoot(aclRoot, "New folder");
+
+        // 5. CB1 b, the fast path: the last start secured this folder and its rules did not change, so no walk runs.
+        Directory.CreateDirectory(Path.Combine(aclRoot, "captures", "1"));
+        File.WriteAllText(Path.Combine(aclRoot, "data.db"), "db");
+        File.WriteAllText(Path.Combine(aclRoot, "captures", "1", "a.jpg"), "jpg");
+        var walkedOnce = DataFolderGuard.Secure(aclRoot);
+        Debug.Assert(walkedOnce.Walked, "A start without a last secured folder should walk");
+        var fast = DataFolderGuard.Secure(aclRoot, new ParentalControl.Domain.DataFolder.WalkBudget(TimeSpan.FromHours(1), maxItems: 0), lastSecuredFolder: aclRoot);
+        Debug.Assert(!fast.Walked && fast.QuarantinedTo is null && fast.Repairs.Count == 0, "The fast path should skip the walk (a budget of 0 items would stop a walk)");
+        var otherFolder = DataFolderGuard.Secure(aclRoot, lastSecuredFolder: aclRoot + "-0123456789abcdef0123456789abcdef");
+        Debug.Assert(otherFolder.Walked, "The fast path is only for the folder that the last start secured");
+        SetSddl(new DirectoryInfo(aclRoot), trustedWithUsersRead);
+        var changedRules = DataFolderGuard.Secure(aclRoot, lastSecuredFolder: aclRoot);
+        Debug.Assert(changedRules.Walked, "Changed rules of the folder should give a walk");
+        AssertSecuredRoot(aclRoot, "After the walk of changed rules");
+        Debug.Assert(TestNative.CreateHardLinkW(Path.Combine(aclOutside, "db-link"), Path.Combine(aclRoot, "data.db"), IntPtr.Zero), "The test hard link to data.db should be created");
+        Debug.Assert(DataFolderGuard.Secure(aclRoot, lastSecuredFolder: aclRoot).Walked, "A data.db with two names should give a walk");
+        Debug.Assert(TestNative.LinkCount(Path.Combine(aclRoot, "data.db")) == 1, "The walk should replace the hard-linked data.db");
+
+        // 6. CB1 c, the walk time limit: the step stops the walk and never makes a new folder because of it.
+        for (var i = 0; i < 20; i++)
+            File.WriteAllText(Path.Combine(aclRoot, "captures", "1", $"flood{i}.jpg"), "x");
+        var timedOutThrown = false;
+        try { DataFolderGuard.Secure(aclRoot, new ParentalControl.Domain.DataFolder.WalkBudget(TimeSpan.FromHours(1), maxItems: 5)); }
+        catch (DataFolderWalkTimeoutException) { timedOutThrown = true; }
+        Debug.Assert(timedOutThrown, "A walk over the item budget should stop with a time-limit error");
+        var walkKey = new DataFolderRegistry(testKey.KeyPath + "-walk");
+        var foldersBefore = Directory.GetDirectories(aclBase).OrderBy(d => d).ToList();
+        try
+        {
+            var limited = DataFolderCoordinator.Prepare(walkKey, aclBase, sleep: _ => { },
+                budget: new ParentalControl.Domain.DataFolder.WalkBudget(TimeSpan.FromHours(1), maxItems: 5));
+            Debug.Assert(!limited.IsLockdown && !limited.Relocated && string.Equals(limited.Folder, aclRoot, StringComparison.OrdinalIgnoreCase),
+                "A slow walk of a trusted folder should keep the folder: " + limited.Folder + " " + limited.Error);
+            Debug.Assert(limited.Warning is not null && limited.Warning.Contains("time limit"), "The result should report the time limit as a warning: " + limited.Warning);
+            Debug.Assert(File.Exists(Path.Combine(aclRoot, "data.db")), "The database should stay");
+            Debug.Assert(Directory.GetDirectories(aclBase).OrderBy(d => d).SequenceEqual(foldersBefore), "A slow walk should not make a new folder");
+        }
+        finally { walkKey.DeleteKey(); }
+
+        // 7. S1 of the second review: a file (here a hard link to a file outside) in the place of the data folder is only
+        // renamed. The service must not write an owner or a DACL on it, because that would change the other file too.
+        Directory.Delete(aclRoot, true);
+        var outsideFile = Path.Combine(aclOutside, "system-file.txt");
+        File.WriteAllText(outsideFile, "system");
+        const string outsideFileSddl = "O:BAD:PAI(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)";
+        SetSddl(new FileInfo(outsideFile), outsideFileSddl);
+        string SddlOf(string path) => new FileInfo(path).GetAccessControl().GetSecurityDescriptorSddlForm(
+            System.Security.AccessControl.AccessControlSections.Owner | System.Security.AccessControl.AccessControlSections.Access);
+        var outsideBefore = SddlOf(outsideFile);
+        Debug.Assert(TestNative.CreateHardLinkW(aclRoot, outsideFile, IntPtr.Zero), "The test hard link in the place of the data folder should be created");
+        var fileResult = DataFolderGuard.Secure(aclRoot);
+        Debug.Assert(fileResult.QuarantinedTo is { } movedFile && File.Exists(movedFile), "The file should be renamed to ParentalControl.untrusted-<guid>");
+        Debug.Assert(SddlOf(outsideFile) == outsideBefore, $"The rules of the other name should not change: {outsideBefore} -> {SddlOf(outsideFile)}");
+        Debug.Assert(File.ReadAllText(outsideFile) == "system", "The other file should keep its content");
+        AssertSecuredRoot(aclRoot, "Folder after a file in its place");
+        File.Delete(fileResult.QuarantinedTo!);
     }
     finally
     {
@@ -1133,6 +1190,127 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
 }
 Console.WriteLine("✅ Admin Gate over HTTP Passed.");
 
+// Second security review of require-admin-sign-in: the start gate (CB2, S5), the bind retry (S3) and the capture quota (CB1 d).
+{
+    var svcLogger = new Serilog.LoggerConfiguration().CreateLogger();
+    var svcTelegram = new TelegramBotService(svcLogger);
+    var svcTracker = new ParentalControl.Service.SessionTracker(svcLogger);
+    var noEvents = new List<int>();
+    var fakePrep = new DataFolderPreparation(tempDir, tempDir, null, null, null, null, null);
+
+    // CB2: the log file does not open after the folder step (for example a full disk). The gate stays closed.
+    var failedGate = new ParentalControl.Service.ServiceStartup();
+    var logError = failedGate.TryOpen(fakePrep, _ => throw new IOException("There is not enough space on the disk."));
+    Debug.Assert(logError is not null && logError.Contains("not enough space") && !failedGate.IsReady, "A failed log should give an error and a closed gate: " + logError);
+
+    // CB2, S5: an open that fails after the folder step gives the lockdown (with the lock). A retry whose database
+    // still fails stays in the lockdown. Only a full success opens the gate, in this process.
+    var gate = new ParentalControl.Service.ServiceStartup();
+    var opens = 0;
+    var recordedFailures = 0;
+    var lockCalls = 0;
+    var worker = new ParentalControl.Service.StartupWorker(gate, svcTracker, svcTelegram, svcLogger,
+        new Microsoft.Extensions.Hosting.Internal.ApplicationLifetime(
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<Microsoft.Extensions.Hosting.Internal.ApplicationLifetime>.Instance))
+    {
+        PrepareStep = _ => fakePrep,
+        OpenStep = _ => ++opens < 3 ? "SqliteException: SQLite Error 13: 'database or disk is full'." : null,
+        LockStep = () => { Interlocked.Increment(ref lockCalls); return Array.Empty<int>(); },
+        RecordOpenFailure = (_, _, _) => recordedFailures++,
+        WriteEvent = (_, id, _) => { lock (noEvents) noEvents.Add(id); },
+        LockInterval = TimeSpan.FromMilliseconds(50),
+        RetryInterval = TimeSpan.FromMilliseconds(200),
+        RunReadyActions = false,
+    };
+    using (var workerCts = new CancellationTokenSource(TimeSpan.FromSeconds(60)))
+    {
+        await worker.StartAsync(workerCts.Token);
+        var sawLockdown = false;
+        var waited = Stopwatch.StartNew();
+        while (!gate.IsReady && waited.Elapsed < TimeSpan.FromSeconds(20))
+        {
+            if (worker.Phase == ParentalControl.Domain.DataFolder.StartupPhase.Lockdown) sawLockdown = true;
+            await Task.Delay(10);
+        }
+        Debug.Assert(sawLockdown, "A failed open of the database should give the lockdown");
+        Debug.Assert(gate.IsReady && worker.Phase == ParentalControl.Domain.DataFolder.StartupPhase.Ready, "The gate should open after a full success");
+        Debug.Assert(opens == 3 && recordedFailures == 2, $"Each failed open should be recorded and tried again (opens {opens}, records {recordedFailures})");
+        Debug.Assert(lockCalls > 0, "The lockdown should lock the sessions");
+        lock (noEvents) Debug.Assert(noEvents.Contains(1007), "The end of the lockdown should be written to the event log");
+        await worker.StopAsync(CancellationToken.None);
+    }
+
+    // S3: a program holds the port. The web server tries again and does not stop; after the port is free, it answers.
+    var holder = new System.Net.Sockets.TcpListener(System.Net.IPAddress.IPv6Any, 0);
+    holder.Server.DualMode = true;
+    holder.ExclusiveAddressUse = true;
+    holder.Start();
+    var busyPort = ((System.Net.IPEndPoint)holder.LocalEndpoint).Port;
+    var retryHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, new ForegroundHistory())
+    {
+        Port = busyPort,
+        RetryDelay = _ => TimeSpan.FromMilliseconds(200),
+    };
+    using var webCts = new CancellationTokenSource();
+    var serverRun = retryHost.RunServerAsync(webCts.Token);
+    using var svcHttp = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(5) };
+    try
+    {
+        var waitFail = Stopwatch.StartNew();
+        while (retryHost.FailedStarts < 2 && waitFail.Elapsed < TimeSpan.FromSeconds(20))
+            await Task.Delay(50);
+        Debug.Assert(retryHost.FailedStarts >= 2, "The web server should fail to start while the port is taken: " + retryHost.FailedStarts);
+        Debug.Assert(!serverRun.IsCompleted, "A failed start must not end the web server task");
+        holder.Stop();
+
+        var svcBase = $"http://127.0.0.1:{busyPort}";
+        HttpResponseMessage? first = null;
+        var waitUp = Stopwatch.StartNew();
+        while (first is null && waitUp.Elapsed < TimeSpan.FromSeconds(20))
+        {
+            try { first = await svcHttp.GetAsync(svcBase + "/"); }
+            catch (HttpRequestException) { await Task.Delay(100); }
+            catch (TaskCanceledException) { await Task.Delay(100); }
+        }
+        Debug.Assert(first is not null && (int)first.StatusCode == 302, "After the port is free, the web server should answer: " + first?.StatusCode);
+        Console.WriteLine("✅ Web Server Bind Retry Passed.");
+
+        // CB1 d: the capture quota of the unauthenticated capture route.
+        async Task<int> Upload(int bytes)
+        {
+            var request = new HttpRequestMessage(HttpMethod.Post, svcBase + "/api/agent/capture") { Content = new ByteArrayContent(new byte[bytes]) };
+            request.Headers.Add("X-User", user.Username);
+            request.Headers.Add("X-Trigger", "WATCH");
+            return (int)(await svcHttp.SendAsync(request)).StatusCode;
+        }
+        int CaptureFiles()
+        {
+            var dir = Path.Combine(DatabaseManager.CapturesDirectory, user.Id.ToString());
+            return Directory.Exists(dir) ? Directory.GetFiles(dir).Length : 0;
+        }
+        Debug.Assert(await Upload(1000) == 200, "A normal capture should be accepted");
+        var filesBefore = CaptureFiles();
+        Debug.Assert(await Upload((int)ParentalControl.Domain.Captures.CaptureQuota.MaxBytesPerCapture + 1) == 413, "A capture above the size limit should be refused");
+        Debug.Assert(CaptureFiles() == filesBefore, "A refused capture should leave no file");
+        var (filesToday, _) = ScreenCaptureRepository.GetDayTotals(user.Id, DateTime.Today);
+        for (var i = filesToday; i < ParentalControl.Domain.Captures.CaptureQuota.MaxFilesPerDay; i++)
+            ScreenCaptureRepository.Add(new ScreenCaptureRecord { UserId = user.Id, Timestamp = DateTime.Now, FilePath = "quota-test", Width = 1, Height = 1, FileSizeBytes = 1, TriggerType = "WATCH" });
+        Debug.Assert(await Upload(1000) == 429, "A capture above the daily file limit should be refused");
+        Debug.Assert(await Upload(1000) == 429, "A second refusal should also be refused");
+        Debug.Assert(CaptureFiles() == filesBefore, "A refused capture should leave no file");
+        Debug.Assert(ScreenCaptureRepository.GetDayTotals(user.Id, DateTime.Today).Files == ParentalControl.Domain.Captures.CaptureQuota.MaxFilesPerDay,
+            "A refused capture should add no row");
+        Console.WriteLine("✅ Capture Quota Passed.");
+    }
+    finally
+    {
+        try { holder.Stop(); } catch { }
+        webCts.Cancel();
+        try { await serverRun; } catch { }
+    }
+}
+Console.WriteLine("✅ Start Gate & Lockdown after a Failed Open Passed.");
+
 // The owner of a loopback connection (finding S4): the row of the TCP table gives the process of the client end.
 {
     var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
@@ -1148,6 +1326,16 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
         var owner = TcpConnectionOwner.Find(clientSide, serverSide);
         Debug.Assert(owner is not null && owner.ProcessId == Environment.ProcessId && owner.UserSid == System.Security.Principal.WindowsIdentity.GetCurrent().User!.Value,
             "The owner should be this process and its user");
+        // N2: the create time of the connection and the start time of the process.
+        var processStart = Process.GetCurrentProcess().StartTime.ToUniversalTime();
+        Debug.Assert(owner!.ProcessStartUtc is { } ps && Math.Abs((ps - processStart).TotalSeconds) < 2, "The start time of this process should be read: " + owner.ProcessStartUtc);
+        Console.WriteLine($"   Connection create time from the TCP table: {(owner.ConnectionCreatedUtc?.ToString("O") ?? "not given")}");
+        if (owner.ConnectionCreatedUtc is { } connCreated)
+            Debug.Assert(connCreated >= processStart.AddSeconds(-2) && connCreated <= DateTime.UtcNow.AddSeconds(2),
+                $"The create time of the connection should be after the process start: {connCreated:O}, process {processStart:O}");
+        Debug.Assert(owner.SessionUserKnown, "The session user of this process should be known");
+        Debug.Assert(LocalClientPolicy.Decide(LoginSource.Local, owner, new HashSet<string>()) == LocalClientDecision.Allow,
+            "The policy should allow this process (an administrator, not a Restricted User): " + LocalClientPolicy.Decide(LoginSource.Local, owner, new HashSet<string>()));
         Debug.Assert(TcpConnectionOwner.FindOwnerPid(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, 1), serverSide) is null, "An unknown connection should have no owner");
     }
     finally

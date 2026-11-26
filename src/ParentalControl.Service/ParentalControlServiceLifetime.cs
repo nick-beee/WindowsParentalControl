@@ -8,6 +8,7 @@ public sealed class ParentalControlServiceLifetime : WindowsServiceLifetime
 {
     private readonly SessionTracker _sessionTracker;
     private readonly Serilog.ILogger _logger;
+    private readonly ServiceStartup _startup;
 
     public ParentalControlServiceLifetime(
         IHostEnvironment environment,
@@ -16,18 +17,25 @@ public sealed class ParentalControlServiceLifetime : WindowsServiceLifetime
         IOptions<HostOptions> optionsAccessor,
         IOptions<WindowsServiceLifetimeOptions> windowsServiceOptions,
         SessionTracker sessionTracker,
-        Serilog.ILogger logger)
+        Serilog.ILogger logger,
+        ServiceStartup startup)
         : base(environment, applicationLifetime, loggerFactory, optionsAccessor, windowsServiceOptions)
     {
         CanHandleSessionChangeEvent = true;
         CanHandlePowerEvent = true;
         _sessionTracker = sessionTracker;
         _logger = logger;
+        _startup = startup;
     }
 
     protected override void OnSessionChange(SessionChangeDescription changeDescription)
     {
         base.OnSessionChange(changeDescription);
+
+        // Before the start gate opens, the database is not safe to use (CB1). SessionTracker.Initialize reads all
+        // sessions from Windows when the gate opens, so an event before it is not lost.
+        if (!_startup.IsReady)
+            return;
 
         try
         {
@@ -62,6 +70,8 @@ public sealed class ParentalControlServiceLifetime : WindowsServiceLifetime
 
     protected override bool OnPowerEvent(PowerBroadcastStatus powerStatus)
     {
+        if (!_startup.IsReady)
+            return base.OnPowerEvent(powerStatus);
         try
         {
             switch (powerStatus)

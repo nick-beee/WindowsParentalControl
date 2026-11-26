@@ -18,6 +18,9 @@ public static class SettingsRepository
     public const string KeyAdminSetupNoticeSent = "admin_setup_notice_sent"; // "true" after the one-time setup notice
     public const string KeyDataFolderQuarantineNotified = "data_folder_quarantine_notified"; // the moved folder of the last Telegram alert
     public const string KeyDataFolderRelocationNotified = "data_folder_relocation_notified"; // the new data folder of the last Telegram alert
+    // The setup lock after a quarantine or a relocation (require-admin-sign-in S2): the UTC time of the move, or empty.
+    // While it is set and no Restricted User exists, the service locks each session of a user who is not an administrator.
+    public const string KeyDataFolderSetupLock = "data_folder_setup_lock";
     public const string KeyAlertIntervals = "alert_intervals"; // e.g. "15,5,1"
     public const string KeyMaxDailyRequests = "max_daily_requests"; // default: 1
     public const string KeyLanguagePreset = "language_preset"; // a Language Preset: "de", "en" or "id"

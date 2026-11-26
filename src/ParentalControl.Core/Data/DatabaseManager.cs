@@ -11,6 +11,18 @@ public static class DatabaseManager
 
     private static readonly object Gate = new();
     private static string? _checkedDirectory;
+    private static bool _serviceStepRequired;
+
+    /// <summary>
+    /// The service only, at its start (require-admin-sign-in, CB1): until <see cref="InitializeSecured"/> runs, each use
+    /// of <see cref="DataDirectory"/> throws. So no code of the service can open a database in a folder that its own
+    /// data folder step did not secure yet (the path of the Admin app, which does not change the rules, is not used).
+    /// </summary>
+    public static void RequireServiceStep()
+    {
+        lock (Gate)
+            _serviceStepRequired = true;
+    }
 
     /// <summary>
     /// The data folder. The tests set <c>PARENTAL_CONTROL_DATA_DIR</c>. Else the location comes from the admin-only
@@ -58,6 +70,8 @@ public static class DatabaseManager
         {
             if (_checkedDirectory is not null)
                 return _checkedDirectory;
+            if (_serviceStepRequired)
+                throw new Platform.DataFolderUnsafeException("The data folder step of the service has not finished.");
             var reading = Platform.DataFolderRegistry.Default.ReadLocation(Platform.DataFolderRegistry.ProgramDataRoot);
             if (!reading.IsUsable)
                 throw new Platform.DataFolderUnsafeException(reading.Error ?? "The location of the data folder is not usable.");

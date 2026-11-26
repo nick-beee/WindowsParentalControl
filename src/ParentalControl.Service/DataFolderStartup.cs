@@ -24,7 +24,10 @@ public static class DataFolderStartup
         DataFolderPreparation prep;
         try
         {
-            prep = DataFolderCoordinator.Prepare(DataFolderRegistry.Default, DataFolderRegistry.ProgramDataRoot);
+            // CB1 b: the fast path is allowed only for the folder that the last start secured without a warning.
+            var lastSecured = DataFolderStatusStore.Read().LastSecuredFolder;
+            prep = DataFolderCoordinator.Prepare(DataFolderRegistry.Default, DataFolderRegistry.ProgramDataRoot,
+                lastSecuredFolder: lastSecured);
         }
         catch (Exception ex)
         {
@@ -35,16 +38,18 @@ public static class DataFolderStartup
     }
 
     /// <summary>
-    /// The normal start: runs the data folder step and opens the database in the folder. Returns false if no folder
-    /// works; the service then runs the lockdown (<see cref="DataFolderLockdown"/>) and does not stop.
+    /// Records that the database or the log file did not open after a successful data folder step (CB2), for example
+    /// because the disk is full. The service then runs the lockdown and tries again.
     /// </summary>
-    public static bool TryInitialize()
+    public static void RecordOpenFailure(DataFolderPreparation prep, string error, bool writeEvent)
     {
-        var prep = Prepare();
-        if (prep.IsLockdown)
-            return false;
-        DatabaseManager.InitializeSecured(prep.Folder!, prep.Result, secured: prep.Warning is null);
-        return true;
+        var detail = $"The database or the log in {prep.Folder} did not open: {error}";
+        DataFolderStatusStore.TryWrite(DataFolderState.Lockdown, detail, DateTimeOffset.UtcNow, newQuarantine: null);
+        if (writeEvent)
+            WriteEvent(EventLogEntryType.Error, 1009,
+                "Parental Control secured the data folder, but it could not open the database or the log file. " +
+                "It locks each session of a user who is not an administrator (Enforced Workstation Lock) and tries again every minute. " +
+                detail);
     }
 
     private static void Record(DataFolderPreparation prep, bool writeLockdownEvent)
@@ -66,7 +71,7 @@ public static class DataFolderStartup
             : null;
         // The detail of a Secured state is only the warning of a trusted folder that the service could not reset; the
         // Admin app then shows the web admin as locked. A registry error goes to the event log only.
-        DataFolderStatusStore.TryWrite(DataFolderState.Secured, prep.Warning, now, prep.Result?.QuarantinedTo, relocation);
+        DataFolderStatusStore.TryWrite(DataFolderState.Secured, prep.Warning, now, prep.Result?.QuarantinedTo, relocation, prep.Folder);
 
         if (prep.Result?.QuarantinedTo is { } moved)
         {
@@ -109,6 +114,8 @@ public static class DataFolderStartup
             logger.Warning("Data folder repair: {Repair}", repair);
         if (report.State == DataFolderState.Secured && report.Detail is { } warning)
             logger.Warning("Data folder warning: {Warning}", warning);
+        if (result is { Walked: false })
+            logger.Information("The data folder has the rules of the last start, so the check did not walk through the items");
         logger.Information("Data folder: {Folder}", DatabaseManager.DataDirectory);
     }
 

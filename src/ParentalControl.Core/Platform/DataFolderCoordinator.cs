@@ -39,11 +39,14 @@ public static class DataFolderCoordinator
 {
     /// <param name="random">The source of the random name bytes. Tests replace it to force a name that exists.</param>
     /// <param name="sleep">The wait between two tries. Tests replace it.</param>
+    /// <param name="budget">The time limit of all walks of this step (CB1 c). Tests give a small budget.</param>
+    /// <param name="lastSecuredFolder">The folder of the last Secured state without a warning, for the fast path (CB1 b).</param>
     public static DataFolderPreparation Prepare(DataFolderRegistry registry, string root,
-        Func<byte[]>? random = null, Action<TimeSpan>? sleep = null)
+        Func<byte[]>? random = null, Action<TimeSpan>? sleep = null, WalkBudget? budget = null, string? lastSecuredFolder = null)
     {
         random ??= () => RandomNumberGenerator.GetBytes(DataFolderLocation.RandomBytes);
         sleep ??= Thread.Sleep;
+        budget ??= WalkBudget.Default();
 
         var reading = registry.ReadLocation(root);
         var configured = reading.Folder ?? $"(the location in HKLM\\{registry.KeyPath})";
@@ -58,13 +61,20 @@ public static class DataFolderCoordinator
         else
         {
             var tries = 0;
+            var timedOut = false;
             while (true)
             {
                 tries++;
                 try
                 {
-                    var result = DataFolderGuard.Secure(reading.Folder!);
+                    var result = DataFolderGuard.Secure(reading.Folder!, budget, lastSecuredFolder);
                     return new DataFolderPreparation(reading.Folder, configured, result, null, null, null, null);
+                }
+                catch (DataFolderWalkTimeoutException ex)
+                {
+                    configuredError = ex.Message;
+                    timedOut = true;
+                    break;
                 }
                 catch (DataFolderUnsafeException ex)
                 {
@@ -74,15 +84,44 @@ public static class DataFolderCoordinator
                     break;
                 sleep(DataFolderRecovery.ConfiguredRetryDelay);
             }
-            outcome = DataFolderGuard.FindReasonNotTrustedForUse(reading.Folder!) is null
-                ? ConfiguredFolderResult.FailedButTrusted
-                : ConfiguredFolderResult.Failed;
+
+            if (!timedOut)
+            {
+                try
+                {
+                    outcome = DataFolderGuard.FindReasonNotTrustedForUse(reading.Folder!, budget) is null
+                        ? ConfiguredFolderResult.FailedButTrusted
+                        : ConfiguredFolderResult.Failed;
+                }
+                catch (DataFolderWalkTimeoutException ex)
+                {
+                    configuredError += " " + ex.Message;
+                    timedOut = true;
+                    outcome = ConfiguredFolderResult.TimedOut;
+                }
+            }
+            else
+            {
+                outcome = ConfiguredFolderResult.TimedOut;
+            }
+
+            if (timedOut)
+            {
+                // CB1 c: no new folder because of a slow walk. The quick check of the folder itself and of the items
+                // that the service opens decides between the warning mode and the lockdown.
+                outcome = DataFolderGuard.FindReasonNotTrustedForUse(reading.Folder!, shallow: true) is null
+                    ? ConfiguredFolderResult.TimedOutButTrusted
+                    : ConfiguredFolderResult.TimedOut;
+            }
         }
 
         switch (DataFolderRecovery.Decide(outcome))
         {
             case DataFolderMode.UseConfiguredWithWarning:
                 return new DataFolderPreparation(reading.Folder, configured, null, configuredError, null, null, null);
+            case DataFolderMode.Lockdown:
+                return new DataFolderPreparation(null, configured, null, null, null,
+                    configuredError ?? "The check of the data folder reached its time limit.", null);
             case DataFolderMode.CreateNewFolder:
                 return CreateNewFolder(registry, root, configured, configuredError ?? "unknown error", random);
             default:

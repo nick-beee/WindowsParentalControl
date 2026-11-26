@@ -7,15 +7,32 @@ using ParentalControl.Domain.DataFolder;
 namespace ParentalControl.Core.Platform;
 
 /// <summary>The data folder is not safe to use. The caller must not open the database in it (fail closed).</summary>
-public sealed class DataFolderUnsafeException : Exception
+public class DataFolderUnsafeException : Exception
 {
     public DataFolderUnsafeException(string message, Exception? inner = null) : base(message, inner) { }
+}
+
+/// <summary>
+/// The walk through the data folder reached its time limit (require-admin-sign-in, CB1 c). The service does not try the
+/// step again with the same budget, and it never makes a new folder because of it.
+/// </summary>
+public sealed class DataFolderWalkTimeoutException : DataFolderUnsafeException
+{
+    public DataFolderWalkTimeoutException(string folder, int items)
+        : base($"The check of the data folder {folder} reached its time limit after {items} items.") { }
 }
 
 /// <param name="QuarantinedTo">The new name of an untrusted data folder that the service moved away, or null.</param>
 /// <param name="QuarantineReason">Why the content was not trusted, or null.</param>
 /// <param name="Repairs">Links and hard links that the service removed or replaced, in plain English.</param>
-public sealed record DataFolderResult(string? QuarantinedTo, string? QuarantineReason, IReadOnlyList<string> Repairs);
+public sealed record DataFolderResult(string? QuarantinedTo, string? QuarantineReason, IReadOnlyList<string> Repairs)
+{
+    /// <summary>
+    /// False if the step took the fast path (CB1 b): the last start secured this folder and its rules did not change,
+    /// so the service did not walk through the items.
+    /// </summary>
+    public bool Walked { get; init; } = true;
+}
 
 /// <summary>
 /// Makes the data folder safe from the Restricted User (require-admin-sign-in, design D9 and findings B1, B2, S1, S2).
@@ -38,20 +55,28 @@ public static class DataFolderGuard
     // inherited entries itself, so the result does not depend on an inheritance calculation of Windows.
     private const string DirectoryItemSddl = "O:BAD:AI(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)";
     private const string FileItemSddl = "O:BAD:AI(A;ID;FA;;;SY)(A;ID;FA;;;BA)";
-    // A file in the place of the data folder, after the move: only SYSTEM and Administrators.
-    private const string LockedFileSddl = "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)";
 
     private const int MaxTries = 5;
+
+    /// <summary>The file names that the service uses in the data folder. The fast path checks them without a walk.</summary>
+    public const string DatabaseFileName = "data.db";
+    private static readonly string[] ServiceFolderNames = { "logs", "captures" };
 
     /// <summary>
     /// The service step at each start. Needs LocalSystem (SeTakeOwnershipPrivilege, SeRestorePrivilege, SeBackupPrivilege).
     /// </summary>
-    public static DataFolderResult Secure(string folder)
+    /// <param name="budget">The time limit of the walk (CB1 c). Without it, the default limit applies.</param>
+    /// <param name="lastSecuredFolder">
+    /// The folder that the last start secured without a warning (from the registry), or null. If it is this folder and
+    /// the folder still has the rules of the service, the step skips the walk (CB1 b).
+    /// </param>
+    /// <exception cref="DataFolderWalkTimeoutException">The walk reached the time limit.</exception>
+    public static DataFolderResult Secure(string folder, WalkBudget? budget = null, string? lastSecuredFolder = null)
     {
         try
         {
             TokenPrivileges.Enable("SeTakeOwnershipPrivilege", "SeRestorePrivilege", "SeBackupPrivilege");
-            return SecureCore(Path.GetFullPath(folder));
+            return SecureCore(Path.GetFullPath(folder), budget ?? WalkBudget.Default(), lastSecuredFolder);
         }
         catch (DataFolderUnsafeException)
         {
@@ -63,7 +88,7 @@ public static class DataFolderGuard
         }
     }
 
-    private static DataFolderResult SecureCore(string folder)
+    private static DataFolderResult SecureCore(string folder, WalkBudget budget, string? lastSecuredFolder)
     {
         string? quarantinedTo = null;
         string? quarantineReason = null;
@@ -88,8 +113,15 @@ public static class DataFolderGuard
                 continue;
             }
 
+            // CB1 b: the folder has the rules of the service since the last start, so nobody else could add an item.
+            if (info.IsDirectory && quarantinedTo is null && repairs.Count == 0 && lastSecuredFolder is not null
+                && DataFolderFastPath.CanSkipWalk(lastSecuredFolder, folder, Native.ReadRootRules(root), ServiceItemsLookSafe(folder)))
+            {
+                return new DataFolderResult(null, null, repairs) { Walked = false };
+            }
+
             var reason = info.IsDirectory
-                ? Describe(folder, DataFolderTrust.Check(Native.ReadFacts(root))) ?? FindUntrustedItem(folder)
+                ? Describe(folder, DataFolderTrust.Check(Native.ReadFacts(root))) ?? FindUntrustedItem(folder, budget)
                 : $"{folder} is a file, not a folder";
             if (reason is not null)
             {
@@ -100,7 +132,7 @@ public static class DataFolderGuard
             }
 
             Native.SetSecurity(root, FolderSddl, Native.ProtectedDacl);
-            ResetItems(folder, repairs);
+            ResetItems(folder, repairs, budget, folder);
             return new DataFolderResult(quarantinedTo, quarantineReason, repairs);
         }
 
@@ -193,7 +225,13 @@ public static class DataFolderGuard
     /// trusted, no item is a link, and no file has more than one name. Only SYSTEM or an administrator can have made
     /// such a folder, so the service can keep using it. Returns the reason otherwise; a failed check is a reason too.
     /// </summary>
-    public static string? FindReasonNotTrustedForUse(string folder)
+    /// <param name="budget">The time limit of the walk.</param>
+    /// <exception cref="DataFolderWalkTimeoutException">The walk reached the time limit.</exception>
+    /// <param name="shallow">
+    /// True for the quick check after a walk that reached its time limit (CB1 c): the folder itself, the database,
+    /// <c>logs</c> and <c>captures</c> only, without a walk.
+    /// </param>
+    public static string? FindReasonNotTrustedForUse(string folder, WalkBudget? budget = null, bool shallow = false)
     {
         try
         {
@@ -206,7 +244,16 @@ public static class DataFolderGuard
                 return $"{folder} is a link";
             if (!info.IsDirectory)
                 return $"{folder} is a file, not a folder";
-            return Describe(folder, DataFolderTrust.Check(Native.ReadFacts(root))) ?? FindItemNotTrustedForUse(folder);
+            var rootReason = Describe(folder, DataFolderTrust.Check(Native.ReadFacts(root)));
+            if (rootReason is not null)
+                return rootReason;
+            if (shallow)
+                return ServiceItemsLookSafe(folder) ? null : $"{folder}: the database, logs or captures is a link, has more than one name, or is not trusted";
+            return FindItemNotTrustedForUse(folder, budget ?? WalkBudget.Default(), folder);
+        }
+        catch (DataFolderWalkTimeoutException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -214,10 +261,11 @@ public static class DataFolderGuard
         }
     }
 
-    private static string? FindItemNotTrustedForUse(string directory)
+    private static string? FindItemNotTrustedForUse(string directory, WalkBudget budget, string root)
     {
         foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
         {
+            Visit(budget, root);
             using var handle = Native.TryOpen(entry, Native.ReadAccess);
             if (handle is null)
                 continue;
@@ -229,7 +277,7 @@ public static class DataFolderGuard
             var reason = Describe(entry, DataFolderTrust.Check(Native.ReadFacts(handle)));
             if (reason is not null)
                 return reason;
-            if (info.IsDirectory && FindItemNotTrustedForUse(entry) is { } inner)
+            if (info.IsDirectory && FindItemNotTrustedForUse(entry, budget, root) is { } inner)
                 return inner;
         }
         return null;
@@ -237,11 +285,53 @@ public static class DataFolderGuard
 
     private static string? Describe(string path, string? reason) => reason is null ? null : $"{path}: {reason}";
 
+    private static void Visit(WalkBudget budget, string root)
+    {
+        if (!budget.TryVisit())
+            throw new DataFolderWalkTimeoutException(root, budget.ItemsVisited);
+    }
+
+    /// <summary>
+    /// The quick check of the items that the service opens (CB1 b, c): the database is a real file with one name, and
+    /// <c>logs</c> and <c>captures</c> are real folders. Each one that exists must be trusted. A missing item is safe:
+    /// the service creates it in a folder with its rules.
+    /// </summary>
+    private static bool ServiceItemsLookSafe(string folder)
+    {
+        try
+        {
+            using (var db = Native.TryOpen(Path.Combine(folder, DatabaseFileName), Native.ReadAccess))
+            {
+                if (db is not null)
+                {
+                    var info = Native.GetInfo(db);
+                    if (info.IsReparsePoint || info.IsDirectory || info.LinkCount != 1 || DataFolderTrust.Check(Native.ReadFacts(db)) is not null)
+                        return false;
+                }
+            }
+            foreach (var name in ServiceFolderNames)
+            {
+                using var item = Native.TryOpen(Path.Combine(folder, name), Native.ReadAccess);
+                if (item is null)
+                    continue;
+                var info = Native.GetInfo(item);
+                if (info.IsReparsePoint || !info.IsDirectory || DataFolderTrust.Check(Native.ReadFacts(item)) is not null)
+                    return false;
+            }
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <summary>The reason for the first item below the folder that is not trusted, or null. Links are skipped.</summary>
-    private static string? FindUntrustedItem(string directory)
+    private static string? FindUntrustedItem(string directory, WalkBudget budget)
     {
         foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
         {
+            Visit(budget, directory);
             using var handle = Native.TryOpen(entry, Native.CheckAccess);
             if (handle is null)
                 continue;
@@ -251,7 +341,7 @@ public static class DataFolderGuard
             var reason = Describe(entry, DataFolderTrust.Check(Native.ReadFacts(handle)));
             if (reason is not null)
                 return reason;
-            if (info.IsDirectory && FindUntrustedItem(entry) is { } inner)
+            if (info.IsDirectory && FindUntrustedItem(entry, budget) is { } inner)
                 return inner;
         }
         return null;
@@ -261,10 +351,11 @@ public static class DataFolderGuard
     /// S2: owner Administrators and only the inherited rules for each item. A link is deleted (the folders that the
     /// service needs are created again as real folders when it uses them). A file with more than one name gets a new copy.
     /// </summary>
-    private static void ResetItems(string directory, List<string> repairs)
+    private static void ResetItems(string directory, List<string> repairs, WalkBudget budget, string root)
     {
         foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
         {
+            Visit(budget, root);
             var handle = Native.TryOpen(entry, Native.CheckAccess);
             if (handle is null)
                 continue;
@@ -281,7 +372,7 @@ public static class DataFolderGuard
                 if (info.IsDirectory)
                 {
                     Native.SetSecurity(handle, DirectoryItemSddl, Native.UnprotectedDacl);
-                    ResetItems(entry, repairs);
+                    ResetItems(entry, repairs, budget, root);
                     continue;
                 }
 
@@ -316,20 +407,30 @@ public static class DataFolderGuard
     }
 
     /// <summary>
-    /// Renames the checked folder (the same object, through a handle) to <c>&lt;name&gt;.untrusted-&lt;guid&gt;</c>.
+    /// Renames the checked item (the same object, through a handle) to <c>&lt;name&gt;.untrusted-&lt;guid&gt;</c>.
     /// The rename fails if a process holds a handle to the folder or to an item in it without delete sharing; then
-    /// <see cref="Secure"/> throws, and <see cref="DataFolderCoordinator"/> leaves the folder alone and makes a new one (D14). After the rename, the service locks the moved folder itself (through the same handle).
-    /// It does not walk into the moved folder: the child controlled its content, so a walk by path could follow a link.
+    /// <see cref="Secure"/> throws, and <see cref="DataFolderCoordinator"/> leaves the folder alone and makes a new one (D14).
+    /// After the rename of a folder, the service locks the moved folder itself (through the same handle). It does not
+    /// walk into the moved folder: the child controlled its content, so a walk by path could follow a link.
+    /// A file in the place of the data folder is only renamed (S1 of the second review): it can be a hard link to a file
+    /// of the system, and a new owner or DACL on it would change that file too.
     /// </summary>
     private static string Quarantine(string folder, Native.FileInfoByHandle checkedInfo)
     {
         var parent = Path.GetDirectoryName(folder) ?? throw new IOException($"{folder} has no parent folder.");
         var target = Path.Combine(parent, Path.GetFileName(folder) + ".untrusted-" + Guid.NewGuid().ToString("N"));
+        if (!checkedInfo.IsDirectory)
+        {
+            using var file = Native.OpenSameObject(folder, checkedInfo, Native.DELETE | Native.FILE_READ_ATTRIBUTES);
+            Native.Rename(file, target);
+            return target;
+        }
+
         using var handle = Native.OpenSameObject(folder, checkedInfo, Native.CheckAccess | Native.DELETE);
         Native.Rename(handle, target);
         try
         {
-            Native.SetSecurity(handle, checkedInfo.IsDirectory ? FolderSddl : LockedFileSddl, Native.ProtectedDacl);
+            Native.SetSecurity(handle, FolderSddl, Native.ProtectedDacl);
         }
         catch
         {
@@ -526,6 +627,43 @@ public static class DataFolderGuard
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "GetKernelObjectSecurity failed");
 
             return FactsOf(new RawSecurityDescriptor(buffer, 0));
+        }
+
+        /// <summary>The owner, the DACL and its protection of the data folder itself, for the fast path (CB1 b).</summary>
+        public static RootRules ReadRootRules(SafeFileHandle handle)
+        {
+            const uint info = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+            GetKernelObjectSecurity(handle, info, null, 0, out var needed);
+            if (needed == 0)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "GetKernelObjectSecurity failed");
+            var buffer = new byte[needed];
+            if (!GetKernelObjectSecurity(handle, info, buffer, needed, out _))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "GetKernelObjectSecurity failed");
+            var descriptor = new RawSecurityDescriptor(buffer, 0);
+
+            List<RootAce>? dacl = null;
+            if ((descriptor.ControlFlags & ControlFlags.DiscretionaryAclPresent) != 0 && descriptor.DiscretionaryAcl is { } acl)
+            {
+                dacl = new List<RootAce>();
+                foreach (GenericAce ace in acl)
+                {
+                    var flags = ace.AceFlags;
+                    var kind = ace is QualifiedAce q
+                        ? q.AceQualifier switch
+                        {
+                            AceQualifier.AccessAllowed => AceKind.Allow,
+                            AceQualifier.AccessDenied => AceKind.Deny,
+                            _ => AceKind.Audit,
+                        }
+                        : AceKind.Unknown;
+                    var sid = ace is KnownAce known ? known.SecurityIdentifier.Value : "unknown";
+                    var mask = ace is KnownAce k ? unchecked((uint)k.AccessMask) : 0u;
+                    dacl.Add(new RootAce(kind, sid, mask,
+                        (flags & AceFlags.ObjectInherit) != 0, (flags & AceFlags.ContainerInherit) != 0, (flags & AceFlags.InheritOnly) != 0));
+                }
+            }
+            var isProtected = (descriptor.ControlFlags & ControlFlags.DiscretionaryAclProtected) != 0;
+            return new RootRules(descriptor.Owner?.Value, isProtected, dacl);
         }
 
         /// <summary>The owner and the DACL of a security descriptor, for <see cref="DataFolderTrust.Check(SecurityFacts, uint)"/>.</summary>

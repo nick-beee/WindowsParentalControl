@@ -15,6 +15,16 @@ public enum ConfiguredFolderResult
     Failed,
     /// <summary>The registry key or the registry value of the location is not usable.</summary>
     InvalidLocation,
+    /// <summary>
+    /// The walk through the folder reached its time limit (CB1 c), but the folder itself and its database are trusted
+    /// (a quick check without a walk). The service keeps the folder, as for <see cref="FailedButTrusted"/>.
+    /// </summary>
+    TimedOutButTrusted,
+    /// <summary>
+    /// The walk reached its time limit and the quick check did not find the folder trusted. The service does not make
+    /// a new folder (a flood of files must not give an empty database): it runs the lockdown and tries again.
+    /// </summary>
+    TimedOut,
 }
 
 /// <summary>The result of one try to create a new data folder with a random name.</summary>
@@ -35,6 +45,8 @@ public enum DataFolderMode
     UseConfiguredWithWarning,
     /// <summary>The service makes a new folder with a random name and uses it with a new database.</summary>
     CreateNewFolder,
+    /// <summary>The service uses no folder: it runs the lockdown and tries again every minute.</summary>
+    Lockdown,
 }
 
 /// <summary>
@@ -56,7 +68,10 @@ public static class DataFolderRecovery
     public static readonly TimeSpan LockInterval = TimeSpan.FromSeconds(2);
     public static readonly TimeSpan RetryInterval = TimeSpan.FromMinutes(1);
 
-    /// <summary>True if the service tries the configured folder again after <paramref name="triesSoFar"/> tries.</summary>
+    /// <summary>
+    /// True if the service tries the configured folder again after <paramref name="triesSoFar"/> tries. A walk that
+    /// reached its time limit is not tried again: the budget is used up.
+    /// </summary>
     public static bool RetryConfigured(ConfiguredFolderResult result, int triesSoFar) =>
         result is ConfiguredFolderResult.Failed && triesSoFar < ConfiguredTries;
 
@@ -65,6 +80,8 @@ public static class DataFolderRecovery
     {
         ConfiguredFolderResult.Secured => DataFolderMode.UseConfigured,
         ConfiguredFolderResult.FailedButTrusted => DataFolderMode.UseConfiguredWithWarning,
+        ConfiguredFolderResult.TimedOutButTrusted => DataFolderMode.UseConfiguredWithWarning,
+        ConfiguredFolderResult.TimedOut => DataFolderMode.Lockdown,
         _ => DataFolderMode.CreateNewFolder,
     };
 

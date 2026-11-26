@@ -31,6 +31,13 @@ public partial class DashboardViewModel : ObservableObject
     [ObservableProperty]
     private string _webAdminLockedHint = string.Empty;
 
+    /// <summary>
+    /// True while the setup lock after a move of the data folder is on (require-admin-sign-in S2): the service locks
+    /// each session of a user who is not an administrator until a Restricted User exists or the parent finishes the setup.
+    /// </summary>
+    [ObservableProperty]
+    private bool _isSetupLockActive;
+
     public DashboardViewModel(Action<UserRow> navigateToDetail)
     {
         _navigateToDetail = navigateToDetail;
@@ -46,6 +53,33 @@ public partial class DashboardViewModel : ObservableObject
             : "Open Settings and select \"Set up sign-in\" under \"Web admin sign-in\".";
         RefreshUsers();
         RefreshEvents();
+        RefreshSetupLock();
+    }
+
+    private void RefreshSetupLock()
+    {
+        try
+        {
+            IsSetupLockActive = !string.IsNullOrEmpty(SettingsRepository.Get(SettingsRepository.KeyDataFolderSetupLock))
+                                && !UserRepository.GetAll().Any(u => u.IsRestricted);
+        }
+        catch
+        {
+            IsSetupLockActive = false;
+        }
+    }
+
+    /// <summary>Ends the setup lock without a Restricted User (S2). The service reads the setting every 2 seconds.</summary>
+    [RelayCommand]
+    private void FinishSetup()
+    {
+        var answer = MessageBox.Show(
+            "No user is marked as restricted. If you finish the setup now, Parental Control enforces no limit until you mark the child as restricted. Finish the setup?",
+            "Finish setup", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (answer != MessageBoxResult.Yes)
+            return;
+        SettingsRepository.Set(SettingsRepository.KeyDataFolderSetupLock, string.Empty);
+        RefreshSetupLock();
     }
 
     [RelayCommand]

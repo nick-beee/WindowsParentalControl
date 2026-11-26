@@ -22,6 +22,7 @@ public static class DataFolderStatusStore
     private const string RelocatedToValue = "DataFolderRelocatedTo";
     private const string RelocatedAtValue = "DataFolderRelocatedAtUtc";
     private const string RelocationReasonValue = "DataFolderRelocationReason";
+    private const string FolderValue = "DataFolderInUse";
 
     /// <param name="From">The folder that the service could not use and left alone.</param>
     /// <param name="To">The new data folder with a random name.</param>
@@ -31,13 +32,15 @@ public static class DataFolderStatusStore
     /// Writes the result of one start. A new move of an untrusted folder or a new data folder replaces the old record; a
     /// start without one keeps the old record, so the Admin app still shows it. Returns false if the write failed.
     /// </summary>
+    /// <param name="folder">The data folder that the service uses at this start, or null for a lockdown.</param>
     public static bool TryWrite(DataFolderState state, string? detail, DateTimeOffset checkedAtUtc, string? newQuarantine,
-        Relocation? newRelocation = null)
+        Relocation? newRelocation = null, string? folder = null)
     {
         try
         {
             using var key = DataFolderRegistry.Default.OpenForWrite();
             key.SetValue(StateValue, state.ToString(), RegistryValueKind.String);
+            key.SetValue(FolderValue, folder ?? string.Empty, RegistryValueKind.String);
             key.SetValue(DetailValue, detail ?? string.Empty, RegistryValueKind.String);
             key.SetValue(CheckedAtValue, checkedAtUtc.ToString("O", CultureInfo.InvariantCulture), RegistryValueKind.String);
             if (!string.IsNullOrEmpty(newQuarantine))
@@ -84,6 +87,7 @@ public static class DataFolderStatusStore
                 RelocatedTo = NullIfEmpty(key.GetValue(RelocatedToValue) as string),
                 RelocatedAtUtc = ParseTime(key.GetValue(RelocatedAtValue) as string),
                 RelocationReason = NullIfEmpty(key.GetValue(RelocationReasonValue) as string),
+                Folder = NullIfEmpty(key.GetValue(FolderValue) as string),
             };
         }
         catch

@@ -42,6 +42,16 @@ public sealed record DataFolderReport(
 
     /// <summary>Why the old folder was not usable, or null.</summary>
     public string? RelocationReason { get; init; }
+
+    /// <summary>The data folder of the last start, or null (a lockdown, or an older version).</summary>
+    public string? Folder { get; init; }
+
+    /// <summary>
+    /// The folder that the last start secured without a warning, or null. The fast path of the next start (CB1 b) is
+    /// allowed only for this folder.
+    /// </summary>
+    public string? LastSecuredFolder =>
+        State == DataFolderState.Secured && string.IsNullOrEmpty(Detail) ? Folder : null;
 }
 
 /// <summary>The texts of the Admin app about the web admin sign-in and the data folder.</summary>

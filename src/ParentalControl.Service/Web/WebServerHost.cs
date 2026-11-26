@@ -14,6 +14,8 @@ using ParentalControl.Core.Services;
 using ParentalControl.Service.Web.Pages;
 using ParentalControl.Core;
 using ParentalControl.Domain.Categories;
+using ParentalControl.Domain.Web;
+using ParentalControl.Domain.Captures;
 using ParentalControl.Domain.Messages;
 using ParentalControl.Domain.AdminAccess;
 using Microsoft.AspNetCore.Routing;
@@ -31,9 +33,41 @@ public sealed class WebServerHost : BackgroundService
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string ProcessName, string WindowTitle, DateTime LastSeen)> _liveActivities = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CaptureCommandState> _captureStates = new(StringComparer.OrdinalIgnoreCase);
     public static event Action<ScreenCaptureRecord>? OnCaptureReceived;
-    public WebServerHost(SessionTracker sessionTracker, TelegramBotService telegramBotService, Serilog.ILogger logger,
-        ForegroundHistory foregroundHistory, CategoryEnforcer categoryEnforcer)
+    private readonly Dictionary<int, (int Files, long Bytes)> _captureReservations = new();
+    private readonly CaptureRefusalLog _captureRefusals = new();
+
+    /// <summary>Copies at most <paramref name="limit"/> bytes. Returns the number of bytes copied.</summary>
+    private static async Task<long> CopyAtMostAsync(Stream source, Stream target, long limit)
     {
+        var buffer = new byte[81920];
+        long total = 0;
+        while (total < limit)
+        {
+            var read = await source.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, limit - total)));
+            if (read == 0)
+                break;
+            await target.WriteAsync(buffer.AsMemory(0, read));
+            total += read;
+        }
+        return total;
+    }
+    private readonly ServiceStartup? _startup;
+
+    /// <summary>The port of the web server. Tests use another port.</summary>
+    public int Port { get; init; } = 5050;
+
+    /// <summary>The wait after a failed start of the web server (S3). Tests use a short wait.</summary>
+    public Func<int, TimeSpan> RetryDelay { get; init; } = WebServerRetry.Delay;
+
+    /// <summary>The number of starts that failed, for example because another program uses the port.</summary>
+    public int FailedStarts => _failedStarts;
+    private int _failedStarts;
+
+    /// <param name="startup">The start gate of the service, or null in a test (the database is ready then).</param>
+    public WebServerHost(SessionTracker sessionTracker, TelegramBotService telegramBotService, Serilog.ILogger logger,
+        ForegroundHistory foregroundHistory, CategoryEnforcer categoryEnforcer, ServiceStartup? startup = null)
+    {
+        _startup = startup;
         _sessionTracker = sessionTracker;
         _telegramBotService = telegramBotService;
         _logger = logger;
@@ -44,17 +78,19 @@ public sealed class WebServerHost : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var builder = WebApplication.CreateBuilder();
+        // The routes read the database: wait for the start gate (require-admin-sign-in, CB1).
+        if (_startup is not null)
+            await _startup.WaitReadyAsync(stoppingToken);
+        await RunServerAsync(stoppingToken);
+    }
 
-        builder.WebHost.ConfigureKestrel(options =>
-        {
-            options.ListenAnyIP(5050);
-        });
-
-        builder.Services.AddRouting();
-
-        var app = builder.Build();
-
+    /// <summary>
+    /// Runs the web server until <paramref name="stoppingToken"/> ends. If the start fails, for example because a
+    /// program of the child took the port first, it logs the error and tries again after <see cref="RetryDelay"/>
+    /// (require-admin-sign-in, S3). It never ends the service: the limits do not depend on the web server.
+    /// </summary>
+    public async Task RunServerAsync(CancellationToken stoppingToken)
+    {
         // Setup Telegram Bot command hooks
         TelegramBotService.OnCaptureRequested = async (userArg) =>
         {
@@ -174,10 +210,48 @@ public sealed class WebServerHost : BackgroundService
             return Task.FromResult(list);
         };
 
-        ConfigureApp(app);
+        await RunWithRetryAsync(async ct =>
+        {
+            var builder = WebApplication.CreateBuilder();
+            builder.WebHost.ConfigureKestrel(options => options.ListenAnyIP(Port));
+            builder.Services.AddRouting();
+            await using var app = builder.Build();
+            ConfigureApp(app);
+            await app.StartAsync(ct);
+            _logger.Information("Starting embedded WebServer on http://0.0.0.0:{Port}", Port);
+            await app.WaitForShutdownAsync(ct);
+        }, stoppingToken);
+    }
 
-        _logger.Information("Starting embedded WebServer on http://0.0.0.0:5050");
-        await app.RunAsync(stoppingToken);
+    private async Task RunWithRetryAsync(Func<CancellationToken, Task> runOnce, CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await runOnce(stoppingToken);
+                return;
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                var failed = Interlocked.Increment(ref _failedStarts);
+                var delay = RetryDelay(failed);
+                _logger.Error(ex, "The web server could not start on port {Port} (try {Try}). It tries again in {Delay}. The limits are still enforced.",
+                    Port, failed, delay);
+                try
+                {
+                    await Task.Delay(delay, stoppingToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -812,40 +886,92 @@ public sealed class WebServerHost : BackgroundService
                 return Results.NotFound(new { error = "User not found." });
             }
 
-            var userCapturesDir = Path.Combine(DatabaseManager.CapturesDirectory, user.Id.ToString());
-            if (!Directory.Exists(userCapturesDir))
+            // CB1 d: a daily quota per user. The route needs no sign-in (#6), so the child can send many files: each
+            // file makes the walk at the service start longer, and each byte fills the disk. An upload reserves one
+            // file and its largest size under a lock, so parallel uploads cannot pass the quota. A slow upload does
+            // not hold the lock.
+            CaptureQuotaDecision quota;
+            int filesToday;
+            long bytesToday;
+            lock (_captureReservations)
             {
-                Directory.CreateDirectory(userCapturesDir);
+                (filesToday, bytesToday) = ScreenCaptureRepository.GetDayTotals(user.Id, DateTime.Today);
+                _captureReservations.TryGetValue(user.Id, out var reserved);
+                quota = CaptureQuota.Check(filesToday + reserved.Files, bytesToday + reserved.Bytes);
+                if (quota.Allowed)
+                    _captureReservations[user.Id] = (reserved.Files + 1, reserved.Bytes + quota.MaxBytes);
             }
-
-            var fileName = $"{DateTime.Now:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.jpg";
-            var filePath = Path.Combine(userCapturesDir, fileName);
-
-            using (var fs = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None))
+            try
             {
-                await ctx.Request.Body.CopyToAsync(fs);
+                if (!quota.Allowed)
+                {
+                    if (_captureRefusals.Count(user.Id, DateOnly.FromDateTime(DateTime.Today)))
+                        _logger.Warning("Capture refused for {Username}: the daily quota is used ({Outcome}: {Files} files, {Bytes} bytes). " +
+                                        "Later refusals today are not logged.", user.Username, quota.Outcome, filesToday, bytesToday);
+                    return Results.StatusCode(StatusCodes.Status429TooManyRequests);
+                }
+
+                var userCapturesDir = Path.Combine(DatabaseManager.CapturesDirectory, user.Id.ToString());
+                if (!Directory.Exists(userCapturesDir))
+                {
+                    Directory.CreateDirectory(userCapturesDir);
+                }
+
+                var fileName = $"{DateTime.Now:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}.jpg";
+                var filePath = Path.Combine(userCapturesDir, fileName);
+
+                long written;
+                using (var fs = new FileStream(filePath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                {
+                    written = await CopyAtMostAsync(ctx.Request.Body, fs, quota.MaxBytes + 1);
+                }
+                if (written > quota.MaxBytes || written == 0)
+                {
+                    try { File.Delete(filePath); } catch { /* the cleanup removes it later */ }
+                    if (written == 0)
+                        return Results.BadRequest(new { error = "Empty capture." });
+                    if (_captureRefusals.Count(user.Id, DateOnly.FromDateTime(DateTime.Today)))
+                        _logger.Warning("Capture refused for {Username}: the body is larger than {Max} bytes. Later refusals today are not logged.",
+                            user.Username, quota.MaxBytes);
+                    return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+                }
+
+                var fi = new FileInfo(filePath);
+                var record = new ScreenCaptureRecord
+                {
+                    UserId = user.Id,
+                    Timestamp = DateTime.Now,
+                    FilePath = filePath,
+                    Width = width > 0 ? width : 1920,
+                    Height = height > 0 ? height : 1080,
+                    FileSizeBytes = fi.Length,
+                    TriggerType = trigger,
+                    AdminIp = ctx.Connection.RemoteIpAddress?.ToString()
+                };
+
+                record = ScreenCaptureRepository.Add(record);
+                _logger.Information("Screen capture recorded for {Username} ({Width}x{Height}, {Bytes} bytes, Trigger: {Trigger})",
+                    user.Username, record.Width, record.Height, record.FileSizeBytes, record.TriggerType);
+
+                OnCaptureReceived?.Invoke(record);
+
+                return Results.Ok(new { id = record.Id, path = record.FilePath });
             }
-
-            var fi = new FileInfo(filePath);
-            var record = new ScreenCaptureRecord
+            finally
             {
-                UserId = user.Id,
-                Timestamp = DateTime.Now,
-                FilePath = filePath,
-                Width = width > 0 ? width : 1920,
-                Height = height > 0 ? height : 1080,
-                FileSizeBytes = fi.Length,
-                TriggerType = trigger,
-                AdminIp = ctx.Connection.RemoteIpAddress?.ToString()
-            };
-
-            record = ScreenCaptureRepository.Add(record);
-            _logger.Information("Screen capture recorded for {Username} ({Width}x{Height}, {Bytes} bytes, Trigger: {Trigger})",
-                user.Username, record.Width, record.Height, record.FileSizeBytes, record.TriggerType);
-
-            OnCaptureReceived?.Invoke(record);
-
-            return Results.Ok(new { id = record.Id, path = record.FilePath });
+                if (quota.Allowed)
+                {
+                    lock (_captureReservations)
+                    {
+                        var reserved = _captureReservations[user.Id];
+                        reserved = (reserved.Files - 1, reserved.Bytes - quota.MaxBytes);
+                        if (reserved.Files <= 0)
+                            _captureReservations.Remove(user.Id);
+                        else
+                            _captureReservations[user.Id] = reserved;
+                    }
+                }
+            }
         });
 
         // Web Admin Page: the setup text before the setup, else the login form or the dashboard.
