@@ -10,7 +10,8 @@ Current state that shapes the approach:
   - `UsageMonitorWorker`: `ProcessTick` (today, now, weekday) and `RunCleanupIfNeeded`.
   - `SessionTracker`: the logon check, the unlock check, `TickAllSessions`, `FlushSessionTime`, and `LastTick` of `ActiveSession`.
   - `CategoryEnforcer.Tick` (today).
-  - `WebServerHost`: the activity route (App Usage and Category Usage day), the agent status and the remaining time (`DateTime.Now.TimeOfDay`, the elapsed seconds from `LastTick`), the capture quota (`DateTime.Today`), the request routes, the dashboard routes.
+  - `WebServerHost`: the activity route (App Usage and Category Usage day), the agent status and the remaining time (`DateTime.Now.TimeOfDay`, the elapsed seconds from `LastTick`), the capture quota (`DateTime.Today`) and the `Timestamp = DateTime.Now` of each capture row that the quota counts, the request routes, the dashboard routes.
+  - `ScreenCaptureRepository`: `GetDayTotals` (rows with `timestamp >= <start of the day>`) and `PruneOldCaptures` (cutoff from `DateTime.Now`).
   - `RequestPage` (the min and max dates of a Schedule Change Request).
   - Core: `GraceRequestRepository` (once per day), `ScheduleRepository.GetEffectiveLimit` (default date), `AppUsageRepository` (hour bucket).
   - Admin app: `UserRow` and `UserDetailViewModel` (today, the date of a new Schedule Exception).
@@ -51,7 +52,9 @@ The Control Time Zone is the string value `ControlTimeZone` in `HKLM\SOFTWARE\Pa
 New pure class `ControlClock` in `src/ParentalControl.Domain/Time`. It takes a `TimeZoneInfo` and a source of the UTC time. It gives `Now` (the local time in the control zone), `Today` (`DateOnly`), `TimeOfDay` (`TimeOnly`) and `DayOfWeek`, from `TimeZoneInfo.ConvertTime`. `TimeZoneInfo` applies the daylight saving rules of the zone. Windows stores these rules under `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Time Zones`, which only administrators can change.
 - The service has one provider of the current `ControlClock`. It reads the registry value at the start and at each tick (60 seconds), so a change in the Admin app takes effect within 60 seconds.
 - Each call site in the Context list takes the day, the weekday and the time of day from the control clock. `ScheduleRepository.GetEffectiveLimit` and `GraceRequestRepository` get the date from the caller and lose their `DateTime.Now` default. The Admin app reads the same registry value and uses the same class.
-- Timestamps that only show a time (event rows, log lines, Telegram texts, `CreatedAt`) stay as they are. They have no effect on a limit.
+- A stored timestamp that a daily count reads gets its value from the control clock (`ControlClock.Now`), not from `DateTime.Now`. Today this is `screen_captures.timestamp`: `WebServerHost` writes it with `DateTime.Now`, and `ScreenCaptureRepository.GetDayTotals` counts the rows with `timestamp >= <start of the day>`. If the two use different zones, a capture after a time zone change can fall out of the count of today. The service therefore writes the column from the control clock, and the quota passes the start of the control day. The retention cutoff of `PruneOldCaptures` uses the control clock too. The column keeps its format, so there is no new column.
+- The daily limit of Grace Requests reads the `date` column that the caller passes, so it needs only the day from the control clock.
+- Other timestamps that only show a time (event rows, log lines, Telegram texts, `CreatedAt`) stay as they are. No daily count reads them, so they have no effect on a limit.
 - *Alternative: use UTC for the day.* Rejected. The day of a family in Germany would start at 01:00 or 02:00 local time.
 - *Alternative: call `TimeZoneInfo.ClearCachedData()` and keep the system time zone.* Rejected. That makes the change take effect at once, not prevent it.
 
