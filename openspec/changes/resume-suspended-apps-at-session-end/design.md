@@ -172,11 +172,13 @@ Alternative that worked (`minimize-resume` mode of the test program): resume the
 | Window | Iconic after | Run time | Result |
 |---|---|---|---|
 | `SpikeFull`, full screen | 28 ms | 341 ms (settle 300 ms) | minimized, desktop usable |
-| `SpikeGame`, normal | 4 ms | 310 ms (settle 300 ms) | minimized |
-| `TestGame`, normal | 5 ms | 315 ms (settle 300 ms) | minimized |
-| `SpikeFull`, full screen | 4 ms | 4 ms (no settle) | `iconic=True`, but the screen kept the frozen image until the next resume |
+| `SpikeGame`, normal | 4 ms (*) | 310 ms (settle 300 ms) | minimized |
+| `TestGame`, normal | 5 ms (*) | 315 ms (settle 300 ms) | minimized |
+| `SpikeFull`, full screen | 4 ms (*) | 4 ms (no settle) | `iconic=True`, but the screen kept the frozen image until the next resume |
 
 After each run, all threads were suspended again (12/12, 13/13, 8/8).
+
+(*) Not a clean measurement. The queued `SW_FORCEMINIMIZE` of the earlier test ran within some milliseconds after the resume, before the `SW_MINIMIZE` call. Only the first row (after a full resume) measures `SW_MINIMIZE` alone. If the parent chooses option 2, group 4 must measure the run time again.
 
 ### R4. Service controls during a restart and a shutdown (task 1.3): passed
 
@@ -194,7 +196,7 @@ Shutdown with Fast Startup (shutdown /s /hybrid /t 0, no user session):
 
 - The query comes 35 s before `PRESHUTDOWN`. D1 is correct: the service control is too late.
 - For this restart, `lParam` was `ENDSESSION_CRITICAL` (0x40000000), not 0. The handler must treat each query without `ENDSESSION_CLOSEAPP` as an end of the session.
-- A Fast Startup shutdown also sent `PRESHUTDOWN`, and the service process started again at the next boot.
+- The shutdown with `/hybrid` also sent `PRESHUTDOWN`. The next boot was a cold boot (Kernel-Boot event 27, boot type 0x0), so the VM did not use Fast Startup, although `HiberbootEnabled` is 1. The test service stopped itself on `PRESHUTDOWN`. So this run does not show what a hybrid shutdown does. The check of Fast Startup (task 3.4) must run on the child's PC.
 
 ### Not run
 
@@ -208,6 +210,7 @@ These checks need a new `Kid` logon in the console. The `Kid` session ended with
 D7 (minimize):
 1. **Two-phase suspension** (the fallback of D7). The service marks a process as pending, the agent minimizes it while it runs, and the service suspends it 10 s later. The bound "suspend within 60 seconds" becomes 70 seconds. Spec change.
 2. **Short resume in the agent** (R3). The agent resumes a Suspended App for about 0.3 s, minimizes it, and suspends it again. The 60-second bound stays. The spec must permit that the agent runs a Suspended App for at most 1 s to minimize it. The agent must not resume a process that the service did not suspend.
+   - Risk: Windows counts each suspend and each resume. If the service resumes the game (time is available again) during the 0.3 s, the suspend of the agent freezes it with no record, and nothing resumes it. The child can then only close it, which is near a break of the hard rule. If the service suspends the game during the 0.3 s, the count becomes 2, and one later resume does not unfreeze it. So option 2 needs a lock between the agent and the service, for example: the service does the short resume itself on a request of the agent, inside the enforcer lock.
 3. **No minimization.** Remove the requirement "Minimize the windows of a Suspended App". The frozen window stays on the screen, as today. Alt+Tab, Start and the other windows work.
 
 Cancel path (R2):
