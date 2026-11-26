@@ -300,6 +300,9 @@ public sealed class AgentController : IDisposable
         }
     }
 
+    /// <summary>Called after the WPF message loop ended because of a session end. See <see cref="SessionEndWatcher.WaitForQuery"/>.</summary>
+    public void WaitForSessionEndQuery(TimeSpan timeout) => _sessionEndWatcher.WaitForQuery(timeout);
+
     public void Dispose()
     {
         if (_disposed) return;
