@@ -93,7 +93,9 @@ An old blocked parent is a live process of a Blocked Program whose creation time
 
 The parent pid comes from the `ParentProcessID` of the WMI event, and in the tick from `NtQueryInformationProcess` with the class `ProcessBasicInformation` (0, field `InheritedFromUniqueProcessId`). The service reads the creation time and the path of the parent with `ProcessControl.QueryPathAndStart`.
 
-The block epoch is the later of two times: the start of the `BlockEnforcer` in this service run, and the last change of any App Rule in this service run (`CategoryConfigCache.Changed`). It is in memory only. After a service start, it is the start time, so each process that ran before is suspended, not closed.
+The block epoch is the later of two times: the start of the `BlockEnforcer` in this service run, and the last change of any App Rule in this service run. It is in memory only. After a service start, it is the start time, so each process that ran before is suspended, not closed.
+
+Implementation (decided during `/opsx:apply`): the "last change" is the build time of the rule snapshot that resolved the exe (`CategoryConfigCache.Snapshot.BuiltUtc`, set after the read of the rules), not the time of the `Changed` event. `Invalidate()` clears the cache before it raises `Changed`, so another thread can build a snapshot with the new block before an event handler sets the epoch. A snapshot that contains a change is always built after the commit of that change, so the epoch is never too early. A snapshot also changes after a Category Limit change; the epoch then moves too, which only turns a possible close into a suspension.
 
 Each rule change sets the epoch, not only a change of the block. Example: a folder rule blocks `C:\Tools\` since Monday, and a file rule allows `C:\Tools\calc2.exe`. The child starts `calc2.exe` on Tuesday. Then the parent deletes the file rule. `calc2.exe` is now blocked, but it started before the change, so it is suspended, not closed.
 
@@ -114,7 +116,7 @@ New method `ProcessControl.Terminate(int pid, DateTime expectedStartUtc, out str
 
 A Chromium or Firefox browser starts more processes of the same exe. Each one is its own start, and D4 closes each one. A helper of another exe (for example `crashpad_handler`) ends by itself when its parent ends.
 
-If `Terminate` fails with "access denied" or another error, the `BlockEnforcer` asks the `CategoryEnforcer` for a tick at once (`RequestTick`). The planner then suspends the process (D6). If the suspension also fails, the existing fallback of `category-limits` locks the session and alerts the parent.
+If `Terminate` fails with "access denied" or another error, the `BlockEnforcer` asks the `CategoryEnforcer` for a tick at once (`RequestTick`). The planner then suspends the process (D6). If the suspension also fails, the existing fallback of `category-limits` locks the session and alerts the parent. The `BlockEnforcer` keeps the pid and start time of a failed close for 2 minutes and gives `Suspend` for it, so the tick does not try the close again and again. The environment variable `PARENTAL_CONTROL_TEST_TERMINATE_FAIL` (an exe file name) forces a failed close on a test machine, like `PARENTAL_CONTROL_TEST_SUSPEND_FAIL` of stage 1.
 
 ### D6. A blocked process that already runs is suspended
 Decided by the orchestrator under the user's delegation (2026-11-26).
@@ -124,6 +126,7 @@ Decided by the orchestrator under the user's delegation (2026-11-26).
 - The planner suspends a blocked process with the reason `blocked`. It does not require that the exe was a Foreground Window. The parent named the program, so its background processes stop too. A browser in background mode has no window.
 - The planner skips a blocked process that `Close` (D4) applies to, so that the tick does not suspend a process that the `BlockEnforcer` closes in the same second. The tick runs D4 before the planner.
 - A record with the reason `blocked` stays while the exe is blocked. When the block ends: if the exe has no time left and was a Foreground Window today, the record changes to `limit`; else the planner resumes the process.
+- A record with the reason `limit` whose exe becomes a Blocked Program changes to `blocked` (decided during `/opsx:apply`). Else the limit reset of the next day resumes a blocked browser. The plan has a list `ToRelabel` for these changes.
 - The re-suspension after a resume by a tool, the resume at a service stop (`ResumeAll`), and the D6 fallback of stage 1 apply without a change, because they use the same records.
 - PR #22 resumes each record when the session ends. A blocked suspension thus does not bring back issue #4.
 
@@ -151,6 +154,7 @@ New list `CategoryDefaults.BlockedBrowsers`: `chrome.exe`, `firefox.exe`, `msedg
 - New settings key `blocked_defaults_seeded`. The seed runs while the key is absent, on a new and on an existing database, after the seed of `categories_seeded`. The new key is necessary because `categories_seeded` is already set on the child's PC.
 - If a rule with the same match type and pattern exists, the seed sets `is_blocked = 1` on it and keeps its category and App Limit. The user asked to block all browsers, and the parent can remove the block with one switch.
 - The seed and the key write run in one transaction.
+- An existing rule with the same pattern and the category System keeps no block, because D2 refuses a block on System (decided during `/opsx:apply`). The seed adds no second rule for it.
 - Category Unknown: when the parent removes the block, the browser counts as if it had no rule.
 - Tor Browser runs `Tor Browser\Browser\firefox.exe`, so the `firefox.exe` rule covers it in each folder. A folder rule for Tor Browser adds nothing, because the file rule wins, and the folder can be anywhere.
 - Opera GX runs `opera.exe` from its own folder. Its `launcher.exe` starts `opera.exe`, which is then closed.
@@ -218,7 +222,8 @@ blocked_starts (
 )
 ```
 
-- Each close or blocked suspension does one upsert. The first insert of a row writes one event log entry with the new `EventType.PROGRAM_BLOCKED`, added at the end of the enum, for example "Blocked program chrome.exe closed at start". A silent start (D9) counts in `closed_count` too.
+- Each close or blocked suspension does one upsert. The first insert of a row writes one event log entry with the new `EventType.PROGRAM_BLOCKED`, added at the end of the enum, for example "Blocked program chrome.exe closed at start". A background start (`--no-startup-window`, D9) counts in `closed_count` too.
+- A sub-process of a browser (a token `--type=...` of Chromium, or `-contentproc` of Firefox) does not count in `closed_count` or `suspended_count`; it only updates the path and `last_at` (decided during `/opsx:apply`). One Chrome start makes several `--type=` processes within milliseconds, and the watcher closes each one. Without this rule, one start gives a count above 1, and the spec scenario "Three starts of Chrome" (count 3) fails. A Firefox `-contentproc` process is not silent (the spec lists only `--no-startup-window` and `--type=`), but the daily dedupe of the message applies.
 - `RunCleanupIfNeeded` deletes rows older than the usage retention.
 - New route `GET /api/admin/blocked-starts?date=yyyy-MM-dd` (default today): a list of user name, file name, path, counts and times. The path and the file name are untrusted text; the React admin shows them as text.
 
@@ -243,7 +248,7 @@ Decided by the orchestrator under the user's delegation (2026-11-26).
 - `POST /api/admin/app-rules` reads the optional boolean `blocked` (missing = `false`).
 - `PUT /api/admin/app-rules/{id}` reads `blocked`. A missing field keeps the stored value. The current `AdminPage.cs` sends no `blocked`, so an edit of the category there does not remove a block.
 - `GET /api/admin/blocked-starts` (D11).
-- `GET /api/admin/settings` and `POST /api/admin/settings` get `notifyBlockedTelegram`.
+- `GET /api/admin/settings` and `POST /api/admin/settings` get `notifyBlockedTelegram`, and `msgProgramBlocked` like the other editable child texts (D10).
 - The validation of D2 returns status 400 with an error text.
 - All routes are below `/api/admin/`, so the Admin Session gate of PR #21 covers them without a change. Until PR #21 merges, they use the current `CheckAuth`.
 - The UI is a task for the React admin (issue #26): a block switch in the rules table, a "Blocked today" list, and the notice setting. Until #26, the default rules work without a UI, and the parent can call the API.

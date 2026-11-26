@@ -29,19 +29,19 @@ PR #20 (`add-german-child-texts`) is merged (design D14). Do not install a build
 
 ## 5. Core: data
 
-- [ ] 5.1 In `DatabaseManager`, add `app_rules.is_blocked INTEGER NOT NULL DEFAULT 0` and `suspended_processes.reason TEXT NOT NULL DEFAULT 'limit'` with `pragma_table_info` checks, and create the table `blocked_starts` of design D11. Verify on the Mac with `dotnet build -p:EnableWindowsTargeting=true`, and later with an assert in `tests/ParentalControl.Tests` that a database of stage 1 gets both columns and keeps its rows.
-- [ ] 5.2 Read and write `is_blocked` in `AppRuleRepository` (insert, update, read). An update without a block value keeps the stored value. Verify with an assert in `tests/ParentalControl.Tests`.
-- [ ] 5.3 Read and write `reason` in `SuspensionRepository`. Verify with an assert in `tests/ParentalControl.Tests` that a row of stage 1 reads as `Limit`.
-- [ ] 5.4 Add the one-time seed of the blocked browsers with the key `blocked_defaults_seeded` in one transaction, after the seed of `categories_seeded`. Verify with asserts: a new database gets 15 blocked rules; a second start adds nothing; a deleted default stays deleted; an existing `chrome.exe` rule gets the block.
-- [ ] 5.5 Add `BlockedStartRepository`: upsert of a close or a suspension, read of one day, the flags `child_notified` and `parent_notified`, and the delete of old rows in `RunCleanupIfNeeded`. Verify with asserts for the counts, the first insert result, and the cleanup.
-- [ ] 5.6 Add `EventType.PROGRAM_BLOCKED` at the end of the enum, and the settings key `notify_blocked_telegram` with the default `1`. Verify that `scripts/vm-test.sh` prints `ALL ASSERTIONS PASSED` for groups 5.1 to 5.6.
+- [x] 5.1 In `DatabaseManager`, add `app_rules.is_blocked INTEGER NOT NULL DEFAULT 0` and `suspended_processes.reason TEXT NOT NULL DEFAULT 'limit'` with `pragma_table_info` checks, and create the table `blocked_starts` of design D11. Verify on the Mac with `dotnet build -p:EnableWindowsTargeting=true`, and later with an assert in `tests/ParentalControl.Tests` that a database of stage 1 gets both columns and keeps its rows.
+- [x] 5.2 Read and write `is_blocked` in `AppRuleRepository` (insert, update, read). An update without a block value keeps the stored value. Verify with an assert in `tests/ParentalControl.Tests`.
+- [x] 5.3 Read and write `reason` in `SuspensionRepository`. Verify with an assert in `tests/ParentalControl.Tests` that a row of stage 1 reads as `Limit`.
+- [x] 5.4 Add the one-time seed of the blocked browsers with the key `blocked_defaults_seeded` in one transaction, after the seed of `categories_seeded`. Verify with asserts: a new database gets 15 blocked rules; a second start adds nothing; a deleted default stays deleted; an existing `chrome.exe` rule gets the block.
+- [x] 5.5 Add `BlockedStartRepository`: upsert of a close or a suspension, read of one day, the flags `child_notified` and `parent_notified`, and the delete of old rows in `RunCleanupIfNeeded`. Verify with asserts for the counts, the first insert result, and the cleanup.
+- [x] 5.6 Add `EventType.PROGRAM_BLOCKED` at the end of the enum, and the settings key `notify_blocked_telegram` with the default `1`. Verify that `scripts/vm-test.sh` prints `ALL ASSERTIONS PASSED` for groups 5.1 to 5.6.
 
 ## 6. Core: platform calls
 
-- [ ] 6.1 Add the P/Invokes `TerminateProcess` (kernel32) and `NtQueryInformationProcess` (ntdll) and the constant `PROCESS_TERMINATE` to `NativeMethods`. Verify that the build passes.
-- [ ] 6.2 Add `ProcessControl.Terminate(pid, expectedStartUtc, out detail)` with the pid and start time check of `WithVerifiedHandle` (design D5). Verify with an assert in `tests/ParentalControl.Tests`: start `ping -n 30 127.0.0.1`, call `Terminate` with a wrong start time (result `NotFound`, process still runs), then with the right start time (result `Ok`, process ended).
-- [ ] 6.3 Add `ProcessControl.QueryCommandLine(pid)` with `ProcessCommandLineInformation` (60) and `ProcessControl.QueryParentPid(pid)` with `ProcessBasicInformation` (0). Verify with asserts that the command line of the started `ping` process contains `-n 30` and that its parent pid is the pid of the test process.
-- [ ] 6.4 Verify with `grep -rn "TerminateProcess\|ProcessControl.Terminate" src/` that `NativeMethods.TerminateProcess` has one caller (`ProcessControl.Terminate`) and that `ProcessControl.Terminate` has one caller (the `Close` path of `BlockEnforcer`, after group 7).
+- [x] 6.1 Add the P/Invokes `TerminateProcess` (kernel32) and `NtQueryInformationProcess` (ntdll) and the constant `PROCESS_TERMINATE` to `NativeMethods`. Verify that the build passes.
+- [x] 6.2 Add `ProcessControl.Terminate(pid, expectedStartUtc, out detail)` with the pid and start time check of `WithVerifiedHandle` (design D5). Verify with an assert in `tests/ParentalControl.Tests`: start `ping -n 30 127.0.0.1`, call `Terminate` with a wrong start time (result `NotFound`, process still runs), then with the right start time (result `Ok`, process ended).
+- [x] 6.3 Add `ProcessControl.QueryCommandLine(pid)` with `ProcessCommandLineInformation` (60) and `ProcessControl.QueryParentPid(pid)` with `ProcessBasicInformation` (0). Verify with asserts that the command line of the started `ping` process contains `-n 30` and that its parent pid is the pid of the test process.
+- [x] 6.4 Verify with `grep -rn "TerminateProcess\|ProcessControl.Terminate" src/` that `NativeMethods.TerminateProcess` has one caller (`ProcessControl.Terminate`) and that `ProcessControl.Terminate` has one caller (the `Close` path of `BlockEnforcer`, after group 7).
 
 ## 7. Service: detection and enforcement
 
@@ -77,9 +77,9 @@ PR #20 (`add-german-child-texts`) is merged (design D14). Do not install a build
 
 ## 10. Documentation
 
-- [ ] 10.1 Add the terms Blocked Program and Blocked Start to `GLOSSARY.md`, and widen Suspended App: a process that the service suspends because its exe has no time left, or because its exe is a Blocked Program and it did not start after the block took effect. Verify that the terms match `specs/blocked-programs/spec.md`.
-- [ ] 10.2 Add the parent notes to `README.md`: the default blocked browsers, the PDF reader hint for Edge (design D9), and that a renamed browser is not blocked. Verify that the notes name each of the 15 default file names.
-- [ ] 10.3 Update `docs/ROADMAP.md` (stage 2): blocked programs done, the allow-list mode and the renamed-browser detection as follow-ups. Verify that the roadmap links this change.
+- [x] 10.1 Add the terms Blocked Program and Blocked Start to `GLOSSARY.md`, and widen Suspended App: a process that the service suspends because its exe has no time left, or because its exe is a Blocked Program and it did not start after the block took effect. Verify that the terms match `specs/blocked-programs/spec.md`.
+- [x] 10.2 Add the parent notes to `README.md`: the default blocked browsers, the PDF reader hint for Edge (design D9), and that a renamed browser is not blocked. Verify that the notes name each of the 15 default file names.
+- [x] 10.3 Update `docs/ROADMAP.md` (stage 2): blocked programs done, the allow-list mode and the renamed-browser detection as follow-ups. Verify that the roadmap links this change.
 
 ## Workflow follow-up
 
