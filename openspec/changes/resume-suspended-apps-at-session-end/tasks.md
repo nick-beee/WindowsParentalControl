@@ -35,9 +35,12 @@ All VM checks run on test VM 102 as `Kid` in the Proxmox console (noVNC or SPICE
 
 ## 4. Session Agent
 
-- [ ] 4.1 Call `SetProcessShutdownParameters(0x3FF, SHUTDOWN_NORETRY)` at the start of `Program.Main` and log a failure; verify on the VM that the agent log shows no error at start.
-- [ ] 4.2 Add the hidden top-level window (`HwndSource`, `WS_POPUP`) with a hook for `WM_QUERYENDSESSION`: ignore a query with `ENDSESSION_CLOSEAPP`; for every other query (sign-out, restart with `ENDSESSION_CRITICAL`, shutdown) resume the Suspended Apps of the last status poll with `ProcessControl.Resume`, then send `POST /api/agent/session-ending` synchronously with a 2-second timeout, then return TRUE; verify on the VM: Kid with a suspended test game and an unsaved Notepad signs out, Notepad asks to save, the game is not listed as blocking, and the sign-out completes after "Don't save".
+- [ ] 4.1 Call `SetProcessShutdownParameters(0x3FF, SHUTDOWN_NORETRY)` at the start of `Program.Main` and log a failure (new agent log `agent-<user>-<date>.log` beside the service log); verify on the VM that the agent log shows no error at start.
+  - Implemented 2026-11-26 (build only). The VM check is open: the test VM was in use by another agent.
+- [ ] 4.2 Add the hidden top-level window (WinForms `NativeWindow`, `WS_POPUP`) with a hook for `WM_QUERYENDSESSION`: ignore a query with `ENDSESSION_CLOSEAPP`; for every other query (sign-out, restart with `ENDSESSION_CRITICAL`, shutdown) resume the Suspended Apps of the last status poll with `ProcessControl.Resume`, then send `POST /api/agent/session-ending` synchronously with a 2-second timeout, then return TRUE; verify on the VM: Kid with a suspended test game and an unsaved Notepad signs out, Notepad asks to save, the game is not listed as blocking, and the sign-out completes after "Don't save".
+  - Implemented 2026-11-26 (build only). The VM check is open: the test VM was in use by another agent.
 - [ ] 4.3 Keep the `suspendedApps` list from the status poll, and on each poll minimize the visible top-level windows of each pid in `pendingApps` with `ShowWindowAsync(hwnd, SW_MINIMIZE)` after a check of its start time; verify on the VM: a full-screen test game that reaches its limit is minimized before its suspension, the desktop is usable, and a click on its taskbar button does not bring the frozen window to the front.
+  - Implemented 2026-11-26 (build only). The VM check is open: the test VM was in use by another agent.
 
 ## 5. Documentation
 

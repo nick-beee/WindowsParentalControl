@@ -33,7 +33,7 @@ Facts from the VM run (Windows 10 22H2, task 6.7 of `add-app-categories`):
 ## Decisions
 
 ### D1. Detect the end of the session in the Session Agent
-The agent creates a hidden top-level window (WPF `HwndSource`, style `WS_POPUP`, never shown) and hooks its window procedure. Windows sends `WM_QUERYENDSESSION` and `WM_ENDSESSION` to every top-level window of the session, also to a hidden one.
+The agent creates a hidden top-level window (a WinForms `NativeWindow` with style `WS_POPUP`, never shown, the same method as the test program of R1) and handles its window procedure. The agent already runs WinForms windows (the tray icon) on its WPF message loop. Windows sends `WM_QUERYENDSESSION` and `WM_ENDSESSION` to every top-level window of the session, also to a hidden one.
 - `WM_QUERYENDSESSION` without `ENDSESSION_CLOSEAPP` in `lParam`: start the session-end resume (D3). Then return TRUE. This covers `lParam` = `0` (shutdown), `ENDSESSION_LOGOFF` (0x80000000, sign-out) and `ENDSESSION_CRITICAL` (0x40000000, the restart of R4). The agent never blocks or cancels the end of the session.
 - `lParam` with `ENDSESSION_CLOSEAPP` (0x1): the Restart Manager closes only this program, for example the installer during an upgrade. The session does not end, so the agent does nothing. The service stops during an upgrade and resumes all processes anyway.
 - The agent does not handle `WM_ENDSESSION`. Windows sends `WM_ENDSESSION(TRUE)` to each program right after it answers, so a cancel never reaches the agent (R2).
