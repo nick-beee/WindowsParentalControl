@@ -22,7 +22,7 @@ A temporary, administrator-granted addition of minutes to a User's Allowance Tim
 Additional active minutes credited to a User's daily usage quota upon approval of a Grace Request.
 
 ### Enforced Workstation Lock
-The automated locking of an interactive user desktop session via `LockWorkStation` triggered when Allowance Time is exhausted or the Schedule Window expires. Preserves running processes and unsaved document states while preventing user input. If an expired user unlocks the workstation, the background service immediately re-enforces the lock until Grace Time is approved or the next Schedule Window arrives.
+The automated locking of an interactive user desktop session via `WTSDisconnectSession` (`SessionManager.LockSession`) triggered when Allowance Time is exhausted or the Schedule Window expires. Preserves running processes and unsaved document states while preventing user input. If an expired user unlocks the workstation, the background service immediately re-enforces the lock until Grace Time is approved or the next Schedule Window arrives.
 
 ### Forced Logoff
 The explicit administrative termination of a user session via `WTSLogoffSession`, reserved for emergency administrative overrides or prolonged locked idle states.
