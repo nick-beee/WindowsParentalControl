@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Net.Http.Json;
 using System.Windows.Threading;
+using ParentalControl.Domain.Messages;
 
 namespace ParentalControl.Agent;
 
@@ -26,7 +27,8 @@ public sealed record AgentStatusResponse(
     int? lastDeclinedId = null,
     string? lastDeclinedReason = null,
     DateTime? lastDeclinedTime = null,
-    ActivePromptDto? activePrompt = null);
+    ActivePromptDto? activePrompt = null,
+    string? language = null);
 
 public sealed class AgentController : IDisposable
 {
@@ -42,6 +44,9 @@ public sealed class AgentController : IDisposable
     private int? _lastShownDeclinedId;
     private int? _lastHandledPromptId;
     private PromptDialogWindow? _activePromptDialog;
+    // The Language Preset of the texts. "de" until the first status poll gives the preset of the service.
+    private string _language = LanguagePreset.Default;
+    private TextSet _texts = AgentTexts.For(LanguagePreset.Default);
 
     public AgentController(System.Windows.Application app)
     {
@@ -81,13 +86,13 @@ public sealed class AgentController : IDisposable
     {
         var menu = new System.Windows.Forms.ContextMenuStrip();
 
-        var titleItem = new System.Windows.Forms.ToolStripMenuItem($"Pengguna: {Environment.UserName}")
+        var titleItem = new System.Windows.Forms.ToolStripMenuItem(_texts.Format("tray_user", ("username", Environment.UserName)))
         {
             Enabled = false
         };
         menu.Items.Add(titleItem);
 
-        var toggleWidgetItem = new System.Windows.Forms.ToolStripMenuItem("⏱ Tampilkan / Sembunyikan Widget", null, (s, e) =>
+        var toggleWidgetItem = new System.Windows.Forms.ToolStripMenuItem(_texts["tray_toggle_widget"], null, (s, e) =>
         {
             if (_widgetWindow.Visibility == System.Windows.Visibility.Visible)
             {
@@ -100,13 +105,13 @@ public sealed class AgentController : IDisposable
             }
         });
         menu.Items.Add(toggleWidgetItem);
-        var settingsItem = new System.Windows.Forms.ToolStripMenuItem("⚙️ Pengaturan Layar Penuh", null, (s, e) =>
+        var settingsItem = new System.Windows.Forms.ToolStripMenuItem(_texts["tray_fullscreen_settings"], null, (s, e) =>
         {
             _widgetWindow.Dispatcher.Invoke(() => _widgetWindow.OpenSettings());
         });
         menu.Items.Add(settingsItem);
 
-        var requestItem = new System.Windows.Forms.ToolStripMenuItem("🎮 Minta Tambahan Waktu Layar...", null, (s, e) =>
+        var requestItem = new System.Windows.Forms.ToolStripMenuItem(_texts["tray_request"], null, (s, e) =>
         {
             try
             {
@@ -117,7 +122,9 @@ public sealed class AgentController : IDisposable
         });
         menu.Items.Add(requestItem);
 
+        var oldMenu = _notifyIcon.ContextMenuStrip;
         _notifyIcon.ContextMenuStrip = menu;
+        oldMenu?.Dispose();
     }
 
     private async Task PollStatusAsync()
@@ -129,6 +136,8 @@ public sealed class AgentController : IDisposable
                 $"http://127.0.0.1:5050/api/agent/status?user={username}");
 
             if (status == null) return;
+
+            ApplyLanguage(status.language);
 
             // Check for interactive prompt from parent/admin (all accounts)
             if (status.activePrompt != null && status.activePrompt.id != _lastHandledPromptId)
@@ -146,6 +155,7 @@ public sealed class AgentController : IDisposable
                         prompt.targetDisplay,
                         prompt.timeoutSeconds,
                         prompt.options,
+                        _texts,
                         async (resp, reason, elapsed) =>
                         {
                             try
@@ -171,7 +181,7 @@ public sealed class AgentController : IDisposable
                 {
                     _widgetWindow.Hide();
                 }
-                _notifyIcon.Text = "Parental Control: Akun Tidak Dibatasi";
+                _notifyIcon.Text = _texts["tray_unrestricted"];
                 return;
             }
 
@@ -183,7 +193,7 @@ public sealed class AgentController : IDisposable
 
             _widgetWindow.UpdateData(
                 status.remainingSeconds,
-                status.curfew ?? "Jam malam: --:--",
+                status.curfew ?? _texts["widget_curfew_empty"],
                 status.isLocked,
                 status.username ?? Environment.UserName,
                 status.isCurfewClamped);
@@ -192,7 +202,7 @@ public sealed class AgentController : IDisposable
             {
                 _lastShownDeclinedId = status.lastDeclinedId;
                 _widgetWindow.ShowDeclineToast(
-                    status.lastDeclinedReason ?? "Permintaan ditolak oleh orang tua.",
+                    status.lastDeclinedReason ?? _texts["widget_declined_default"],
                     status.lastDeclinedTime ?? DateTime.Now);
             }
 
@@ -200,17 +210,14 @@ public sealed class AgentController : IDisposable
             string tooltip;
             if (status.isLocked)
             {
-                tooltip = "Parental Control: Sesi Dikunci (Dijeda)";
+                tooltip = _texts["tray_locked"];
             }
             else
             {
-                var hours = status.remainingSeconds / 3600;
-                var mins = (status.remainingSeconds % 3600) / 60;
-                var timeText = hours > 0 ? $"Sisa {hours}j {mins}m" : $"Sisa {mins}m";
-                tooltip = $"Parental Control: {timeText}";
+                tooltip = AgentTexts.RemainingTooltip(_texts, status.remainingSeconds);
             }
 
-            if (tooltip.Length > 63) tooltip = tooltip.Substring(0, 63);
+            if (tooltip.Length > AgentTexts.TrayTooltipMaxLength) tooltip = tooltip.Substring(0, AgentTexts.TrayTooltipMaxLength);
             _notifyIcon.Text = tooltip;
             // Check for capture command from service
             if (status.captureRequested)
@@ -244,6 +251,17 @@ public sealed class AgentController : IDisposable
         {
             // If service temporarily down or restarting, do not crash or block
         }
+    }
+
+    /// <summary>Uses the texts of the Language Preset of the service. A missing preset (an earlier service) gives "de".</summary>
+    private void ApplyLanguage(string? language)
+    {
+        var preset = LanguagePreset.Normalize(language);
+        if (preset == _language) return;
+        _language = preset;
+        _texts = AgentTexts.For(preset);
+        _widgetWindow.ApplyTexts(_texts);
+        BuildContextMenu();
     }
 
     private async Task CaptureAndUploadAsync(string trigger)

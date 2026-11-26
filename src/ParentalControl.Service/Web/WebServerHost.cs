@@ -469,6 +469,8 @@ public sealed class WebServerHost : BackgroundService
             }
 
             var user = UserRepository.GetByUsername(username);
+            // The Session Agent shows its texts in this Language Preset. The preset comes only from app_settings.
+            var language = SettingsRepository.GetLanguagePreset();
 
             object? activePromptObj = null;
             var activePrompt = SessionPromptRepository.GetActivePrompt(username);
@@ -503,8 +505,9 @@ public sealed class WebServerHost : BackgroundService
                     username,
                     isRestricted = false,
                     remainingSeconds = 0,
-                    curfew = "Akun tidak dibatasi",
+                    curfew = AgentTexts.For(language)["status_unrestricted"],
                     isLocked = false,
+                    language,
                     activePrompt = activePromptObj
                 });
             }
@@ -583,6 +586,7 @@ public sealed class WebServerHost : BackgroundService
                 lastDeclinedTime,
                 captureRequested,
                 watchIntervalSeconds = watchInterval,
+                language,
                 activePrompt = activePromptObj
             });
         });

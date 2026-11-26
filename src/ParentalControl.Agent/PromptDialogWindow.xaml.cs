@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using ParentalControl.Domain.Messages;
 using WpfButton = System.Windows.Controls.Button;
 using WpfColor = System.Windows.Media.Color;
 using WpfColorConverter = System.Windows.Media.ColorConverter;
@@ -19,6 +20,7 @@ public partial class PromptDialogWindow : Window
     private readonly int _timeoutSeconds;
     private readonly List<string> _options;
     private readonly Action<string, string?, int> _onCompleted;
+    private readonly TextSet _texts;
 
     private readonly DispatcherTimer _countdownTimer;
     private readonly DateTime _startTime;
@@ -32,6 +34,7 @@ public partial class PromptDialogWindow : Window
         int targetDisplay,
         int timeoutSeconds,
         List<string>? options,
+        TextSet texts,
         Action<string, string?, int> onCompleted)
     {
         InitializeComponent();
@@ -42,11 +45,13 @@ public partial class PromptDialogWindow : Window
         _timeoutSeconds = timeoutSeconds > 0 ? timeoutSeconds : 120;
         _options = options ?? new List<string>();
         _onCompleted = onCompleted;
+        _texts = texts;
 
         _remainingSeconds = _timeoutSeconds;
         _startTime = DateTime.UtcNow;
 
         MessageText.Text = message;
+        ApplyTexts();
         ConfigureUrgencyStyle();
         PopulatePresetChips();
 
@@ -58,12 +63,23 @@ public partial class PromptDialogWindow : Window
         _countdownTimer.Start();
     }
 
+    private void ApplyTexts()
+    {
+        Title = _texts["prompt_window_title"];
+        TitleText.Text = _texts["prompt_title"];
+        YesButton.Content = _texts["prompt_yes"];
+        NoButton.Content = _texts["prompt_no"];
+        ReasonLabel.Text = _texts["prompt_reason_label"];
+        BackButton.Content = _texts["prompt_back"];
+        SendReasonButton.Content = _texts["prompt_send"];
+    }
+
     private void ConfigureUrgencyStyle()
     {
         if (_urgency == "URGENT")
         {
             OuterBorder.BorderBrush = new SolidColorBrush((WpfColor)WpfColorConverter.ConvertFromString("#ef4444"));
-            TitleText.Text = "🚨 PESAN MENDESAK DARI ORANG TUA";
+            TitleText.Text = _texts["prompt_urgent_title"];
             TitleText.Foreground = new SolidColorBrush((WpfColor)WpfColorConverter.ConvertFromString("#ef4444"));
             IconText.Text = "🚨";
         }
@@ -177,7 +193,7 @@ public partial class PromptDialogWindow : Window
     private void SendReasonButton_Click(object sender, RoutedEventArgs e)
     {
         var reason = ReasonTextBox.Text.Trim();
-        SubmitResponse("NO", string.IsNullOrWhiteSpace(reason) ? "Ditolak tanpa alasan khusus" : reason);
+        SubmitResponse("NO", string.IsNullOrWhiteSpace(reason) ? _texts["prompt_no_reason"] : reason);
     }
 
     private void SubmitResponse(string response, string? reason)
