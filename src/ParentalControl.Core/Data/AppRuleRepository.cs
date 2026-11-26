@@ -6,7 +6,7 @@ namespace ParentalControl.Core.Data;
 /// <summary>An App Rule with its stored metadata.</summary>
 public sealed record AppRuleRow(AppRule Rule, bool IsDefault, DateTime CreatedAtUtc);
 
-/// <summary>The App Rules (table <c>app_rules</c>). The two minute columns are the App Limit.</summary>
+/// <summary>The App Rules (table <c>app_rules</c>). The two minute columns are the App Limit; <c>is_blocked</c> is the block.</summary>
 public static class AppRuleRepository
 {
     internal static string ToDb(RuleMatchType type) => type == RuleMatchType.File ? "file" : "folder";
@@ -23,7 +23,7 @@ public static class AppRuleRepository
         using var connection = DatabaseManager.CreateConnection();
         using var cmd = connection.CreateCommand();
         cmd.CommandText = """
-            SELECT id, match_type, pattern, category, weekday_minutes, weekend_minutes, is_default, created_at
+            SELECT id, match_type, pattern, category, weekday_minutes, weekend_minutes, is_default, created_at, is_blocked
             FROM app_rules ORDER BY id
             """;
 
@@ -36,7 +36,7 @@ public static class AppRuleRepository
             DailyLimit? appLimit = reader.IsDBNull(4) && reader.IsDBNull(5)
                 ? null
                 : new DailyLimit(reader.IsDBNull(4) ? null : reader.GetInt32(4), reader.IsDBNull(5) ? null : reader.GetInt32(5));
-            var rule = new AppRule(reader.GetInt64(0), type, reader.GetString(2), category, appLimit);
+            var rule = new AppRule(reader.GetInt64(0), type, reader.GetString(2), category, appLimit, reader.GetInt32(8) != 0);
             DateTime.TryParse(reader.GetString(7), null, System.Globalization.DateTimeStyles.RoundtripKind, out var created);
             list.Add(new AppRuleRow(rule, reader.GetInt32(6) != 0, created));
         }
@@ -51,19 +51,20 @@ public static class AppRuleRepository
     /// Adds a rule. Throws ArgumentException if the rule is not valid, and InvalidOperationException
     /// if a rule with the same match type and pattern exists. Returns the new id.
     /// </summary>
-    public static long Insert(RuleMatchType matchType, string pattern, AppCategory category, DailyLimit? appLimit)
+    public static long Insert(RuleMatchType matchType, string pattern, AppCategory category, DailyLimit? appLimit, bool isBlocked = false)
     {
-        var normalized = Validate(matchType, pattern, category, appLimit);
+        var normalized = Validate(matchType, pattern, category, appLimit, isBlocked);
 
         using var connection = DatabaseManager.CreateConnection();
         using var cmd = connection.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO app_rules (match_type, pattern, category, weekday_minutes, weekend_minutes, is_default, created_at)
-            VALUES (@type, @pattern, @category, @weekday, @weekend, 0, @now);
+            INSERT INTO app_rules (match_type, pattern, category, weekday_minutes, weekend_minutes, is_default, created_at, is_blocked)
+            VALUES (@type, @pattern, @category, @weekday, @weekend, 0, @now, @blocked);
             SELECT last_insert_rowid();
             """;
         AddRuleParameters(cmd, matchType, normalized, category, appLimit);
         cmd.Parameters.AddWithValue("@now", DateTime.UtcNow.ToString("o"));
+        cmd.Parameters.AddWithValue("@blocked", isBlocked ? 1 : 0);
 
         try
         {
@@ -77,25 +78,44 @@ public static class AppRuleRepository
         }
     }
 
-    /// <summary>Changes a rule. Returns false if no rule has this id. Throws like <see cref="Insert"/>.</summary>
-    public static bool Update(long id, RuleMatchType matchType, string pattern, AppCategory category, DailyLimit? appLimit)
+    /// <summary>
+    /// Changes a rule. Returns false if no rule has this id. Throws like <see cref="Insert"/>.
+    /// A null <paramref name="isBlocked"/> keeps the stored block, and the validation uses the stored block.
+    /// </summary>
+    public static bool Update(long id, RuleMatchType matchType, string pattern, AppCategory category, DailyLimit? appLimit, bool? isBlocked = null)
     {
-        var normalized = Validate(matchType, pattern, category, appLimit);
-
         using var connection = DatabaseManager.CreateConnection();
+        using var transaction = connection.BeginTransaction();
+
+        bool blocked;
+        using (var read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText = "SELECT is_blocked FROM app_rules WHERE id = @id";
+            read.Parameters.AddWithValue("@id", id);
+            if (read.ExecuteScalar() is not { } stored)
+                return false;
+            blocked = isBlocked ?? Convert.ToInt32(stored) != 0;
+        }
+
+        var normalized = Validate(matchType, pattern, category, appLimit, blocked);
+
         using var cmd = connection.CreateCommand();
+        cmd.Transaction = transaction;
         cmd.CommandText = """
             UPDATE app_rules
             SET match_type = @type, pattern = @pattern, category = @category,
-                weekday_minutes = @weekday, weekend_minutes = @weekend
+                weekday_minutes = @weekday, weekend_minutes = @weekend, is_blocked = @blocked
             WHERE id = @id
             """;
         AddRuleParameters(cmd, matchType, normalized, category, appLimit);
+        cmd.Parameters.AddWithValue("@blocked", blocked ? 1 : 0);
         cmd.Parameters.AddWithValue("@id", id);
 
         try
         {
             var changed = cmd.ExecuteNonQuery() > 0;
+            transaction.Commit();
             CategoryConfigCache.Invalidate();
             return changed;
         }
@@ -116,9 +136,9 @@ public static class AppRuleRepository
         return deleted;
     }
 
-    private static string Validate(RuleMatchType matchType, string pattern, AppCategory category, DailyLimit? appLimit)
+    private static string Validate(RuleMatchType matchType, string pattern, AppCategory category, DailyLimit? appLimit, bool isBlocked)
     {
-        var error = AppRule.Validate(matchType, pattern, category, appLimit);
+        var error = AppRule.Validate(matchType, pattern, category, appLimit, isBlocked, CategoryRepository.LocalProtectedPrograms());
         if (error is not null)
             throw new ArgumentException(error);
         return AppRule.NormalizePattern(matchType, pattern)!;

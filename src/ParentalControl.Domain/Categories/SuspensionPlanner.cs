@@ -5,19 +5,36 @@ namespace ParentalControl.Domain.Categories;
 /// <param name="IsSuspended">True if all threads of the process are suspended.</param>
 public sealed record SessionProcess(int Pid, DateTime StartTimeUtc, string? ExePath, int SessionId, bool IsSuspended);
 
-/// <summary>A process that the service suspended. The pid and the start time identify the process.</summary>
-public sealed record SuspensionRecord(int Pid, DateTime StartTimeUtc, int SessionId, int UserId, AppCategory Category, string ExePath);
+/// <summary>Why the service suspended a process.</summary>
+public enum SuspensionReason
+{
+    /// <summary>The exe has no time left under its Category Limit or App Limit.</summary>
+    Limit,
 
-/// <summary>The category of an exe for a user, and whether the exe has no time left today.</summary>
-public sealed record ExeVerdict(AppCategory Category, bool IsExhausted);
+    /// <summary>The exe is a Blocked Program, and the process did not start after the block took effect.</summary>
+    Blocked,
+}
+
+/// <summary>A process that the service suspended. The pid and the start time identify the process.</summary>
+public sealed record SuspensionRecord(int Pid, DateTime StartTimeUtc, int SessionId, int UserId, AppCategory Category, string ExePath,
+    SuspensionReason Reason = SuspensionReason.Limit);
+
+/// <summary>
+/// The category of an exe for a user, whether the exe has no time left today, and whether it is a Blocked Program
+/// (the caller uses <see cref="BlockedStartDecider.IsBlockedProgram"/>).
+/// </summary>
+public sealed record ExeVerdict(AppCategory Category, bool IsExhausted, bool IsBlocked = false);
 
 /// <summary>A process to suspend. <see cref="IsRecorded"/> is true if a record exists (the process runs again).</summary>
-public sealed record SuspendAction(SessionProcess Process, int UserId, AppCategory Category, string ExePath, bool IsRecorded);
+public sealed record SuspendAction(SessionProcess Process, int UserId, AppCategory Category, string ExePath, bool IsRecorded,
+    SuspensionReason Reason = SuspensionReason.Limit);
 
+/// <param name="ToRelabel">Records that stay, with a new reason. The caller stores the new reason.</param>
 public sealed record SuspensionPlan(
     IReadOnlyList<SuspendAction> ToSuspend,
     IReadOnlyList<SuspensionRecord> ToResume,
-    IReadOnlyList<SuspensionRecord> ToDrop);
+    IReadOnlyList<SuspensionRecord> ToDrop,
+    IReadOnlyList<SuspensionRecord> ToRelabel);
 
 /// <summary>The input of one planning step.</summary>
 /// <param name="Processes">The processes of all sessions that the service lists.</param>
@@ -28,6 +45,8 @@ public sealed record SuspensionPlan(
 /// <param name="AgentExePath">The full path of the Session Agent exe. It is never suspended.</param>
 /// <param name="WindowsFolder">The Windows folder. An exe below it is never suspended, also if no App Rule puts it in System.</param>
 /// <param name="HeldSessions">The sessions with a Session End Hold. No process of such a session is suspended; a resume still happens.</param>
+/// <param name="PendingClose">True for a process that the block enforcer closes now (a Blocked Start). The planner skips it.</param>
+/// <param name="ProtectedPrograms">The programs that a block never suspends. The block verdict of an exe below one of them is ignored.</param>
 public sealed record PlannerInput(
     IReadOnlyList<SessionProcess> Processes,
     IReadOnlyDictionary<int, int> RestrictedSessions,
@@ -36,7 +55,9 @@ public sealed record PlannerInput(
     IReadOnlyList<SuspensionRecord> Records,
     string? AgentExePath,
     string? WindowsFolder,
-    IReadOnlySet<int>? HeldSessions = null);
+    IReadOnlySet<int>? HeldSessions = null,
+    Func<SessionProcess, bool>? PendingClose = null,
+    ProtectedPrograms? ProtectedPrograms = null);
 
 /// <summary>
 /// Decides which processes to suspend, which recorded processes to resume and which records to drop.
@@ -45,10 +66,13 @@ public sealed record PlannerInput(
 /// A recorded process stays suspended while its exe has no time left, also if the exe was not a
 /// Foreground Window since the last service start.
 /// During a Session End Hold of a session, it suspends no process of that session, and the records of the session stay.
+/// A process of a Blocked Program is suspended with the reason Blocked, also without a Foreground Window, and
+/// stays suspended while the block applies, also if its exe has time left. When the block ends, its record
+/// changes to Limit if the exe has no time left and was a Foreground Window today; else the process resumes.
 /// </summary>
 public static class SuspensionPlanner
 {
-    public const string WebView2FileName = "msedgewebview2.exe";
+    public const string WebView2FileName = ProtectedPrograms.WebView2FileName;
 
     public static SuspensionPlan Plan(PlannerInput input)
     {
@@ -58,6 +82,11 @@ public static class SuspensionPlanner
         var toResume = new List<SuspensionRecord>();
         var toDrop = new List<SuspensionRecord>();
         var held = input.HeldSessions ?? new HashSet<int>();
+        var toRelabel = new List<SuspensionRecord>();
+
+        bool BlockApplies(ExeVerdict verdict, string canonicalPath) =>
+            verdict.IsBlocked && verdict.Category != AppCategory.System
+            && !(input.ProtectedPrograms?.IsProtected(canonicalPath) ?? false);
 
         var byPid = new Dictionary<int, SessionProcess>();
         foreach (var p in input.Processes)
@@ -85,10 +114,26 @@ public static class SuspensionPlanner
                 verdict = input.Verdict(userId, path);
             }
 
-            if (verdict is not { IsExhausted: true } || verdict.Category == AppCategory.System)
+            var reason = verdict is null ? (SuspensionReason?)null
+                : BlockApplies(verdict, path!) ? SuspensionReason.Blocked
+                : verdict.IsExhausted && verdict.Category != AppCategory.System
+                  && (record.Reason == SuspensionReason.Limit || input.WasForeground(record.UserId, path!)) ? SuspensionReason.Limit
+                : null;
+
+            if (reason is not { } keep)
+            {
                 toResume.Add(record);
-            else if (!process.IsSuspended && !held.Contains(process.SessionId))
-                toSuspend.Add(new SuspendAction(process, record.UserId, verdict.Category, path!, IsRecorded: true));
+                continue;
+            }
+
+            var current = record with { Category = verdict!.Category };
+            if (record.Reason != keep)
+            {
+                current = current with { Reason = keep };
+                toRelabel.Add(current);
+            }
+            if (!process.IsSuspended && !held.Contains(process.SessionId))
+                toSuspend.Add(new SuspendAction(process, record.UserId, verdict.Category, path!, IsRecorded: true, keep));
         }
 
         foreach (var process in input.Processes)
@@ -102,6 +147,15 @@ public static class SuspensionPlanner
                 continue;
 
             var verdict = input.Verdict(userId, path);
+            if (BlockApplies(verdict, path))
+            {
+                // A Blocked Start that the block enforcer closes now: do not suspend it in the same second.
+                if (input.PendingClose?.Invoke(process) == true)
+                    continue;
+                toSuspend.Add(new SuspendAction(process, userId, verdict.Category, path, IsRecorded: false, SuspensionReason.Blocked));
+                continue;
+            }
+
             if (verdict.Category == AppCategory.System || !verdict.IsExhausted)
                 continue;
             if (!input.WasForeground(userId, path))
@@ -110,7 +164,7 @@ public static class SuspensionPlanner
             toSuspend.Add(new SuspendAction(process, userId, verdict.Category, path, IsRecorded: false));
         }
 
-        return new SuspensionPlan(toSuspend, toResume, toDrop);
+        return new SuspensionPlan(toSuspend, toResume, toDrop, toRelabel);
     }
 
     // The Windows folder is a hard exclusion: if the parent deletes its default System rule,

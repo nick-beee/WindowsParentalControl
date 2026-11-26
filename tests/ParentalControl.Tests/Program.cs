@@ -665,6 +665,8 @@ Console.WriteLine("✅ App Categories, Rules, Category Usage & Suspension Record
     Debug.Assert(ProcessControl.Resume(helper.Id, helperStart.Value, out _) != ProcessOpResult.Ok, "Resume of an ended process should report that it is gone");
 }
 Console.WriteLine("✅ Process List, Suspend & Resume Passed.");
+BlockedProgramChecks.RunProcess();
+BlockedProgramChecks.RunWatcher();
 
 // Admin sign-in storage and start check (require-admin-sign-in, tasks 3.1 and 3.3)
 {
@@ -1036,6 +1038,10 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
         .SelectMany(d => d.Endpoints).OfType<Microsoft.AspNetCore.Routing.RouteEndpoint>()
         .Select(e => e.RoutePattern.RawText ?? "").ToList();
     Debug.Assert(routeTemplates.Count > 30, "The routes should be mapped");
+    // add-blocked-programs: the new and the changed routes of the block are mapped and behind the gate.
+    foreach (var blockRoute in new[] { "/api/admin/blocked-starts", "/api/admin/app-rules", "/api/admin/app-rules/{id:long}", "/api/admin/settings" })
+        Debug.Assert(routeTemplates.Contains(blockRoute) && AdminRoutePolicy.Classify(blockRoute) == AdminRouteClass.Admin,
+            $"Route {blockRoute} should be mapped and need an Admin Session");
     foreach (var template in routeTemplates)
     {
         var isOpen = template is "/" or "/request" or "/api/request" or "/admin" or "/admin/assets/{file}" || template.StartsWith("/api/agent/", StringComparison.Ordinal);
@@ -1114,6 +1120,15 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
         var noSessionPut = await Send(HttpMethod.Put, $"/api/admin/breaks/{breakUser.Id}", content: Json("""{"enabled":false,"useMinutes":45,"breakMinutes":10}"""));
         Debug.Assert((int)noSessionPut.StatusCode == 401 && BreakRepository.GetRule(breakUser.Id).Enabled, "Changing the Break Rule without a session should give 401 and no change");
         Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/breaks")).StatusCode == 401, "Reading the Breaks without a session should give 401");
+
+        // add-blocked-programs, spec "Not signed in": the routes of the block refuse a request without a session.
+        var gateRuleId = AppRuleRepository.Insert(RuleMatchType.File, "gatecheck-blocked.exe", AppCategory.Unknown, null, isBlocked: true);
+        Debug.Assert((int)(await Send(HttpMethod.Get, "/api/admin/blocked-starts")).StatusCode == 401, "blocked-starts without a session should give 401");
+        var unblock = await Send(HttpMethod.Put, $"/api/admin/app-rules/{gateRuleId}",
+            content: Json("{\"matchType\":\"file\",\"pattern\":\"gatecheck-blocked.exe\",\"category\":\"Unknown\",\"blocked\":false}"));
+        Debug.Assert((int)unblock.StatusCode == 401, "A block change without a session should give 401");
+        Debug.Assert(AppRuleRepository.GetById(gateRuleId)?.IsBlocked == true, "The block should not change without a session");
+        AppRuleRepository.Delete(gateRuleId);
 
         // Child-facing routes stay open.
         var requestStatus = (int)(await Send(HttpMethod.Get, "/request")).StatusCode;
@@ -1717,6 +1732,8 @@ BreakRepository.SaveState(user.Id, breakState.ResetCycle());
 Debug.Assert(BreakRepository.GetState(user.Id).BreakEndsUtc is null, "A reset state should store no Break");
 Debug.Assert(SettingsRepository.IsTelegramNotifyBreakEnabled() == false, "telegram_notify_break should be off by default");
 Console.WriteLine("✅ Break Repository Passed.");
+
+BlockedProgramChecks.RunData();
 
 // Cleanup test user
 UserRepository.DeleteBySid(testSid);

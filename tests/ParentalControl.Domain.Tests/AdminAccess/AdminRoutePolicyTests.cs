@@ -16,6 +16,8 @@ public class AdminRoutePolicyTests
     [InlineData("/api/admin/captures/{id:int}")]
     [InlineData("/api/admin/login/extra")]
     [InlineData("/api/admin/settings")]
+    [InlineData("/api/admin/blocked-starts")]
+    [InlineData("/api/admin/app-rules")]
     [InlineData("api/admin/grant")]
     [InlineData("/api/admin/breaks")]
     [InlineData("/api/admin/breaks/{userId:int}")]

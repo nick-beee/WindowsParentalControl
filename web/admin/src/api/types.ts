@@ -159,6 +159,10 @@ export interface Settings {
   msgBreakWarn: string
   msgBreakStart: string
   msgBreakRunning: string
+  /** The child message for a blocked program. Placeholder: {name}. */
+  msgProgramBlocked: string
+  /** One Telegram notice per blocked program, child and day. */
+  notifyBlockedTelegram: boolean
 }
 
 export type SettingsSave = Omit<Settings, 'telegramConfigured'>
@@ -216,6 +220,10 @@ export interface AppRule {
   weekdayMinutes: number | null
   weekendMinutes: number | null
   isDefault: boolean
+  /** The block of the rule: a matching program is closed at its start. */
+  blocked: boolean
+  /** A file rule for one of the 15 default blocked browsers. */
+  defaultBrowser: boolean
 }
 
 export interface AppRuleInput {
@@ -224,6 +232,30 @@ export interface AppRuleInput {
   category: Category
   weekdayMinutes?: number | null
   weekendMinutes?: number | null
+  /** Missing on a change: the server keeps the stored block. */
+  blocked?: boolean
+}
+
+/**
+ * The blocked starts of one program, Restricted User and day. `fileName` and `exePath` come from the child's PC:
+ * render them as text only.
+ */
+export interface BlockedStart {
+  username: string
+  fileName: string
+  exePath: string
+  closedCount: number
+  suspendedCount: number
+  /** UTC, ISO 8601. */
+  firstAt: string
+  /** UTC, ISO 8601. */
+  lastAt: string
+}
+
+export interface BlockedStarts {
+  /** The local date of the service, yyyy-MM-dd. */
+  date: string
+  starts: BlockedStart[]
 }
 
 export type PromptUrgency = 'NORMAL' | 'URGENT'

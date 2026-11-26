@@ -81,6 +81,28 @@ function RuleRow({ rule, reload, reloadDashboard }: { rule: AppRule; reload: () 
   const [category, setCategory] = useState<Category>(rule.category)
   const [weekday, setWeekday] = useState(minutesText(rule.weekdayMinutes))
   const [weekend, setWeekend] = useState(minutesText(rule.weekendMinutes))
+  const [blockPending, setBlockPending] = useState(false)
+
+  // The switch saves at once with the stored values of the rule, so an unsaved edit of the row stays unsaved.
+  // The server refuses a block that cannot apply (System, a protected program or folder) with its error text.
+  async function setBlocked(blocked: boolean) {
+    setBlockPending(true)
+    try {
+      await api.updateAppRule(rule.id, {
+        matchType: rule.matchType,
+        pattern: rule.pattern,
+        category: rule.category,
+        weekdayMinutes: rule.weekdayMinutes,
+        weekendMinutes: rule.weekendMinutes,
+        blocked,
+      })
+      await reload()
+    } catch (e) {
+      notify.error(t.blockRefused(errorMessage(e)))
+    } finally {
+      setBlockPending(false)
+    }
+  }
 
   async function save() {
     try {
@@ -114,7 +136,20 @@ function RuleRow({ rule, reload, reloadDashboard }: { rule: AppRule; reload: () 
         {rule.matchType === 'file' ? t.matchFile : t.matchFolder} {rule.isDefault && <small>{t.defaultRule}</small>}
       </td>
       <td>
-        <code>{rule.pattern}</code>
+        <code>{rule.pattern}</code>{' '}
+        {rule.defaultBrowser && <span className="badge badge-neutral">🌐 {t.defaultBrowserBadge}</span>}
+      </td>
+      <td>
+        <label className="check">
+          <input
+            type="checkbox"
+            aria-label={t.blockRule(rule.pattern)}
+            checked={rule.blocked}
+            disabled={blockPending}
+            onChange={(e) => void setBlocked(e.target.checked)}
+          />
+          {rule.blocked && <span className="badge badge-declined">{t.blockedBadge}</span>}
+        </label>
       </td>
       <td>
         <CategorySelect value={category} onChange={(c) => c && setCategory(c)} label={`${t.colCategory}: ${rule.pattern}`} />
@@ -162,6 +197,7 @@ function NewRuleForm({ reload, reloadDashboard }: { reload: () => Promise<void>;
   const [category, setCategory] = useState<Category>('Games')
   const [weekday, setWeekday] = useState('')
   const [weekend, setWeekend] = useState('')
+  const [blocked, setBlocked] = useState(false)
 
   async function add() {
     try {
@@ -171,10 +207,12 @@ function NewRuleForm({ reload, reloadDashboard }: { reload: () => Promise<void>;
         category,
         weekdayMinutes: minutesOrNull(weekday),
         weekendMinutes: minutesOrNull(weekend),
+        blocked,
       })
       setPattern('')
       setWeekday('')
       setWeekend('')
+      setBlocked(false)
       await reload()
       reloadDashboard()
     } catch (e) {
@@ -192,6 +230,10 @@ function NewRuleForm({ reload, reloadDashboard }: { reload: () => Promise<void>;
       <CategorySelect value={category} onChange={(c) => c && setCategory(c)} label={t.colCategory} />
       <input className="input input-sm" type="number" min={0} max={1440} aria-label={t.appLimitWeekdayPlaceholder} placeholder={t.appLimitWeekdayPlaceholder} value={weekday} onChange={(e) => setWeekday(e.target.value)} />
       <input className="input input-sm" type="number" min={0} max={1440} aria-label={t.appLimitWeekendPlaceholder} placeholder={t.appLimitWeekendPlaceholder} value={weekend} onChange={(e) => setWeekend(e.target.value)} />
+      <label className="check">
+        <input type="checkbox" checked={blocked} onChange={(e) => setBlocked(e.target.checked)} />
+        <span>{t.newRuleBlocked}</span>
+      </label>
       <button type="button" className="btn btn-primary" onClick={() => void add()}>
         ➕ {t.addRule}
       </button>
@@ -238,6 +280,8 @@ export function CategoriesPanel({ categories, rules, loadError, reload, reloadDa
       <h3>📏 {t.rulesTitle}</h3>
       <p className="hint hint-strong">{t.rulesHint}</p>
       <p className="hint hint-strong">{t.appLimitHint}</p>
+      <p className="hint hint-strong">{t.blockHint}</p>
+      <p className="hint">{t.edgePdfHint}</p>
       {rules !== null &&
         (rules.length === 0 ? (
           <div className="empty">{t.rulesEmpty}</div>
@@ -248,6 +292,7 @@ export function CategoriesPanel({ categories, rules, loadError, reload, reloadDa
                 <tr>
                   <th>{t.colType}</th>
                   <th>{t.colPattern}</th>
+                  <th>{t.colBlocked}</th>
                   <th>{t.colCategory}</th>
                   <th>{t.colAppLimitWeekday}</th>
                   <th>{t.colAppLimitWeekend}</th>

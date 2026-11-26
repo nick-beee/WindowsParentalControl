@@ -8,11 +8,16 @@ namespace ParentalControl.Core.Data;
 /// </summary>
 public static class CategoryConfigCache
 {
+    /// <param name="BuiltUtc">
+    /// The time after the read of the rules. A rule change that the snapshot contains was committed before this time,
+    /// so the block enforcer uses it as the earliest possible time of the block.
+    /// </param>
     public sealed record Snapshot(
         IReadOnlyDictionary<AppCategory, DailyLimit> Limits,
         IReadOnlyList<AppRule> Rules,
         CategoryResolver Resolver,
-        CategoryLimitCalculator Calculator);
+        CategoryLimitCalculator Calculator,
+        DateTime BuiltUtc);
 
     private static readonly object Gate = new();
     private static Snapshot? _current;
@@ -27,7 +32,7 @@ public static class CategoryConfigCache
                     return _current;
                 var limits = CategoryRepository.GetLimits();
                 var rules = AppRuleRepository.GetAll();
-                _current = new Snapshot(limits, rules, new CategoryResolver(rules), new CategoryLimitCalculator(limits, rules));
+                _current = new Snapshot(limits, rules, new CategoryResolver(rules), new CategoryLimitCalculator(limits, rules), DateTime.UtcNow);
                 return _current;
             }
         }

@@ -91,6 +91,16 @@ An enhanced screen time, application telemetry, and schedule curfew management s
 - **Warnings & Messages**: 5-minute and 1-minute warnings, then one "paused, not closed" message per category; both texts are editable in the web admin settings.
 - **Web Admin**: edit Category Limits and App Rules, and assign a category straight from the App Usage table.
 
+### 12. Blocked Programs (close only at start)
+- **Block on an App Rule**: an App Rule can have the block on. Each exe of that rule is then a Blocked Program. The rule keeps its category and App Limit, so the parent can switch the block off again without a loss of settings.
+- **Default blocked browsers**: `chrome.exe`, `firefox.exe` (also Tor Browser), `msedge.exe`, `opera.exe` (also Opera GX), `brave.exe`, `vivaldi.exe`, `browser.exe` (Yandex), `iexplore.exe`, `chromium.exe`, `waterfox.exe`, `librewolf.exe`, `floorp.exe`, `palemoon.exe`, `thorium.exe` and `DuckDuckGo.exe`. An existing install gets them one time; a rule that the parent made for the same file name gets the block and keeps its category. The internet stays open for games and Steam.
+- **Close only at start**: the service detects a process start with WMI (`Win32_ProcessStartTrace`) and checks all processes every 60 seconds. It closes a blocked program only within 10 seconds after its start. A blocked program that already runs is suspended, never closed.
+- **Never blocked**: programs below the Windows folder (for example `cmd.exe` and `mspaint.exe`), Parental Control itself and `msedgewebview2.exe`.
+- **Edge and PDF files**: a blocked Edge also stops `.pdf` and `.html` files that open in Edge. Install another PDF reader and make it the default for `.pdf`. A start of Edge in the background (Startup Boost) is closed without a message to the child.
+- **Limit**: the service matches the file name and the folder. A renamed or a portable browser (for example `Downloads\game.exe`) is not blocked; it is in Unknown and counts against the Unknown limit.
+- **Report**: the child gets one message per program and day. The parent sees each blocked program of the day in the event log and through `GET /api/admin/blocked-starts`, and gets one Telegram notice per program and day (setting `notifyBlockedTelegram`, on by default).
+- **Before you install**: the admin API changes the block. Install this version on the child's PC only with the admin sign-in of PR #21, else the child can remove a block through the web admin.
+
 ## Architecture
 
 ```

@@ -101,7 +101,7 @@ When the Category Usage of a category reaches the limit of the day of an exe (it
 - **THEN** the system does not suspend the game during the hold
 
 ### Requirement: Keep a suspended process suspended
-If a recorded process runs again (for example, the child resumes it with a tool), the system SHALL suspend it again within 70 seconds while its exe still has no time left. The 70 seconds include the 10 seconds of the Pending Suspension. During a Session End Hold of its session, the system SHALL wait until the hold ends, and SHALL then suspend it again within 20 seconds.
+If a recorded process runs again (for example, the child resumes it with a tool), the system SHALL suspend it again within 70 seconds while its exe still has no time left or while it is still a Blocked Program. The 70 seconds include the 10 seconds of the Pending Suspension. During a Session End Hold of its session, the system SHALL wait until the hold ends, and SHALL then suspend it again within 20 seconds.
 
 #### Scenario: Child resumes a suspended game
 - **WHEN** Games is exhausted and the child resumes the suspended game with a tool
@@ -111,6 +111,10 @@ If a recorded process runs again (for example, the child resumes it with a tool)
 - **WHEN** the system resumed a recorded game for a sign-out and the hold is active
 - **THEN** the system does not suspend the game until the hold ends
 - **AND** the suspension record stays
+
+#### Scenario: Child resumes a suspended blocked browser
+- **WHEN** `chrome.exe` is blocked, a Chrome process is suspended because of the block, Unknown has time left, and the child resumes Chrome with a tool
+- **THEN** the system suspends Chrome again within 70 seconds
 
 ### Requirement: Fallback when a process cannot be suspended
 If the system cannot suspend a process that it must suspend (for example, anti-cheat software blocks it), it SHALL lock the session with the Enforced Workstation Lock and SHALL notify the parent through the Alert Channel. It SHALL NOT close or kill the process.
@@ -169,8 +173,23 @@ The system SHALL resume a suspended process when its exe has time left again und
 - **WHEN** the service stops while games are suspended
 - **THEN** the system resumes the suspended games before it exits
 
+### Requirement: Keep a blocked suspension
+A process that the system suspended because its exe is a Blocked Program SHALL stay suspended while the block applies, also if its exe has time left, until the session ends or the service stops; `blocked-programs` defines when it resumes. A blocked suspension SHALL go through the Pending Suspension and the Session End Hold like a limit suspension; time left does not drop its Pending Suspension. During a Session End Hold, the system SHALL still close a Blocked Start.
+
+#### Scenario: Blocked browser on a new day
+- **WHEN** the system suspended a blocked Chrome yesterday, the block is still on, and the date changes
+- **THEN** Chrome stays suspended
+
+#### Scenario: Blocked browser with time left in its category
+- **WHEN** a blocked Chrome is a Pending Suspension and Unknown has time left
+- **THEN** the system suspends Chrome at the end of the 10 seconds
+
+#### Scenario: Chrome start during a Session End Hold
+- **WHEN** a Session End Hold of the child's session runs and the child starts Chrome, and `chrome.exe` is blocked
+- **THEN** the system closes Chrome at its start
+
 ### Requirement: Suspensions survive a service restart
-The system SHALL record each process it suspends. After a service start, it SHALL resume each recorded process that still exists and whose exe has time left, and SHALL forget records of processes that no longer exist. It SHALL NOT resume a process that it did not suspend.
+The system SHALL record each process it suspends, with the reason (a limit or a block). After a service start, it SHALL resume each recorded process that still exists and that has no reason to stay suspended: for a limit, its exe has time left; for a block, its exe is no longer a Blocked Program and has time left. It SHALL forget records of processes that no longer exist. It SHALL NOT resume a process that it did not suspend.
 
 #### Scenario: Crash while games are suspended
 - **WHEN** the service crashes while a game is suspended and starts again on the same day with Games still exhausted
@@ -179,6 +198,10 @@ The system SHALL record each process it suspends. After a service start, it SHAL
 #### Scenario: Process ID reused
 - **WHEN** a recorded process ended and a new process has the same process ID
 - **THEN** the system does not resume or suspend the new process because of the old record
+
+#### Scenario: Crash while a blocked browser is suspended
+- **WHEN** the service crashes while a blocked Firefox is suspended and starts again with the block still on and Unknown with time left
+- **THEN** Firefox stays suspended and the record stays
 
 ### Requirement: Session limits stay unchanged
 The Allowance Time of the session, the Schedule Window and the Enforced Workstation Lock SHALL work as before. Category Limits SHALL NOT lock the session, except in the fallback when a process cannot be suspended.
@@ -216,7 +239,7 @@ When Windows starts to end the session of a Restricted User (sign-out, restart o
 - **THEN** the Suspended Apps stay suspended
 
 ### Requirement: Session End Hold
-After the system resumes the Suspended Apps of a session because the session ends, it SHALL NOT suspend a process in that session for the Session End Hold (default 60 seconds). The hold SHALL end when the session ends or when its time is over. When the hold ends and the session still exists, the system SHALL suspend again, within 20 seconds, each process of the session whose exe still has no time left.
+After the system resumes the Suspended Apps of a session because the session ends, it SHALL NOT suspend a process in that session for the Session End Hold (default 60 seconds). The hold SHALL end when the session ends or when its time is over. When the hold ends and the session still exists, the system SHALL suspend again, within 20 seconds, each process of the session whose exe still has no time left or is still a Blocked Program.
 
 #### Scenario: Tick during the sign-out
 - **WHEN** the system resumed a game for a sign-out and its 60-second tick runs 5 seconds later, before Windows closed the game
@@ -233,6 +256,11 @@ After the system resumes the Suspended Apps of a session because the session end
 - **WHEN** the system resumed a game for a sign-out and the sign-out completes
 - **THEN** the system keeps no suspension record of the processes of that session
 - **AND** the next sign-in of the child starts without a hold
+
+#### Scenario: Suspended blocked browser at a cancelled sign-out
+- **WHEN** a blocked Chrome is suspended, the system resumes it for a sign-out, and the child cancels the sign-out
+- **THEN** the system does not suspend Chrome during the hold
+- **AND** the system suspends Chrome again, within 20 seconds after the end of the hold, while `chrome.exe` is still blocked
 
 ### Requirement: Limit the Session End Hold from the agent
 A request from the Session Agent is not authenticated, so the system SHALL grant at most one Session End Hold per Restricted User in 15 minutes that does not end with the end of the session. For a request outside this limit, no hold starts and the requirement "Keep a suspended process suspended" applies without the hold exception. The system SHALL log each request and each refusal.
@@ -297,3 +325,8 @@ Before the system suspends a process, it SHALL make the process a Pending Suspen
 - **WHEN** a Suspended App was minimized before its suspension and the child clicks its taskbar button
 - **THEN** the window does not come to the front
 - **AND** the child can use the desktop and the other programs
+
+#### Scenario: Browser that ran before the block
+- **WHEN** Chrome runs in the session of the child and the parent turns on the block for `chrome.exe`
+- **THEN** the system makes each Chrome process a Pending Suspension, and the agent minimizes the Chrome windows
+- **AND** the system suspends Chrome 10 seconds after the start of the Pending Suspension and does not close it

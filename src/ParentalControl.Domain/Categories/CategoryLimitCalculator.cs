@@ -126,7 +126,8 @@ public sealed class CategoryLimitCalculator
         var appLimits = new Dictionary<long, LimitStatus>();
         foreach (var rule in _rules)
         {
-            if (rule.Category == AppCategory.System || rule.AppLimit?.MinutesOn(date) is not { } minutes)
+            // A blocked rule keeps its App Limit, but the App Limit has no effect while the block is on.
+            if (rule.Category == AppCategory.System || rule.IsBlocked || rule.AppLimit?.MinutesOn(date) is not { } minutes)
                 continue;
             appLimits.TryAdd(rule.Id, new LimitStatus(rule.Category, rule, minutes + bonus, Used(rule.Category)));
         }

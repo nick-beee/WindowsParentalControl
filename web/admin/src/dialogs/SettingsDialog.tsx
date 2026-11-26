@@ -5,7 +5,7 @@ import { Modal } from '../components/Modal'
 import { errorMessage, useNotify } from '../components/notices'
 import { t } from '../i18n'
 
-/** Telegram notifications, prompt answer presets and the texts of the category and break messages. */
+/** Telegram notifications, prompt answer presets and the texts of the category, break and block messages. */
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const notify = useNotify()
   const [settings, setSettings] = useState<Settings | null>(null)
@@ -27,6 +27,9 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           msgBreakWarn: s.msgBreakWarn ?? '',
           msgBreakStart: s.msgBreakStart ?? '',
           msgBreakRunning: s.msgBreakRunning ?? '',
+          msgProgramBlocked: s.msgProgramBlocked ?? '',
+          // The service sends the notice if the key is absent (default on).
+          notifyBlockedTelegram: s.notifyBlockedTelegram ?? true,
         })
       })
       .catch((e: unknown) => active && setLoadError(errorMessage(e)))
@@ -54,6 +57,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         msgBreakWarn: settings.msgBreakWarn,
         msgBreakStart: settings.msgBreakStart,
         msgBreakRunning: settings.msgBreakRunning,
+        msgProgramBlocked: settings.msgProgramBlocked,
+        notifyBlockedTelegram: settings.notifyBlockedTelegram,
       })
       notify.ok(t.settingsSaved)
       onClose()
@@ -101,6 +106,10 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             <input type="checkbox" checked={settings.telegramNotifyBreak} onChange={(e) => update('telegramNotifyBreak', e.target.checked)} />
             <span>{t.notifyBreak}</span>
           </label>
+          <label className="check">
+            <input type="checkbox" checked={settings.notifyBlockedTelegram} onChange={(e) => update('notifyBlockedTelegram', e.target.checked)} />
+            <span>{t.notifyBlockedTelegram}</span>
+          </label>
           <div>
             <label className="field" htmlFor="cfg-presets">
               {t.promptPresetsLabel}
@@ -136,6 +145,12 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               {t.msgBreakRunningLabel}
             </label>
             <textarea id="cfg-break-running" className="full" rows={2} value={settings.msgBreakRunning} onChange={(e) => update('msgBreakRunning', e.target.value)} />
+          </div>
+          <div>
+            <label className="field" htmlFor="cfg-blocked">
+              {t.msgProgramBlockedLabel}
+            </label>
+            <textarea id="cfg-blocked" className="full" rows={2} value={settings.msgProgramBlocked} onChange={(e) => update('msgProgramBlocked', e.target.value)} />
           </div>
         </div>
       )}

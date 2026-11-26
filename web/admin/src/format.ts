@@ -44,3 +44,10 @@ export function clockTime(iso: string): string {
   if (Number.isNaN(date.getTime())) return iso
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
 }
+
+/** The local clock time (HH:mm:ss) of an ISO 8601 time. An invalid text stays as it is. */
+export function formatClock(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  return date.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}

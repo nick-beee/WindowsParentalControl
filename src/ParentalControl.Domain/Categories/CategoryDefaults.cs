@@ -1,5 +1,8 @@
 namespace ParentalControl.Domain.Categories;
 
+/// <summary>The result of <see cref="CategoryDefaults.PlanBlockedBrowserSeed"/>: the rules to insert and the rule ids to block.</summary>
+public sealed record BlockedBrowserSeedPlan(IReadOnlyList<AppRule> ToInsert, IReadOnlyList<long> ToBlock);
+
 /// <summary>The folders of this computer that the default rules use.</summary>
 public sealed record DefaultRuleFolders(string WindowsFolder, string ProgramFiles, string ProgramFilesX86, string InstallFolder);
 
@@ -57,6 +60,50 @@ public static class CategoryDefaults
         File("ONENOTE.EXE", AppCategory.Study);
 
         return rules;
+    }
+
+    /// <summary>
+    /// The file names of the default blocked browsers. Each one is a file rule with the category Unknown and the block on.
+    /// <c>firefox.exe</c> covers Tor Browser, and <c>opera.exe</c> covers Opera GX. There is no rule for
+    /// <c>launcher.exe</c>: many game launchers have this name.
+    /// </summary>
+    public static IReadOnlyList<string> BlockedBrowsers { get; } =
+    [
+        "chrome.exe", "firefox.exe", "msedge.exe", "opera.exe", "brave.exe", "vivaldi.exe", "browser.exe", "iexplore.exe",
+        "chromium.exe", "waterfox.exe", "librewolf.exe", "floorp.exe", "palemoon.exe", "thorium.exe", "DuckDuckGo.exe",
+    ];
+
+    /// <summary>
+    /// True for a file rule whose pattern is one of <see cref="BlockedBrowsers"/> (letter case ignored). The admin UI
+    /// marks these rules as default browsers. A folder rule is never a default browser.
+    /// </summary>
+    public static bool IsBlockedBrowser(RuleMatchType matchType, string pattern) =>
+        matchType == RuleMatchType.File && BlockedBrowsers.Contains(pattern, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The default blocked browser rules, without ids (Id = 0).</summary>
+    public static IReadOnlyList<AppRule> BlockedBrowserRules() =>
+        BlockedBrowsers.Select(name => new AppRule(0, RuleMatchType.File, name, AppCategory.Unknown, null, IsBlocked: true)).ToList();
+
+    /// <summary>
+    /// The one-time seed of the default blocked browsers on a database with <paramref name="existing"/> rules.
+    /// A new rule for each browser without a file rule; the block on each existing file rule with the same pattern
+    /// (letter case ignored), which keeps its category and App Limit. A System rule keeps no block, because a
+    /// block on System is not valid.
+    /// </summary>
+    public static BlockedBrowserSeedPlan PlanBlockedBrowserSeed(IEnumerable<AppRule> existing)
+    {
+        var fileRules = existing.Where(r => r.MatchType == RuleMatchType.File).ToList();
+        var insert = new List<AppRule>();
+        var block = new List<long>();
+        foreach (var rule in BlockedBrowserRules())
+        {
+            var match = fileRules.FirstOrDefault(r => string.Equals(r.Pattern, rule.Pattern, StringComparison.OrdinalIgnoreCase));
+            if (match is null)
+                insert.Add(rule);
+            else if (!match.IsBlocked && match.Category != AppCategory.System)
+                block.Add(match.Id);
+        }
+        return new BlockedBrowserSeedPlan(insert, block);
     }
 
     /// <summary>The drive root of a folder, for example "C:" for "C:\Windows".</summary>
