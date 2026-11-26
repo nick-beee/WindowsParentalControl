@@ -64,6 +64,20 @@ static class ClockAndStorageChecks
             Debug.Assert(CategoryUsageRepository.GetForUserAndDate(user.Id, today)[AppCategory.Games] == 3, "The Category Usage should have 3 minutes");
             Debug.Assert(ledgerHealth.TakeFailures() == 0, "A successful store should report no failure");
 
+            // The break state: a failed write keeps Continuous Use in memory, so a Break still starts.
+            ParentalControl.Core.Data.BreakRepository.SetRule(user.Id, new ParentalControl.Domain.Breaks.BreakRule(true, 45, 10));
+            ParentalControl.Core.Data.BreakRepository.SaveState(user.Id, ParentalControl.Domain.Breaks.BreakState.Empty);
+            var breaks = new BreakEnforcer(logger);
+            DatabaseManager.TestBlockWrites = true;
+            breaks.OnMinutesCounted(user, 5);
+            Debug.Assert(breaks.GetStatus().Single(b => b.UserId == user.Id).ContinuousUseMinutes == 5,
+                "Continuous Use should count while the break state cannot be written");
+            Debug.Assert(ParentalControl.Core.Data.BreakRepository.GetState(user.Id).ContinuousUseMinutes == 0, "The database should still have the old state");
+            DatabaseManager.TestBlockWrites = false;
+            breaks.OnMinutesCounted(user, 1);
+            Debug.Assert(ParentalControl.Core.Data.BreakRepository.GetState(user.Id).ContinuousUseMinutes == 6,
+                "The next successful write should store the unsaved Continuous Use");
+
             // CollectMinutes takes the whole minutes out without a write.
             CategoryUsageRepository.ResetAccumulators();
             Debug.Assert(CategoryUsageRepository.CollectMinutes(user.Id, today, AppCategory.Video, 90) == 1, "90 seconds should give 1 whole minute");

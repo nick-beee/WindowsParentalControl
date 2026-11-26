@@ -22,6 +22,10 @@ public sealed class BreakEnforcer
     private readonly Serilog.ILogger _logger;
     private readonly StorageHealth _health = StorageHealth.Shared;
 
+    // The break states that the database did not store (storage-failure). A read goes through this overlay, so a
+    // failed write never loses Continuous Use and never ends a running Break. In memory only.
+    private readonly Dictionary<int, BreakState> _unsaved = new();
+
     public BreakEnforcer(Serilog.ILogger logger) : this(null, logger) { }
 
     public BreakEnforcer(TelegramBotService? telegram, Serilog.ILogger logger)
@@ -111,13 +115,13 @@ public sealed class BreakEnforcer
         var bootUtc = DateTime.UtcNow - TimeSpan.FromMilliseconds(Environment.TickCount64);
         Run(user, Apply(user.Id, (rule, state, now) => BreakPlanner.ServiceStart(rule, state, now, hasUnlockedSession, bootUtc)));
         _logger.Information("Break state of {Username} at the service start: {State} (unlocked session: {Unlocked}, boot {Boot:o})",
-            user.Username, BreakRepository.GetState(user.Id), hasUnlockedSession, bootUtc);
+            user.Username, ReadState(user.Id), hasUnlockedSession, bootUtc);
     }
 
     /// <summary>The end of the running Break of the user, or null if no Break runs.</summary>
     public DateTime? GetRunningBreakEnd(int userId)
     {
-        var state = BreakRepository.GetState(userId);
+        var state = ReadState(userId);
         return state.IsBreakRunning(DateTime.UtcNow) ? state.BreakEndsUtc : null;
     }
 
@@ -292,12 +296,24 @@ public sealed class BreakEnforcer
         lock (_gate)
         {
             var rule = BreakRepository.GetRule(userId);
-            var state = BreakRepository.GetState(userId);
+            var state = ReadState(userId);
             var (result, extra) = step(rule, state, DateTime.UtcNow);
-            if (result.State != state)
-                _health.TryWrite(() => BreakRepository.SaveState(userId, result.State), "break state", _logger);
+            if (result.State != state || _unsaved.ContainsKey(userId))
+            {
+                if (_health.TryWrite(() => BreakRepository.SaveState(userId, result.State), "break state", _logger))
+                    _unsaved.Remove(userId);
+                else
+                    _unsaved[userId] = result.State;
+            }
             return (result, extra);
         }
+    }
+
+    /// <summary>The break state: the unsaved state of this process if one exists, else the stored state.</summary>
+    private BreakState ReadState(int userId)
+    {
+        lock (_gate)
+            return _unsaved.TryGetValue(userId, out var unsaved) ? unsaved : BreakRepository.GetState(userId);
     }
 
     /// <summary>Runs the actions that need no session: the events of an ended Break.</summary>
