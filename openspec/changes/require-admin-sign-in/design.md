@@ -47,16 +47,18 @@ The setup happens only in the Admin app. The app runs with administrator rights,
 
 ### D3. Meaning of `totp_enabled`
 The setting `totp_enabled` now means "the setup is complete". There is no switch any more.
-- The Remote Admin Interface is set up when `totp_enabled` is `"true"` and `totp_secret` is a valid Base32 secret of at least 16 bytes.
+- The Remote Admin Interface is set up when `totp_enabled` is `"true"` and `totp_secret` is a valid secret: only Base32 characters after the removal of spaces and `=`, and at least 10 bytes (80 bits) after the decode. The check does not use `FromBase32String` alone, because that method skips characters that are not Base32 without an error.
+- A new setup always makes 20 bytes. The limit of 10 bytes is low on purpose: the old Admin app let the parent type any secret, and a stricter limit would lock out a parent with a short old secret. A secret below 10 bytes or with other characters is not valid; the upgrade then treats the install as not set up (see Migration Plan).
 - Not set up means: `/admin` shows the setup text, each admin route answers 401, and the login refuses each code.
 - *Alternative: a new key such as `admin_totp_enrolled`.* Rejected: the old key already has the right value on each install where TOTP was on, so the upgrade needs no data migration for that case. A downgrade to the old version also keeps TOTP on.
 
 ### D4. One gate for all admin routes
-A middleware (`app.Use`) before the endpoints checks each request below `/api/admin/`. The 30 `CheckAuth` calls go away.
-- A pure class `AdminRoutePolicy` in `ParentalControl.Domain` classifies a method and a path as `Open`, `Login`, `Logout` or `Admin`. Each path below `/api/admin/` that is not the login or the logout is `Admin`. The match uses whole path segments and ignores case.
+A middleware runs after `app.UseRouting()` and before the endpoints, so it sees the endpoint that routing selected. The 30 `CheckAuth` calls go away.
+- A pure class `AdminRoutePolicy` in `ParentalControl.Domain` classifies a route template or a path as `Open`, `Login`, `Logout` or `Admin`. Each template or path below `/api/admin/` that is not the login or the logout is `Admin`. The match uses whole path segments, ignores case, and ignores empty segments and a trailing `/`.
+- The middleware classifies the selected endpoint by its template (`ctx.GetEndpoint()` as `RouteEndpoint`, then `RoutePattern.RawText`). It also classifies the raw request path. If one of the two gives `Admin`, the request is an admin request. So a path variant that routing matches to an admin endpoint, but that the path check does not see as admin, still goes through the gate. A path below `/api/admin/` with no endpoint gets 401, not 404.
 - For `Admin`: the middleware checks the `Origin` (D8), then the Admin Session (D7). If one check fails, it answers 401 (or 403 for the `Origin`) and the endpoint does not run.
 - `GET /admin` itself shows one of three pages: the setup text, the login form, or the dashboard.
-- A test on the VM builds the endpoints and lists them through `EndpointDataSource`. It asserts that each route is in the open list (`/`, `/request`, `/api/request`, `/api/agent/*`, `/admin`) or below `/api/admin/`.
+- A test on the VM builds the endpoints and lists them through `EndpointDataSource`. It classifies each template with the same `AdminRoutePolicy` and asserts that each route is in the open list (`/`, `/request`, `/api/request`, `/api/agent/*`, `/admin`) or `Admin`, `Login` or `Logout`.
 - *Alternative: a route group with `AddEndpointFilter`.* It works too, but a route that someone maps on `app` and not on the group is open. The middleware is safe by path.
 - *Alternative: keep `CheckAuth` in each route and only change its body.* Rejected: the next new route can forget it.
 
@@ -69,7 +71,7 @@ The TOTP code (without the QR part) moves to a pure class `Totp` in `ParentalCon
 ### D6. Limit on failed logins
 A pure class `LoginThrottle` in Domain decides from the list of failures, the source and the time whether a login may be checked.
 - Limits: 10 failures from one source and 30 from all sources in a moving window of 24 hours. While a limit applies, the service does not check the code at all.
-- The source is `HttpContext.Connection.RemoteIpAddress`, never `X-Forwarded-For`. An IPv4-mapped IPv6 address becomes IPv4. Each loopback address and each address of this PC becomes the source `local`. The service gets the addresses of this PC from `NetworkInterface.GetAllNetworkInterfaces()` (it calls `GetAdaptersAddresses`), with a cache of 60 seconds.
+- The source is `HttpContext.Connection.RemoteIpAddress`, never `X-Forwarded-For`. An IPv4-mapped IPv6 address becomes IPv4. Each loopback address and each address of this PC becomes the source `local`. The service gets the addresses of this PC from `NetworkInterface.GetAllNetworkInterfaces()` (it calls `GetAdaptersAddresses`), with a cache of 60 seconds. The compare ignores the IPv6 `ScopeId`, so a link-local address with a zone does not give a second source. If an address is not in the cache, the service reads the addresses again before it treats the source as remote.
 - A valid login deletes the failures of its source.
 - New table `admin_login_failures (id INTEGER PRIMARY KEY, source TEXT NOT NULL, failed_at_utc TEXT NOT NULL)` with an index on `failed_at_utc`. The service deletes rows older than 24 hours at each login. So the counts survive a restart and a reboot.
 - When a failure makes a source or all sources reach the limit, the service sends one Telegram message (D10).
@@ -94,11 +96,14 @@ For each POST, PUT and DELETE below `/api/admin/` (the login and the logout incl
 - A request without `Origin` passes this check. A browser always sends `Origin` on a cross-origin POST, and a client that is not a browser has no cookie of the parent.
 - GET routes below `/api/admin/` change no data, with one exception: `GET /api/admin/logout`, which D7 changes to a POST.
 
-### D9. Access rules of the data folder at each start
-`DatabaseManager.Initialize` sets the access rules of the data folder at each start, not only when it creates it, and only when `PARENTAL_CONTROL_DATA_DIR` is not set (the tests use that variable).
-- Calls: `DirectoryInfo.GetAccessControl`, `DirectorySecurity.SetAccessRuleProtection(true, false)`, a `FileSystemAccessRule` with full control for `WellKnownSidType.LocalSystemSid` and for `WellKnownSidType.BuiltinAdministratorsSid` (container and object inherit), `DirectoryInfo.SetAccessControl` (it calls `SetNamedSecurityInfoW`, and Windows applies the inherited rules to `data.db` and the other files).
-- An error goes to the log at the level Error. It does not stop the start.
-- The Admin app also calls `Initialize`. It runs as an administrator, so the same code works there.
+### D9. Owner and access rules of the data folder at each start
+The service sets the owner and the access rules of the data folder at each start, not only when it creates it, and only when `PARENTAL_CONTROL_DATA_DIR` is not set (the tests use that variable).
+- Today the code reads the existing rules (`GetAccessControl`) and adds two rules. Explicit rules that are already there stay. A standard user can usually create a folder in `C:\ProgramData` and then owns it; the owner can always change the rules again. So the child could make `ParentalControl` before the install and read `data.db` later.
+- New: the service builds a new `DirectorySecurity`, not one from `GetAccessControl`. It sets the owner to `WellKnownSidType.BuiltinAdministratorsSid` (`SetOwner`), a protected DACL (`SetAccessRuleProtection(true, false)`) with full control for `LocalSystemSid` and `BuiltinAdministratorsSid` (container and object inherit), and writes it with `DirectoryInfo.SetAccessControl` (Win32 `SetNamedSecurityInfoW` with `OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION`).
+- To set the owner when another account owns the folder, the service enables `SeTakeOwnershipPrivilege` and `SeRestorePrivilege` on its token (`OpenProcessToken`, `LookupPrivilegeValueW`, `AdjustTokenPrivileges`). LocalSystem has both privileges.
+- Then the service resets each file and subfolder below the folder: owner Administrators, no explicit rules, inherited rules only (`FileSecurity` with `SetAccessRuleProtection(false, false)` and `File.SetAccessControl`).
+- If a step fails, the service logs an error at the level Error and treats the Remote Admin Interface as not set up (fail closed). The service still starts and still enforces the limits.
+- The Admin app also calls `DatabaseManager.Initialize`. It runs as an administrator, but without `SeTakeOwnershipPrivilege` enabled. Only the service runs the new code; the Admin app keeps the old code that sets the rules only for a new folder.
 
 ### D10. Telegram messages
 Two new methods in `TelegramBotService`. Both use `SendTextMessageAsync` and put the message into the Offline Notification Queue when the PC is offline, as `SendAdminSignInAlertAsync` does.
@@ -129,6 +134,8 @@ ADR 0001 point 3 made TOTP optional. ADR 0009 records that the Remote Admin Inte
 - [The child sees the parent type a code] → The code works one time only (D5).
 - [The child changes the clock to make old codes valid] → A standard account has no right to change the system time. Clock Tampering Detection also sends an alert.
 - [The child reboots the PC to sign the parent out] → The parent signs in again. The failure counts stay, because they are in SQLite.
+- [The child creates `C:\ProgramData\ParentalControl` before the install] → D9 takes the ownership and replaces all rules at each start. If that fails, the Remote Admin Interface stays locked.
+- [A parent typed a short secret in the old Admin app] → A secret of 10 bytes or more keeps working. A shorter one needs a new setup after the upgrade, and the setup notice tells the parent.
 - [The parent never does the setup] → The Remote Admin Interface stays locked. The Telegram bot and the Admin app still work. This is the safe default.
 - [A secret that the old Admin app showed is still on a photo or in a screenshot] → The Telegram notice and the release notes tell the parent to set up a new secret if the old one was visible to others.
 
@@ -137,7 +144,7 @@ ADR 0001 point 3 made TOTP optional. ADR 0009 records that the Remote Admin Inte
 1. The update installs as before (installer or Built-in Updater). The installer does not change.
 2. At the first start, the service runs a one-time check:
    - `totp_enabled = "true"` and a valid secret: no change. The parent signs in as before.
-   - `totp_enabled = "true"` and no valid secret: the service sets `totp_enabled = "false"`. Today such an install accepts each code.
+   - `totp_enabled = "true"` and no valid secret (empty, other characters, or fewer than 10 bytes): the service sets `totp_enabled = "false"`. Today an empty secret accepts each code. The parent then does the setup again.
    - `totp_enabled` is not `"true"`: no change of data. The Remote Admin Interface is locked until the setup.
    - Not set up and Telegram configured: the service sends the setup notice one time (D10).
 3. `DatabaseManager.Initialize` creates the table `admin_login_failures` and sets the access rules of the data folder (D9).

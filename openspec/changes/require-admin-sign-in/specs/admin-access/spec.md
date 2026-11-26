@@ -7,7 +7,7 @@ Controls who can use the admin functions of the Remote Admin Interface: the setu
 ## ADDED Requirements
 
 ### Requirement: Admin routes require an Admin Session
-The system SHALL refuse each request to an admin route without a valid Admin Session, with status 401 and with no change of data. This SHALL be true for each install and each setting. The admin routes are all routes below `/api/admin/`, except the login and the logout. A new route below `/api/admin/` SHALL be an admin route without a change to the gate.
+The system SHALL refuse each request to an admin route without a valid Admin Session, with status 401 and with no change of data. This SHALL be true for each install and each setting. The admin routes are all routes below `/api/admin/`, except the login and the logout. A new route below `/api/admin/` SHALL be an admin route without a change to the gate. A variant of the path SHALL not pass the gate.
 
 #### Scenario: Bonus Minutes on a fresh install
 - **WHEN** a process of the Restricted User sends `POST /api/admin/grant` to `127.0.0.1:5050` on a fresh install, with no cookie
@@ -17,6 +17,10 @@ The system SHALL refuse each request to an admin route without a valid Admin Ses
 #### Scenario: Category Limit without a session
 - **WHEN** a request without a valid Admin Session changes a Category Limit, an App Rule, the schedule or a setting
 - **THEN** the system refuses the request with status 401 and keeps the old value
+
+#### Scenario: Variant of an admin path
+- **WHEN** a request without an Admin Session uses a variant of an admin path, for example `//api/admin/grant`, `/api/admin/grant/` or `/API/Admin/Grant`
+- **THEN** the system refuses the request with status 401 or 404 and changes no data
 
 #### Scenario: Unknown token
 - **WHEN** a request carries an admin cookie with a token that the system did not issue
@@ -42,7 +46,7 @@ The system SHALL let the parent set up the Authenticator TOTP secret only in the
 - **THEN** the app shows that the sign-in is set up, but not the secret or the QR code
 
 ### Requirement: Remote Admin Interface before the setup
-The Remote Admin Interface SHALL be set up only when TOTP is on and a valid secret is saved. Before that, the system SHALL show on `/admin` only a text that tells the parent to set up the sign-in in the Admin app on this PC, with no form. The login SHALL refuse each code.
+The Remote Admin Interface SHALL be set up only when TOTP is on and a valid secret is saved. A valid secret has only Base32 characters (spaces and `=` ignored) and decodes to at least 10 bytes. Before that, the system SHALL show on `/admin` only a text that tells the parent to set up the sign-in in the Admin app on this PC, with no form. The login SHALL refuse each code.
 
 #### Scenario: Admin page on a fresh install
 - **WHEN** someone opens `/admin` before the setup
@@ -54,6 +58,10 @@ The Remote Admin Interface SHALL be set up only when TOTP is on and a valid secr
 
 #### Scenario: TOTP on with an empty secret
 - **WHEN** the setting for TOTP is on but the saved secret is empty or not valid Base32
+- **THEN** the Remote Admin Interface is not set up
+
+#### Scenario: Short secret
+- **WHEN** the saved secret decodes to fewer than 10 bytes
 - **THEN** the Remote Admin Interface is not set up
 
 ### Requirement: Sign in with Authenticator TOTP
@@ -158,15 +166,23 @@ The routes for the Restricted User and the Session Agent (`/`, `/request`, `/api
 - **THEN** the system answers as before, with no Admin Session
 
 ### Requirement: Restricted User cannot read the admin secret
-The system SHALL keep the data folder (`C:\ProgramData\ParentalControl`) readable only by SYSTEM and the Administrators group. The service SHALL set these access rules at each start, also when the folder already exists, and SHALL log an error if it cannot.
+The data folder (`C:\ProgramData\ParentalControl`) and its files SHALL be owned by the Administrators group and accessible only to SYSTEM and the Administrators group. The service SHALL enforce this at each start, also for an existing folder. If it cannot, it SHALL log an error and treat the Remote Admin Interface as not set up.
 
 #### Scenario: Child reads the database
 - **WHEN** a process of the Restricted User tries to open `data.db`
 - **THEN** Windows denies the access
 
 #### Scenario: Old install with open access rules
-- **WHEN** the folder exists from an older install with other access rules and the service starts
-- **THEN** the folder has only the rules for SYSTEM and the Administrators group
+- **WHEN** the folder or a file in it has an extra rule, for example read access for Users, and the service starts
+- **THEN** the folder and its files have only the rules for SYSTEM and the Administrators group
+
+#### Scenario: Folder made by the child before the install
+- **WHEN** the Restricted User creates `C:\ProgramData\ParentalControl` before the install and the service starts
+- **THEN** the Administrators group owns the folder and the Restricted User cannot read `data.db` or change the access rules
+
+#### Scenario: Access rules cannot be set
+- **WHEN** the service cannot set the owner or the access rules of the data folder
+- **THEN** the service logs an error and each admin route refuses requests
 
 ### Requirement: Upgrade of an install without the setup
 At the first start after the upgrade, an install with TOTP on and a valid secret SHALL keep its sign-in. Each other install SHALL get a Remote Admin Interface that is not set up. If Telegram is configured, the system SHALL send one message that tells the parent to do the setup.
@@ -179,6 +195,10 @@ At the first start after the upgrade, an install with TOTP on and a valid secret
 - **WHEN** an install with TOTP off gets the upgrade
 - **THEN** each admin route refuses requests and `/admin` shows the setup text
 - **AND** the parent gets one Telegram message about the setup, if Telegram is configured
+
+#### Scenario: Short or invalid secret while TOTP was on
+- **WHEN** an install with TOTP on has a saved secret that is not valid
+- **THEN** the Remote Admin Interface is not set up and the parent gets the Telegram message about the setup, if Telegram is configured
 
 #### Scenario: Old secret while TOTP was off
 - **WHEN** an install with TOTP off has an old saved secret

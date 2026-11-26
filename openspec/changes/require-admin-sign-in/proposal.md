@@ -15,8 +15,8 @@ The Remote Admin Interface has no sign-in while Authenticator TOTP is off, and T
 - An Admin Session has a server-side expiry of 12 hours. A restart of the service ends all Admin Sessions. A new secret or the button "Sign out all web sessions" in the WPF Admin app ends all Admin Sessions at once.
 - A state-changing admin request from a page of another origin is refused (an `Origin` check). The logout becomes a POST.
 - The WPF Admin app gets a recovery path: set up a new secret, clear the login limit, and sign out all web sessions. The app does not show the secret again after the setup.
-- Upgrade: an install with TOTP on and a secret keeps working with the same authenticator entry. An install with TOTP off gets a locked Remote Admin Interface until the parent does the setup. If Telegram is configured, the service sends one message that tells the parent to do the setup.
-- At each start the service sets the access rules of `C:\ProgramData\ParentalControl` again (SYSTEM and Administrators only). Then the child cannot read the secret from `data.db`, also on an older install.
+- Upgrade: an install with TOTP on and a valid secret (Base32, at least 10 bytes) keeps working with the same authenticator entry. An install with TOTP off gets a locked Remote Admin Interface until the parent does the setup. If Telegram is configured, the service sends one message that tells the parent to do the setup.
+- At each start the service makes the Administrators group the owner of `C:\ProgramData\ParentalControl` and replaces all access rules of the folder and its files (SYSTEM and Administrators only). Then the child cannot read the secret from `data.db`, also on an older install or when the child made the folder before the install. If this fails, the Remote Admin Interface stays locked.
 
 ## Out of scope
 
