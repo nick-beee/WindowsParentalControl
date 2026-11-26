@@ -33,6 +33,44 @@ public static class ActivityTracker
 
     private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    // The window of a Store (UWP) app belongs to this host. The app itself runs in another process.
+    private const string StoreAppHostFileName = "ApplicationFrameHost.exe";
+
+    private static string QueryExePath(uint pid)
+    {
+        var hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (hProcess == IntPtr.Zero) return "";
+        try
+        {
+            var sbExe = new StringBuilder(1024);
+            int size = sbExe.Capacity;
+            return QueryFullProcessImageNameW(hProcess, 0, sbExe, ref size) ? sbExe.ToString(0, size) : "";
+        }
+        finally
+        {
+            CloseHandle(hProcess);
+        }
+    }
+
+    /// <summary>The pid of the Store app in a host window: the first child window of another process. 0 if none.</summary>
+    private static uint FindHostedAppPid(IntPtr hostWindow, uint hostPid)
+    {
+        uint appPid = 0;
+        EnumChildWindows(hostWindow, (child, _) =>
+        {
+            GetWindowThreadProcessId(child, out var childPid);
+            if (childPid == 0 || childPid == hostPid) return true;
+            appPid = childPid;
+            return false;
+        }, IntPtr.Zero);
+        return appPid;
+    }
+
     public static (string ProcessName, string Title, string ExePath) SampleForegroundWindow()
     {
         try
@@ -44,25 +82,22 @@ public static class ActivityTracker
             if (pid == 0) return ("Unknown", "", "");
 
             string processName = "Unknown";
-            string exePath = "";
-            var hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
-            if (hProcess != IntPtr.Zero)
+            string exePath = QueryExePath(pid);
+
+            // A Store app: report the app process, not the host in the Windows folder (that is System).
+            if (Path.GetFileName(exePath).Equals(StoreAppHostFileName, StringComparison.OrdinalIgnoreCase))
             {
-                try
+                var appPid = FindHostedAppPid(hwnd, pid);
+                var appPath = appPid == 0 ? "" : QueryExePath(appPid);
+                if (appPath.Length > 0)
                 {
-                    var sbExe = new StringBuilder(1024);
-                    int size = sbExe.Capacity;
-                    if (QueryFullProcessImageNameW(hProcess, 0, sbExe, ref size))
-                    {
-                        exePath = sbExe.ToString(0, size);
-                        processName = Path.GetFileNameWithoutExtension(exePath);
-                    }
-                }
-                finally
-                {
-                    CloseHandle(hProcess);
+                    pid = appPid;
+                    exePath = appPath;
                 }
             }
+
+            if (exePath.Length > 0)
+                processName = Path.GetFileNameWithoutExtension(exePath);
 
             if (processName == "Unknown")
             {
