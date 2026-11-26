@@ -40,6 +40,7 @@ python3 scripts/vm/typekeys.py < "$SECRET_FILE" | ssh root@192.168.1.98 "sh -s"
 | `VmTool` | Reads and changes the service database: `restrict`, `usage`, `set-usage`, `records`, `limits`, `sql`, `totp on\|off`, `msg`. Run it as `nick`: `dotnet run --project scripts\vm\tools\VmTool -- usage Kid`. |
 | `TestGame` | A window with a running clock and a 440 Hz tone. A suspended copy shows a frozen clock. The argument `sound=off` starts it without the tone. |
 | `AudioState` | Writes the audio sessions of the user with pid and mute state to a file. Run it as Kid to check the mute of a Suspended App. |
+| `EndSessionSpike` | Checks the end-session behaviour of Windows (task group 1 of `resume-suspended-apps-at-session-end`): a hidden agent window that logs `WM_QUERYENDSESSION`, test games that log it, suspend, resume and minimize modes, and a test service that logs `PRESHUTDOWN`. The usage is at the top of `Program.cs`. |
 
 Install the test programs on the VM (the default `kidstart.example.txt` expects these paths):
 
