@@ -23,7 +23,7 @@ The system SHALL keep one Control Time Zone, a Windows time zone ID. Only SYSTEM
 - **THEN** the Control Time Zone is the same as before the move
 
 ### Requirement: Day and time of day of the limits
-The system SHALL take each day, weekday and time of day that a limit, a quota, a request or a usage row uses from the Control Time Zone, with its daylight saving rules. This covers the Allowance Time, the Schedule Window, Schedule Exceptions, Category Usage, Category Limits, App Usage, Grace Requests, Schedule Change Requests and the capture quota. The system time zone SHALL have no effect on them.
+The system SHALL take each day, weekday and time of day that a limit, a quota, a request or a usage row uses from the Control Time Zone, with its daylight saving rules. This covers the Allowance Time, the Schedule Window, Schedule Exceptions, Category Usage, Category Limits, App Usage, Grace Requests, Schedule Change Requests, the end time of a Break and the capture quota. The system time zone SHALL have no effect on them.
 
 #### Scenario: Time zone change and reboot
 - **WHEN** the Control Time Zone is "W. Europe Standard Time", the Restricted User used all Allowance Time today at 20:00 local time, sets the system time zone to "Tokyo Standard Time" with `tzutil /s`, and restarts the PC

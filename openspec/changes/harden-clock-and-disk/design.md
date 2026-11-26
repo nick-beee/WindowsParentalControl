@@ -15,6 +15,7 @@ Current state that shapes the approach:
   - `RequestPage` (the min and max dates of a Schedule Change Request).
   - Core: `GraceRequestRepository` (once per day), `ScheduleRepository.GetEffectiveLimit` (default date), `AppUsageRepository` (hour bucket).
   - Admin app: `UserRow` and `UserDetailViewModel` (today, the date of a new Schedule Exception).
+  - Breaks (usage-breaks, merged after this proposal): `BreakEnforcer.Tick` and `OtherLockTimes` (today, the time of day, and the Schedule Window end in UTC from `DateTimeKind.Local`), the three `BreakTexts` calls with `TimeZoneInfo.Local` (the end time in the child messages), and `TelegramBotService` (the `/break` list and the Break notice with `TimeZoneInfo.Local`). The break state itself is in UTC.
 - **Elapsed time.** `SessionTracker` counts elapsed minutes from the local `DateTime.Now - LastTick`. At the end of daylight saving time, the local time goes back one hour. The branch "Clock went backwards" then adds the full `DailyMinutes` and locks the child for the day. This is a bug in the current code.
 - **Clock Tampering Detection.** `UsageMonitorWorker` compares the UTC wall clock with `Environment.TickCount64`. It does not see a time zone change, because UTC does not change.
 - **The tick and the writes.** `ProcessTick` calls `TickAllSessions` before the limit checks. `TickAllSessions` writes with `UsageRepository.AddMinutes`. If that write throws (`SQLITE_FULL`), the exception leaves `ProcessTick`, the catch in `RunAsync` logs it, and no limit check and no lock runs in that tick. `LastTick` does not move, so the next tick sees a gap of more than 2 minutes and adds only 1 minute. The limit branch writes `EventRepository.LogEvent` before `SessionManager.LockSession`, and the "Clock went backwards" branch writes `UsageRepository.AddMinutes` before its lock. `CategoryUsageRepository.AddSeconds` takes the whole minutes out of its accumulator before `AddMinutes`, so a failed write loses them. `CategoryEnforcer.Suspend` writes the record before `NtSuspendProcess`; a throw there leaves the category tick.
@@ -42,7 +43,7 @@ All decisions below were decided by the orchestrator under the user's delegation
 
 ### D1. The Control Time Zone is a registry value
 The Control Time Zone is the string value `ControlTimeZone` in `HKLM\SOFTWARE\ParentalControl` (64-bit view). It holds a Windows time zone ID, for example `W. Europe Standard Time`. The service writes it with the code of `DataFolderRegistry`, which sets the owner and the protected DACL of the key on each write. Each reader checks the key with `DataFolderTrust`, as for `DataFolderPath`.
-- If the value is absent at a start, the service reads the system time zone (D5) and writes it. It writes an event and sends one Telegram message to the parent with the name of the zone and the place to change it. If the send fails, the message goes into the Offline Notification Queue; at this point the database works. The message goes only when the service itself writes the value, so a later start does not send it again.
+- If the value is absent at a start, the service reads the system time zone (D5) and writes it. It writes an event and sends one Telegram message to the parent with the name of the zone and the place to change it. If the send fails, the message stays in the in-memory outbox of the parent alerts (D8) and the service tries again every minute while it runs. The message goes only when the service itself writes the value, so a later start does not send it again.
 - If the key is not trusted or the ID is not known to Windows (`TimeZoneInfo.FindSystemTimeZoneById` throws), the service uses the last valid zone of this process, else the system time zone. It writes event 1017 and alerts the parent at most once per control day. It does not write the system zone over a value that is present but invalid; the parent fixes it in the Admin app.
 - The Admin app runs elevated (`requireAdministrator`), so it can write the value.
 - *Alternative: a setting in the `settings` table.* Rejected. A quarantine or a relocation of the data folder gives a new, empty database. The setting is then absent, and the default is the system time zone at that moment. The child controls that zone, and the child can also cause the quarantine.
@@ -55,6 +56,9 @@ New pure class `ControlClock` in `src/ParentalControl.Domain/Time`. It takes a `
 - A stored timestamp that a daily count reads gets its value from the control clock (`ControlClock.Now`), not from `DateTime.Now`. Today this is `screen_captures.timestamp`: `WebServerHost` writes it with `DateTime.Now`, and `ScreenCaptureRepository.GetDayTotals` counts the rows with `timestamp >= <start of the day>`. If the two use different zones, a capture after a time zone change can fall out of the count of today. The service therefore writes the column from the control clock, and the quota passes the start of the control day. The retention cutoff of `PruneOldCaptures` uses the control clock too. The column keeps its format, so there is no new column.
 - The daily limit of Grace Requests reads the `date` column that the caller passes, so it needs only the day from the control clock.
 - Other timestamps that only show a time (event rows, log lines, Telegram texts, `CreatedAt`) stay as they are. No daily count reads them, so they have no effect on a limit.
+- A time that a child message or a parent message shows as the end of a limit is a limit time, not a display timestamp: the end of a Break (`{break_end}`, the Telegram Break notice and `/break`) and the end of the Schedule Window. These use the control zone, so the text matches the lock.
+- `ControlClock.Now` has `DateTimeKind.Unspecified`. No code calls `ToUniversalTime()` on a control-zone value. `ControlClock.ToUtc(date, time)` converts a date and a time of the control zone to UTC: a time in the gap at the start of daylight saving time moves forward by the gap, and a time in the overlap at its end takes the earlier instant (for an end time this fails closed).
+- The service and the Admin app share one static holder of the current clock in Core (`ControlTime.Current`), in the style of `CategoryConfigCache.Current`, with a setter for tests.
 - *Alternative: use UTC for the day.* Rejected. The day of a family in Germany would start at 01:00 or 02:00 local time.
 - *Alternative: call `TimeZoneInfo.ClearCachedData()` and keep the system time zone.* Rejected. That makes the change take effect at once, not prevent it.
 
@@ -62,6 +66,7 @@ New pure class `ControlClock` in `src/ParentalControl.Domain/Time`. It takes a `
 `ActiveSession` keeps `LastTickUtc` and `LastTickMono` (`Environment.TickCount64`) instead of the local `LastTick`. The elapsed minutes come from the monotonic difference. The check "Clock went backwards" compares UTC times only. The routes that show the elapsed seconds of the current minute use UTC too.
 - So the end of daylight saving time adds no hour and does not lock the child, and the start of daylight saving time is not a gap of 60 minutes.
 - `GetTickCount64` includes the time of sleep and hibernation. The existing rule "a gap of more than 2 minutes adds 1 minute" stays for that case.
+- The elapsed seconds of the current minute in the agent status and the remaining time, and the sleep length in `OnWake`, also come from UTC and the monotonic clock.
 
 ### D4. No change of `SeTimeZonePrivilege`
 The installer does not remove `SeTimeZonePrivilege` from the Users group.
@@ -95,15 +100,19 @@ New pure class `PendingUsage` in `src/ParentalControl.Domain/Usage`. It holds th
 5. Report the result of the tick to the Storage Lockdown state (D8).
 - Each write path reports its failure to one `StorageHealth` object of the service: the ledger, the event writes, the suspension records, the activity route and the probe write. Any write exception counts, not only `SQLITE_FULL`. A tick in which a read for a limit check fails counts as a failed tick too. This fails closed. A database that is busy for 3 minutes in a row is not normal either.
 - The "Clock went backwards" branch locks before its write.
+- The rule "lock before write" covers each lock path, not only `ProcessTick`: the unlock check and the sign-in check of `SessionTracker` (also their Break branches), `CategoryEnforcer.Fallback`, and the Break start. `SessionTracker.OnSessionLock` sets the lock state before `FlushSessionTime`, and its writes do not throw. The service uses one helper that runs a write, logs a failure and reports it to `StorageHealth`.
+- `BreakEnforcer` stores the break state before it runs the actions of the planner. If that write fails, it reports the failure and still runs the actions, so a Break start still locks the session.
+- `StorageHealth` records failures only. A tick counts as successful only if its own probe write and its store of the Pending Usage succeed. So the agent routes, which a process of the child can call without authentication, cannot reset the count or end the Storage Lockdown.
+- The probe write runs in each tick, not only in the Storage Lockdown. So each tick has a write attempt, and a tick without a session still counts.
 - *Alternative: count only `SQLITE_FULL` and `SQLITE_IOERR`.* Rejected. Another error that stops the writes also stops the time count, and the child gains the same.
 
 ### D8. Storage Lockdown
 New pure class `StorageLockdownState` in `src/ParentalControl.Domain/DataFolder`. It counts the failed ticks in a row. It enters the Storage Lockdown at 3. It leaves it when a probe write and the store of all Pending Usage succeed and the free space is at least 100 MB. It returns "alert" at the first entry of each control day.
-- While the state is in the Storage Lockdown, `UsageMonitorWorker` runs a loop that calls `DataFolderLockdown.LockSessions()` every 2 seconds, as in D14. The lock selects each active session of a user who is not an administrator (`LockdownPolicy`, fail closed). The service never closes or kills a program.
+- While the state is in the Storage Lockdown, `UsageMonitorWorker` runs a loop task that calls `DataFolderLockdown.LockSessions()` every 2 seconds, as in D14. The loop catches each exception and stops at the service stop. The lock selects each active session of a user who is not an administrator (`LockdownPolicy`, fail closed). The service never closes or kills a program.
 - The normal tick goes on every 60 seconds and is the retry. It also writes a probe: the setting `storage_probe` in the existing `settings` table, with the UTC time. The free space comes from `GetDiskFreeSpaceExW` on the data folder. The limit of 100 MB stops a fast change between lockdown and normal when a small write still fits into free pages of the database file.
 - A write failure never calls `DataFolderLockdown.RestartService`. A restart loses the Pending Usage, and the start on a full disk then runs into the start lockdown of CB2 anyway.
 - Windows event log: event 1015 at the entry, event 1016 at the exit. These do not need the database.
-- The Telegram alert uses a new send method that does not use the Offline Notification Queue. On a failed send, the alert stays in memory, and the service tries again every minute while it runs. The text tells the parent that the disk is full, that each session of a child is locked, and that an administrator must free space.
+- The Telegram alert uses the existing `SendTextMessageAsync`, which does not use the Offline Notification Queue. On a failed send, the alert stays in an in-memory outbox, and the service tries again every minute while it runs. The time zone alerts of D1 and D5 use the same outbox. The text tells the parent that the disk is full, that each session of a child is locked, and that an administrator must free space.
 - The tick still checks the time zone (D5) and the control clock (D2) in the Storage Lockdown.
 - *Alternative: lock only the sessions of Restricted Users.* Rejected. The reads can fail too, and the same rule as in the Data Folder Lockdown is simpler and fails closed.
 - *Alternative: no lock, only Pending Usage.* Rejected. A reboot loses the Pending Usage, so the child could play, restart, and lose the counted time again and again. Other writes fail too (Grace Requests, suspension records).
@@ -117,7 +126,7 @@ The setup does not set an NTFS disk quota for the Restricted User.
 
 ### D10. Terms, ADR and event types
 - `GLOSSARY.md` gets Control Time Zone, Pending Usage and Storage Lockdown. `CONTEXT.md`: the Allowance Time resets at midnight of the Control Time Zone; the Clock Tampering Detection entry names the time zone report.
-- ADR 0011 records the Control Time Zone. It changes the meaning of each stored day key and of each time in the Weekly Schedule, so it is hard to reverse.
+- ADR 0013 records the Control Time Zone (0011 and 0012 are reserved by open changes). It changes the meaning of each stored day key and of each time in the Weekly Schedule, so it is hard to reverse.
 - New `EventType` values: `TIME_ZONE_CHANGE` and `STORAGE_LOCKDOWN`. Windows event IDs 1015 (Storage Lockdown entry), 1016 (exit), 1017 (Control Time Zone unknown or untrusted).
 
 ### WinAPI calls and stored values
@@ -125,6 +134,7 @@ The setup does not set an NTFS disk quota for the Restricted User.
 - Existing calls used in a new place: `WTSDisconnectSession` through `SessionManager.LockSession` and `DataFolderLockdown.LockSessions`; `NtSuspendProcess` (order unchanged: record first).
 - New registry values in `HKLM\SOFTWARE\ParentalControl`: `ControlTimeZone` (REG_SZ), `LastSystemTimeZone` (REG_SZ).
 - New setting key in the existing `settings` table: `storage_probe`. No new table and no new column.
+- Test switch (task 4.5): if the environment variable `PARENTAL_CONTROL_TEST_WRITE_FAIL` names a file and that file exists, or a static test flag is set, `DatabaseManager.CreateConnection` runs `PRAGMA query_only=1`. Each write then fails with `SQLITE_READONLY` and each read works, as on a full disk. Only an administrator can set the environment of the service.
 
 ## Risks / Trade-offs
 

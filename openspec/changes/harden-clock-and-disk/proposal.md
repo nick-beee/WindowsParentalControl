@@ -20,7 +20,7 @@ Two gaps let the child stop the limits without admin rights (GitHub issues #37 a
 - A removal of `SeTimeZonePrivilege` from the Users group. The Control Time Zone makes the change harmless, and the removal changes a machine policy (design D4).
 - An NTFS disk quota for the Restricted User at setup (design D9).
 - Changes of the UTC system time. Windows does not give `SeSystemtimePrivilege` to the Users group, and the Clock Tampering Detection covers it.
-- Timestamps that only show when something happened (event rows, log lines, Telegram texts). They stay in the system time zone.
+- Timestamps that only show when something happened (event rows, log lines, Telegram texts). They stay in the system time zone. The end time of a Break or of the Schedule Window in a message is a limit time and uses the Control Time Zone.
 - A setting of the Control Time Zone in the web admin. The web admin can show it in a later change.
 - A message to the child about the Storage Lockdown. The Data Folder Lockdown shows none either.
 - Authentication of the agent channel (issue #6).
@@ -33,12 +33,14 @@ Two gaps let the child stop the limits without admin rights (GitHub issues #37 a
 
 ### Modified Capabilities
 - `admin-access`: "Quota for screen captures of the Session Agent" counts the day from midnight of the Control Time Zone, not from local midnight.
+- `usage-breaks`: the end time of a Break in the child messages and the Telegram texts, and the cut at the Schedule Window end, use the Control Time Zone. A failed write does not stop the lock of a Break.
 
 ## Impact
 
 - `src/ParentalControl.Domain`: new pure classes for the control clock, the time zone change report, the Pending Usage ledger and the Storage Lockdown state. New xUnit tests.
 - `src/ParentalControl.Core`: a reader and writer of the registry value `ControlTimeZone` (with the trust check of `DataFolderRegistry`); `GetDynamicTimeZoneInformation`; `GetDiskFreeSpaceExW`; a new `EventType` value; the day keys in `GraceRequestRepository`, `ScheduleRepository` and `CategoryUsageRepository`.
-- `src/ParentalControl.Service`: `UsageMonitorWorker` (tick order, failure count, Storage Lockdown loop), `SessionTracker` (UTC and monotonic elapsed time, day keys), `CategoryEnforcer` (day key, Pending Usage, no suspension without a record), `WebServerHost` (activity, status, capture quota and request day keys), `RequestPage`.
+- `src/ParentalControl.Service`: `UsageMonitorWorker` (tick order, failure count, Storage Lockdown loop), `SessionTracker` (UTC and monotonic elapsed time, day keys), `CategoryEnforcer` (day key, Pending Usage, no suspension without a record), `BreakEnforcer` (the Schedule Window end and the Break end texts in the control zone, lock before write), `WebServerHost` (activity, status, capture quota and request day keys), `RequestPage`.
+- `TelegramBotService`: the Break texts take the control zone.
 - `src/ParentalControl.Admin`: a Control Time Zone setting; "today" in `UserRow` and `UserDetailViewModel` from the control clock.
 - No new table and no new column. New registry value `ControlTimeZone`, new registry value `LastSystemTimeZone`.
-- `GLOSSARY.md`: Control Time Zone, Pending Usage, Storage Lockdown. `CONTEXT.md`: Allowance Time resets at midnight of the Control Time Zone. New ADR 0011.
+- `GLOSSARY.md`: Control Time Zone, Pending Usage, Storage Lockdown. `CONTEXT.md`: Allowance Time resets at midnight of the Control Time Zone. New ADR 0013.
