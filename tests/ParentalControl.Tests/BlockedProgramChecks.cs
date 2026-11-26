@@ -115,7 +115,8 @@ internal static class BlockedProgramChecks
     /// </summary>
     public static void RunWatcher()
     {
-        var logger = new Serilog.LoggerConfiguration().CreateLogger();
+        // Write the log of the watcher to the console, so that a CI run shows why the watcher cannot start.
+        var logger = new Serilog.LoggerConfiguration().WriteTo.Sink(new ConsoleSink()).CreateLogger();
         using var watcher = new ParentalControl.Service.ProcessStartWatcher(_ => true, logger);
         Debug.Assert(watcher.EnsureRunning(), "The WMI process start watcher should start (administrator rights needed)");
         Thread.Sleep(1000); // the WMI subscription needs a moment
@@ -143,6 +144,12 @@ internal static class BlockedProgramChecks
         Debug.Assert(found.Value.SessionId == self.SessionId, $"The session should be the session of the test: {found.Value.SessionId}");
         helper.WaitForExit(10000);
         Console.WriteLine("✅ Blocked Programs: WMI Process Start Watcher Passed.");
+    }
+
+    private sealed class ConsoleSink : Serilog.Core.ILogEventSink
+    {
+        public void Emit(Serilog.Events.LogEvent logEvent) =>
+            Console.WriteLine($"[{logEvent.Level}] {logEvent.RenderMessage()} {logEvent.Exception}");
     }
 
     private static void CheckStageOneMigration()
