@@ -7,7 +7,8 @@ cd "$(dirname "$0")/.."
 
 REMOTE_DIR='C:\dev\parental-control'
 
-ssh winvm "cmd /c \"if exist $REMOTE_DIR rmdir /s /q $REMOTE_DIR & mkdir $REMOTE_DIR\""
+# The parentheses end the "if": without them, cmd runs mkdir only if the folder exists.
+ssh winvm "cmd /c \"(if exist $REMOTE_DIR rmdir /s /q $REMOTE_DIR) & mkdir $REMOTE_DIR\""
 
 # COPYFILE_DISABLE and --no-mac-metadata stop macOS tar from adding ._* files.
 # A ._*.csproj file makes "dotnet run" fail with "more than one project file".
