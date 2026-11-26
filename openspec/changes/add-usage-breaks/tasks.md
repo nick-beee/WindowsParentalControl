@@ -96,6 +96,7 @@ For each VM step: check that the snapshot `test-base` exists before you install 
 - [x] 10.1 Run `scripts/vm-test.sh`. Verify: it prints `ALL ASSERTIONS PASSED`, and the xUnit tests of the Domain pass.
   - Result: VM 102, 2026-11-26: `ALL ASSERTIONS PASSED`, and the Domain tests passed (725).
 - [ ] 10.2 Run one full cycle as `Kid` with the default rule (45/10) in the Proxmox console, with a Steam game and Notepad open. Verify: warnings at 40 and 44 minutes, lock at 45 minutes, re-lock on an unlock during the Break, unlock after 10 minutes works, both programs still run, and `usage.minutes_used` grew by 45 minutes only.
+  - Partly checked (VM 102 has no Steam): one full 45/10 cycle with TestGame (pid 5816) and Notepad with unsaved text (pid 9640). The warnings came at 40 (21:57:31) and 44 (22:02:31), the Break started at 45 (22:03:31) and the lock came at 22:03:36. An unlock at 22:03:54 was locked again at 22:03:59. The Break ended at 22:13:36, and the unlock after it worked. Both programs kept their PIDs, TestGame has 0 suspended threads, and `usage.minutes_used` grew from 46 to 91 (45 minutes). Do the run with a Steam game on the child's PC.
 
 ## Workflow follow-up
 
