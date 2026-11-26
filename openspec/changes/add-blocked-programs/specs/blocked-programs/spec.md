@@ -90,7 +90,7 @@ The system SHALL detect each process start in a session of a Restricted User fro
 - **THEN** the system finds the process within 60 seconds
 
 ### Requirement: Close a Blocked Start
-The system SHALL close a process of a Blocked Program only if the process started after the block took effect and after the service started, and the system detects it within 10 seconds after the creation of the process. This is the only case in which the system closes a program of a Restricted User.
+The system SHALL close a process of a Blocked Program only if the process started after the block took effect and after the service started, and the system detects it within 10 seconds after its creation. If the parent process is a live Blocked Program process that started before the block took effect, the system SHALL suspend the new process, not close it. This is the only close of a program of a Restricted User.
 
 #### Scenario: Child starts a browser
 - **WHEN** `chrome.exe` is blocked and the child starts Chrome
@@ -99,6 +99,10 @@ The system SHALL close a process of a Blocked Program only if the process starte
 #### Scenario: Browser started before the block
 - **WHEN** Chrome runs and then the parent turns on the block for `chrome.exe`
 - **THEN** the system does not close Chrome
+
+#### Scenario: New tab in a browser that ran before the block
+- **WHEN** Firefox ran before the parent turned on the block for `firefox.exe`, and the child opens a new tab before the system suspends Firefox
+- **THEN** the system suspends the new Firefox process and does not close it
 
 ### Requirement: Suspend a Blocked Program that already runs
 The system SHALL suspend, within 60 seconds, a process of a Blocked Program that it does not close at its start. This includes a process that ran before the block took effect or before the service started, and a process that it detects more than 10 seconds after its creation. It SHALL NOT close or kill such a process.
@@ -147,7 +151,7 @@ If the system cannot close a Blocked Start, it SHALL suspend the process. If it 
 - **AND** the parent gets one alert that names the exe
 
 ### Requirement: Silent close of a background start
-When the command line of a Blocked Start contains `--no-startup-window` or `--type=`, the system SHALL close the process without a message to the child and without a Telegram notice. It SHALL still record the blocked start for the parent.
+When the command line of a Blocked Program process contains `--no-startup-window` or `--type=`, the system SHALL close or suspend the process without a message to the child and without a Telegram notice. It SHALL still record the blocked start or the suspension for the parent.
 
 #### Scenario: Edge Startup Boost at sign-in
 - **WHEN** `msedge.exe` is blocked and Windows starts `msedge.exe --no-startup-window --win-session-start` at the sign-in of the child
@@ -160,7 +164,7 @@ When the command line of a Blocked Start contains `--no-startup-window` or `--ty
 - **AND** the child gets the blocked program message
 
 ### Requirement: Tell the child about a blocked program
-When the system closes or suspends a process of a Blocked Program, it SHALL send one session message per program, Restricted User and day. The message SHALL name the program by its exe file name without `.exe` and SHALL say that the parent blocked it. The text SHALL follow the Language Preset, and the parent SHALL be able to edit it.
+When the system closes or suspends a process of a Blocked Program, and the action is not silent, it SHALL send one session message per program, Restricted User and day. The message SHALL name the program by its exe file name without `.exe` and SHALL say that the parent blocked it. The text SHALL follow the Language Preset, and the parent SHALL be able to edit it.
 
 #### Scenario: German message
 - **WHEN** the preset is "de" and the system closes a Blocked Start of `chrome.exe` for the first time today

@@ -62,7 +62,8 @@ Decided by the orchestrator under the user's delegation (2026-11-26).
 A new `ProcessStartWatcher` (Service) uses `System.Management.ManagementEventWatcher` with the query `SELECT ProcessID, SessionID FROM Win32_ProcessStartTrace`. This WMI class needs administrator rights; LocalSystem has them. The service gets a new NuGet package `System.Management` (Microsoft, MIT, version 8.0.x like the other Microsoft packages).
 
 - The event is a trigger only. The service uses the `ProcessID` and the `SessionID`. It does not use `ProcessName`, because the kernel source of this event can cut the name, and the name is untrusted.
-- The watcher drops an event at once if the `SessionID` is not a session of a Restricted User (from `SessionTracker.ActiveSessions` and `UserRepository`).
+- The watcher drops an event at once if the `SessionID` is not a session of a Restricted User (from `SessionTracker.ActiveSessions` and `UserRepository`). At sign-in, a start event can arrive before `SessionTracker` knows the new session. Such a process is not closed. The tick finds it and suspends it (see Risks).
+- The watcher also keeps the `ParentProcessID` of the event for D4.
 - The watcher writes `(pid, sessionId, receivedUtc)` into a bounded `System.Threading.Channels` channel (capacity 1024, oldest dropped). One consumer task in the `BlockEnforcer` reads it. The WMI thread thus never waits for a database or a WinAPI call.
 - The consumer reads the path and the creation time from the process: `ProcessControl.QueryPathAndStart` (`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`, `QueryFullProcessImageNameW`, `GetProcessTimes`). A process that ended already is ignored.
 - If the watcher stops with an error (the `Stopped` event, or a `ManagementException` at start), the service logs a warning and starts the watcher again at the next tick. While the watcher does not run, the tick fallback applies.
@@ -78,11 +79,15 @@ Rejected alternatives:
 ### D4. "At its start": one pure decision
 Decided by the orchestrator under the user's delegation (2026-11-26).
 
-New pure class `BlockedStartDecider` in `ParentalControl.Domain/Categories`. Input: the resolution of the exe, the protected programs (D7), whether the session belongs to a Restricted User, the creation time of the process (UTC), the detection time (UTC), and the **block epoch**. Output: `Close`, `Suspend` or `Ignore`.
+New pure class `BlockedStartDecider` in `ParentalControl.Domain/Categories`. Input: the resolution of the exe, the protected programs (D7), whether the session belongs to a Restricted User, the creation time of the process (UTC), the detection time (UTC), the **block epoch**, and the parent process (its pid, creation time and whether its exe is a Blocked Program). Output: `Close`, `Suspend` or `Ignore`.
 
 - `Ignore`: the exe is not a Blocked Program, or D7 protects it, or the session is not restricted, or the path is not readable.
-- `Close`: the creation time is later than the block epoch, and the detection time minus the creation time is 10 seconds or less.
+- `Close`: the creation time is later than the block epoch, the detection time minus the creation time is 10 seconds or less, and the parent is not an **old blocked parent**.
 - `Suspend`: each other blocked process.
+
+An old blocked parent is a live process of a Blocked Program whose creation time is at or before the block epoch and before the creation time of the new process. The second time check stops a reused pid from a match. Reason: a Chromium browser makes a new renderer, GPU or utility process (`--type=...`) for a new tab, and Firefox makes a new `-contentproc` process. Without this input, a browser that ran before the block gets its new tabs closed in the gap before its suspension: after a rule change, after a service start, after the child resumes it with a tool, and inside one tick, because the tick runs D4 before the planner. A closed tab can lose text that the child typed.
+
+The parent pid comes from the `ParentProcessID` of the WMI event, and in the tick from `NtQueryInformationProcess` with the class `ProcessBasicInformation` (0, field `InheritedFromUniqueProcessId`). The service reads the creation time and the path of the parent with `ProcessControl.QueryPathAndStart`.
 
 The block epoch is the later of two times: the start of the `BlockEnforcer` in this service run, and the last change of any App Rule in this service run (`CategoryConfigCache.Changed`). It is in memory only. After a service start, it is the start time, so each process that ran before is suspended, not closed.
 
@@ -96,6 +101,7 @@ Rejected alternatives:
 - *A `blocked_since` column per rule*: it fails in the example above, because the folder rule did not change.
 - *Close each blocked process that the service finds, at any age*: a browser that the tick finds after 59 seconds can hold text that the child typed. That is not "at its start".
 - *Decide by the detection path (an event means close, the tick means suspend)*: the age is the fact that matters, not the path. The decision would also be harder to test.
+- *No parent input; trust the tick that `RequestTick` starts after a rule change to suspend the old browser first*: the tick and the start event run on different threads, so a new tab can still arrive first. The parent check has no race.
 
 ### D5. The close
 Decided by the orchestrator under the user's delegation (2026-11-26).
@@ -159,7 +165,7 @@ Facts that the decision uses:
 - Edge is the default viewer for PDF files and for `.html` files on a new Windows install.
 - The Widgets board, Teams, the new Outlook, Office add-ins and many installers use `msedgewebview2.exe`, not `msedge.exe`. The search box uses `SearchApp.exe` / `SearchHost.exe` below the Windows folder. `MicrosoftEdgeUpdate.exe` and `elevation_service.exe` run as SYSTEM in session 0.
 
-Decision: `msedge.exe` is a default blocked rule. A Blocked Start whose command line contains `--no-startup-window` (a background start) or `--type=` (a sub-process of a Chromium browser) is closed silently: no child message and no Telegram notice. The record and the event log entry stay. The service reads the command line with `NtQueryInformationProcess` and the class `ProcessCommandLineInformation` (60), with the `PROCESS_QUERY_LIMITED_INFORMATION` handle (Windows 8.1 and later). New P/Invoke in `NativeMethods`: `NtQueryInformationProcess` (ntdll). The command line is untrusted. It only selects the silent path; it never changes `Close` to another result (spec: "Process data for a block is untrusted").
+Decision: `msedge.exe` is a default blocked rule. A Blocked Program process whose command line contains `--no-startup-window` (a background start) or `--type=` (a sub-process of a Chromium browser) is closed or suspended silently: no child message and no Telegram notice. The suspension is silent too, because a background Edge at sign-in can miss the 10-second window (D3). The record and the event log entry stay. The service reads the command line with `NtQueryInformationProcess` and the class `ProcessCommandLineInformation` (60), with the `PROCESS_QUERY_LIMITED_INFORMATION` handle (Windows 8.1 and later). New P/Invoke in `NativeMethods`: `NtQueryInformationProcess` (ntdll). The command line is untrusted. It only selects the silent path; it never changes `Close` to another result (spec: "Process data for a block is untrusted").
 
 The parent documentation says: install another PDF reader and make it the default, because a PDF does not open in a blocked Edge.
 
@@ -257,7 +263,7 @@ Decided by the orchestrator under the user's delegation (2026-11-26).
 - [A game launcher that opens a web page for sign-in or for news fails to open it.] → Accepted for now. The parent sees the try in the report. The launcher itself keeps running.
 - [The browser window shows for up to about 1 second before the close.] → Accepted.
 - [The WMI service (`winmgmt`) stops or fails.] → The tick fallback finds the browser within 60 seconds and suspends it. The watcher starts again at the next tick.
-- [A Blocked Start in the first seconds after sign-in can take longer than 10 seconds to detect on a slow PC.] → Then the process is suspended, not closed. The suspension of a browser holds no risk for the child's data. Check the timing on VM 102.
+- [A Blocked Start in the first seconds after sign-in can take longer than 10 seconds to detect on a slow PC, or its event can arrive before `SessionTracker` knows the session.] → Then the process is suspended, not closed. The suspension of a browser holds no risk for the child's data. Check the timing on VM 102.
 - [The child resumes a suspended blocked browser with a tool again and again.] → The same re-suspension as for limits, within 60 seconds. Issue #24 handles the repeated case.
 - [A process that an Administrator starts with "Run as administrator" in the child's session is treated as the child's process.] → The same session rule as `category-limits`. Accepted.
 - [A browser inside another program (Steam overlay, Electron apps) still gives web access.] → Out of scope.

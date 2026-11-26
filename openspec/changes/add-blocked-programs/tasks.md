@@ -11,7 +11,7 @@ Before you start: PR #20 (`add-german-child-texts`) must be merged (design D14).
 
 ## 2. Domain: the decision "at its start"
 
-- [ ] 2.1 Add `BlockedStartDecider` with the results `Close`, `Suspend` and `Ignore` and the constant `StartWindow = 10 s` (design D4). Verify with xUnit tests: a start after the epoch detected after 1 s (Close), after 11 s (Suspend), a start before the epoch (Suspend), a protected exe (Ignore), an unrestricted session (Ignore), a null path (Ignore), an exe that is not blocked (Ignore).
+- [ ] 2.1 Add `BlockedStartDecider` with the results `Close`, `Suspend` and `Ignore` and the constant `StartWindow = 10 s` (design D4). Verify with xUnit tests: a start after the epoch detected after 1 s (Close), after 11 s (Suspend), a start before the epoch (Suspend), a protected exe (Ignore), an unrestricted session (Ignore), a null path (Ignore), an exe that is not blocked (Ignore), a new process whose parent is a blocked process created before the epoch (Suspend), the same parent pid with a creation time after the child (reused pid: Close), and a new process whose parent is a Blocked Start (Close).
 - [ ] 2.2 Add the pure classifier for a silent start (`--no-startup-window`, `--type=`, letter case ignored, inside quotes too) (design D9). Verify with xUnit tests for the Edge Startup Boost command line, a Chrome renderer command line, a normal start, an empty command line, and a command line with `--no-startup-window` as part of a URL argument.
 - [ ] 2.3 Verify by test that the silent classifier cannot change `Close` to another result: the decider has no command line input (spec "Process data for a block is untrusted").
 
@@ -39,7 +39,7 @@ Before you start: PR #20 (`add-german-child-texts`) must be merged (design D14).
 
 - [ ] 6.1 Add the P/Invokes `TerminateProcess` (kernel32) and `NtQueryInformationProcess` (ntdll) and the constant `PROCESS_TERMINATE` to `NativeMethods`. Verify that the build passes.
 - [ ] 6.2 Add `ProcessControl.Terminate(pid, expectedStartUtc, out detail)` with the pid and start time check of `WithVerifiedHandle` (design D5). Verify with an assert in `tests/ParentalControl.Tests`: start `ping -n 30 127.0.0.1`, call `Terminate` with a wrong start time (result `NotFound`, process still runs), then with the right start time (result `Ok`, process ended).
-- [ ] 6.3 Add `ProcessControl.QueryCommandLine(pid)` with `ProcessCommandLineInformation` (60). Verify with an assert that the command line of the started `ping` process contains `-n 30`.
+- [ ] 6.3 Add `ProcessControl.QueryCommandLine(pid)` with `ProcessCommandLineInformation` (60) and `ProcessControl.QueryParentPid(pid)` with `ProcessBasicInformation` (0). Verify with asserts that the command line of the started `ping` process contains `-n 30` and that its parent pid is the pid of the test process.
 - [ ] 6.4 Verify with `grep -rn "TerminateProcess\|ProcessControl.Terminate" src/` that `NativeMethods.TerminateProcess` has one caller (`ProcessControl.Terminate`) and that `ProcessControl.Terminate` has one caller (the `Close` path of `BlockEnforcer`, after group 7).
 
 ## 7. Service: detection and enforcement
@@ -55,6 +55,7 @@ Before you start: PR #20 (`add-german-child-texts`) must be merged (design D14).
   - Start Edge again. Expected: it closes; no second message; `closed_count` 2.
   - Sign out and sign in as `Kid`. Expected: if Startup Boost starts Edge, it closes without a message.
   - Install Firefox. Start it as `Kid`, then stop the service, start Firefox, and start the service. Expected: the running Firefox is suspended within 60 seconds, not closed; its record has the reason `blocked`.
+  - Remove the block of `firefox.exe` and start Firefox as `Kid`. Turn on the block through the API, and at once open a new tab in Firefox. Expected: no Firefox process is closed; all Firefox processes are suspended within 60 seconds.
   - Remove the block of `firefox.exe` through the API. Expected: Firefox resumes within 60 seconds.
   - Start a Study app that uses `msedgewebview2.exe` (for example a WebView2 sample or the Widgets of Windows 10). Expected: it keeps running.
   - Stop the WMI service (`net stop winmgmt /y`) and start Chrome. Expected: Chrome is suspended within 60 seconds, not closed; the watcher starts again after `net start winmgmt`.
