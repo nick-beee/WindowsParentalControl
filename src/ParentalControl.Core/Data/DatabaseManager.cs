@@ -474,8 +474,11 @@ public static class DatabaseManager
         connection.Open();
 
         using var pragmaCmd = connection.CreateCommand();
-        // query_only: the test switch. Each INSERT, UPDATE or DELETE then fails, and each read works.
-        pragmaCmd.CommandText = WritesBlockedForTest ? "PRAGMA busy_timeout=5000; PRAGMA query_only=1;" : "PRAGMA busy_timeout=5000;";
+        // query_only: the test switch. Each INSERT, UPDATE or DELETE then fails, and each read works. Set it at each open
+        // to 0 or 1: the pool reuses a connection, and the pragma stays on it.
+        pragmaCmd.CommandText = WritesBlockedForTest
+            ? "PRAGMA busy_timeout=5000; PRAGMA query_only=1;"
+            : "PRAGMA busy_timeout=5000; PRAGMA query_only=0;";
         pragmaCmd.ExecuteNonQuery();
 
         return connection;
