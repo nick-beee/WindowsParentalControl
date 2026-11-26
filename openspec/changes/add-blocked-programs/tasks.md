@@ -18,9 +18,9 @@ PR #20 (`add-german-child-texts`) is merged (design D14). Do not install a build
 
 ## 3. Domain: blocked suspensions in the planner
 
-- [ ] 3.1 Add `SuspensionReason` (`Limit`, `Blocked`) to `SuspensionRecord` and `SuspendAction`, and `IsBlocked` to `ExeVerdict`. Verify that the existing planner tests pass without a change of their expectations.
-- [ ] 3.2 Change `SuspensionPlanner.Plan`: suspend a blocked process with the reason `Blocked` without the Foreground Window condition; skip a process for which the caller marks a pending close; keep a `Blocked` record while the exe is blocked; when the block ends, change the record to `Limit` or resume it (design D6). Verify with xUnit tests for each case of D6, also "blocked browser in Unknown with time left stays suspended" and "a record after a service start with an empty Foreground history stays suspended".
-- [ ] 3.3 Verify by test that a protected exe (D7) is never in `ToSuspend` because of a block, also if a blocked rule matches it.
+- [x] 3.1 Add `SuspensionReason` (`Limit`, `Blocked`) to `SuspensionRecord` and `SuspendAction`, and `IsBlocked` to `ExeVerdict`. Verify that the existing planner tests pass without a change of their expectations.
+- [x] 3.2 Change `SuspensionPlanner.Plan`: suspend a blocked process with the reason `Blocked` without the Foreground Window condition; skip a process for which the caller marks a pending close; keep a `Blocked` record while the exe is blocked; when the block ends, change the record to `Limit` or resume it (design D6). Verify with xUnit tests for each case of D6, also "blocked browser in Unknown with time left stays suspended" and "a record after a service start with an empty Foreground history stays suspended".
+- [x] 3.3 Verify by test that a protected exe (D7) is never in `ToSuspend` because of a block, also if a blocked rule matches it.
 
 ## 4. Domain: default blocked browsers
 
