@@ -16,3 +16,4 @@ git ls-files -z --cached --others --exclude-standard |
   ssh winvm "tar -xzf - -C C:/dev/parental-control"
 
 ssh winvm "set DOTNET_CLI_TELEMETRY_OPTOUT=1&& cd /d $REMOTE_DIR && dotnet run --project tests\\ParentalControl.Tests"
+ssh winvm "set DOTNET_CLI_TELEMETRY_OPTOUT=1&& cd /d $REMOTE_DIR && dotnet test tests\\ParentalControl.Domain.Tests"
