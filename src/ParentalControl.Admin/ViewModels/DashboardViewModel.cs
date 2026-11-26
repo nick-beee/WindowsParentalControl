@@ -23,6 +23,10 @@ public partial class DashboardViewModel : ObservableObject
 
     public Dictionary<string, string> SidToUsername { get; private set; } = new();
 
+    /// <summary>True while the web admin sign-in is not set up. The dashboard then shows a banner.</summary>
+    [ObservableProperty]
+    private bool _isWebAdminLocked;
+
     public DashboardViewModel(Action<UserRow> navigateToDetail)
     {
         _navigateToDetail = navigateToDetail;
@@ -30,6 +34,7 @@ public partial class DashboardViewModel : ObservableObject
 
     public void LoadAll()
     {
+        IsWebAdminLocked = !AdminAccessRepository.IsCredentialSetUp();
         RefreshUsers();
         RefreshEvents();
     }

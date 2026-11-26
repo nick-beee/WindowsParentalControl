@@ -29,7 +29,7 @@ python3 scripts/vm/typekeys.py < "$SECRET_FILE" | ssh root@192.168.1.98 "sh -s"
 | `front.ps1 <name>` | As Kid: brings the window of a process to the front. |
 | `resume-process.ps1 <name>` | As Kid: resumes a suspended process with `NtResumeProcess`, as a child with a tool does. |
 | `samples.ps1 <exe path>` | Sends agent samples for an exe to `/api/agent/activity`. |
-| `grant.ps1 [userId] [minutes]` | Grants Bonus Minutes through the admin API (works only while TOTP is off). |
+| `grant.ps1 [userId] [minutes]` | Signs in with the next TOTP code from `VmTool totp code`, then grants Bonus Minutes through the admin API. Run `VmTool totp setup` one time before. |
 | `state.ps1` | Shows the service state, the suspended threads of the test programs and the end of the service log. |
 | `watch.ps1` | Shows the current app of the session from the dashboard API every 20 s. |
 
@@ -37,7 +37,7 @@ python3 scripts/vm/typekeys.py < "$SECRET_FILE" | ssh root@192.168.1.98 "sh -s"
 
 | Tool | What it does |
 |---|---|
-| `VmTool` | Reads and changes the service database: `restrict`, `usage`, `set-usage`, `records`, `limits`, `sql`, `totp on\|off`, `msg`. Run it as `nick`: `dotnet run --project scripts\vm\tools\VmTool -- usage Kid`. |
+| `VmTool` | Reads and changes the service database: `restrict`, `usage`, `set-usage`, `records`, `limits`, `sql`, `totp setup [secret]` (sets up the admin sign-in as the Admin app does, with a fixed test secret by default), `totp code` (prints the next code that the login accepts), `msg`. Run it as `nick`: `dotnet run --project scripts\vm\tools\VmTool -- usage Kid`. |
 | `TestGame` | A window with a running clock and a 440 Hz tone. A suspended copy shows a frozen clock. The argument `sound=off` starts it without the tone. |
 | `AudioState` | Writes the audio sessions of the user with pid and mute state to a file. Run it as Kid to check the mute of a Suspended App. |
 | `EndSessionSpike` | Checks the end-session behaviour of Windows (task group 1 of `resume-suspended-apps-at-session-end`): a hidden agent window that logs `WM_QUERYENDSESSION`, test games that log it, suspend, resume and minimize modes, and a test service that logs `PRESHUTDOWN`. The usage is at the top of `Program.cs`. |
@@ -55,7 +55,7 @@ Then add the folder rule `C:\Games\` → Games in the web admin.
 ## A typical run
 
 1. Roll back to `test-base`. Run `scripts/vm-test.sh` to copy the tree.
-2. Run `deploy.ps1`, then `VmTool restrict Kid 300`.
+2. Run `deploy.ps1`, then `VmTool restrict Kid 300`. Run `VmTool totp setup` if the test needs the web admin: without the setup, each admin route gives 401.
 3. Log on as `Kid` with `qm sendkey` and `typekeys.py`. Check the screen with `shot.sh`.
 4. Run `kid-run.sh kidstart.ps1`.
 5. Move the usage with `VmTool set-usage Kid Games <minutes>`. Check the result with `state.ps1`, `VmTool records` and `shot.sh`.

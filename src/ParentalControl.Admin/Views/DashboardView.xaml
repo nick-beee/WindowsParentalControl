@@ -2,9 +2,23 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:md="http://materialdesigninxaml.net/winfx/xaml/themes">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+    </UserControl.Resources>
 
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <StackPanel Margin="16,4,16,16">
+
+            <!-- ═══ Web admin locked (require-admin-sign-in D11) ═══ -->
+            <Border Visibility="{Binding IsWebAdminLocked, Converter={StaticResource BooleanToVisibilityConverter}}"
+                    Background="#FEF3C7" BorderBrush="#F59E0B" BorderThickness="1" CornerRadius="6" Padding="12,10" Margin="0,0,0,12">
+                <StackPanel>
+                    <TextBlock Text="🔒 The web admin is locked until you set up the sign-in."
+                               FontWeight="SemiBold" Foreground="#78350F" TextWrapping="Wrap" />
+                    <TextBlock Text="Open Settings and select &quot;Set up sign-in&quot; under &quot;Web admin sign-in&quot;."
+                               Foreground="#78350F" TextWrapping="Wrap" Margin="0,4,0,0" />
+                </StackPanel>
+            </Border>
 
             <!-- ═══ Standard Users ═══ -->
             <md:ColorZone Mode="PrimaryMid" Padding="8,6" CornerRadius="4" Margin="0,0,0,8">
