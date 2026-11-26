@@ -34,7 +34,8 @@ public static class AdminSpa
     private static readonly Lazy<FrozenDictionary<string, byte[]>> Files = new(LoadFiles);
 
     /// <summary>The page for one of the views, with the CSP. 503 if the build did not embed the page.</summary>
-    public static IResult Page(HttpContext ctx, string view)
+    /// <param name="statusCode">For example 403 for the refused view of require-admin-sign-in (#21).</param>
+    public static IResult Page(HttpContext ctx, string view, int statusCode = StatusCodes.Status200OK)
     {
         if (view is not (ViewSetup or ViewLogin or ViewRefused or ViewApp))
             throw new ArgumentOutOfRangeException(nameof(view), view, "Unknown view of the admin page.");
@@ -49,7 +50,7 @@ public static class AdminSpa
         var html = Encoding.UTF8.GetString(template)
             .Replace(ViewPlaceholder, view, StringComparison.Ordinal)
             .Replace(VersionPlaceholder, System.Net.WebUtility.HtmlEncode(AppVersion.DisplayName), StringComparison.Ordinal);
-        return Results.Content(html, "text/html; charset=utf-8");
+        return Results.Content(html, "text/html; charset=utf-8", statusCode: statusCode);
     }
 
     /// <summary>A file of /admin/assets/. Only an exact name of the build matches; there is no file system path.</summary>
