@@ -103,7 +103,7 @@ export const de = {
   capturePlaceholder: 'Noch keine Aufnahme. Wähle „Jetzt aufnehmen“ oder „Beobachten“.',
   captureAlt: 'Bildschirmaufnahme',
   recentCaptures: 'Letzte Aufnahmen',
-  captureCount: (count: number) => (count === 0 ? 'keine' : `${count} Aufnahmen`),
+  captureCount: (count: number) => (count === 0 ? 'keine' : count === 1 ? '1 Aufnahme' : `${count} Aufnahmen`),
   noCaptures: 'Noch keine Aufnahmen',
   captureMeta: (width: number, height: number, kb: number) => `${width}×${height} • ${kb} KB`,
   captureTrigger: (trigger: string) =>
