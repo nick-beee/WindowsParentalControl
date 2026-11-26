@@ -31,7 +31,7 @@ When Windows starts to end the session of a Restricted User (sign-out, restart o
 - **THEN** the Suspended Apps stay suspended
 
 ### Requirement: Session End Hold
-After the system resumes the Suspended Apps of a session because the session ends, it SHALL NOT suspend a process in that session for the Session End Hold (default 60 seconds). The hold SHALL end early when the session ends or when the agent reports that the end of the session was cancelled. When the hold ends and the session still exists, the system SHALL suspend again, within 10 seconds, each process of the session whose exe still has no time left.
+After the system resumes the Suspended Apps of a session because the session ends, it SHALL NOT suspend a process in that session for the Session End Hold (default 60 seconds). The hold SHALL end when the session ends or when its time is over. When the hold ends and the session still exists, the system SHALL suspend again, within 20 seconds, each process of the session whose exe still has no time left.
 
 #### Scenario: Tick during the sign-out
 - **WHEN** the system resumed a game for a sign-out and its 60-second tick runs 5 seconds later, before Windows closed the game
@@ -40,7 +40,9 @@ After the system resumes the Suspended Apps of a session because the session end
 #### Scenario: Sign-out cancelled by the child
 - **WHEN** the system resumed a game for a sign-out, Notepad asks to save, and the child clicks Cancel
 - **THEN** the session stays open
-- **AND** the system suspends the game again within 10 seconds after the agent reports the cancel, while Games is still exhausted
+- **AND** Windows closed each program that answered the end-session query before Notepad, as in a sign-out without a Suspended App
+- **AND** the hold ends by its time and counts as a hold that did not end with the end of the session
+- **AND** the system suspends again, within 20 seconds after the end of the hold, each game process that still exists, while Games is still exhausted
 
 #### Scenario: Sign-out completes
 - **WHEN** the system resumed a game for a sign-out and the sign-out completes
@@ -52,7 +54,7 @@ A request from the Session Agent is not authenticated, so the system SHALL grant
 
 #### Scenario: Fake request from the child
 - **WHEN** Games is exhausted and the child sends the session-end request to the service, but does not sign out
-- **THEN** the game runs for at most the hold plus 10 seconds
+- **THEN** the game runs for at most the hold plus 20 seconds
 - **AND** the system then suspends the game again
 
 #### Scenario: Repeated fake request
@@ -62,14 +64,14 @@ A request from the Session Agent is not authenticated, so the system SHALL grant
 
 #### Scenario: Fake end-session message to the agent
 - **WHEN** a hold was refused and the child makes the Session Agent resume the game without a sign-out
-- **THEN** the system suspends the game again within 60 seconds
+- **THEN** the system suspends the game again within 70 seconds
 
 #### Scenario: Sign-out, sign-in and sign-out again
 - **WHEN** the child signs out with a suspended game, signs in again, and signs out again 5 minutes later with a suspended game
 - **THEN** the system grants the second hold, because the first hold ended with a sign-out
 
 ### Requirement: Report an unconfirmed Session End Hold
-When a Session End Hold ends and the session still exists (a cancel or the timeout of the hold), the system SHALL write an event to the event log. It SHALL also send the parent a Telegram alert that the sign-out did not complete, at most one alert per Restricted User per day.
+When a Session End Hold ends by its time and the session still exists, the system SHALL write an event to the event log. It SHALL also send the parent a Telegram alert that the sign-out did not complete, at most one alert per Restricted User per day.
 
 #### Scenario: Sign-out does not complete
 - **WHEN** the system granted a hold and the hold ends by its timeout while the session still exists
@@ -88,22 +90,33 @@ Before the system logs off a session itself (Forced Logoff), it SHALL resume the
 - **WHEN** a game of the child is suspended and the parent uses Forced Logoff on the admin page
 - **THEN** the system resumes the game before it logs off the session
 
-### Requirement: Minimize the windows of a Suspended App
-The Session Agent SHALL minimize the visible top-level windows of each Suspended App of its session within 10 seconds after the suspension, and SHALL minimize such a window again if it is not minimized. If the agent does not run, the suspension SHALL still happen.
+### Requirement: Minimize a process before its suspension
+Before the system suspends a process, it SHALL make the process a Pending Suspension for 10 seconds, and the Session Agent SHALL minimize the visible top-level windows of that process while it still runs. The system SHALL suspend the process at the end of the 10 seconds, also if the agent does not run or does not answer. The system SHALL drop a Pending Suspension without a suspension if the exe has time left again, if the process ended, or if a Session End Hold of the session started.
 
-#### Scenario: Full-screen game suspended
-- **WHEN** the system suspends a game whose window fills the screen
-- **THEN** the game window is minimized within 10 seconds
+#### Scenario: Full-screen game reaches the limit
+- **WHEN** Games usage reaches the Category Limit while a game fills the screen
+- **THEN** the game window is minimized before the system suspends the game
+- **AND** the system suspends the game 10 seconds after the start of the Pending Suspension
 - **AND** the child can use the desktop and the other programs
 
-#### Scenario: Window restored with the taskbar
-- **WHEN** a Suspended App is minimized and the child clicks its taskbar button
-- **THEN** the window is minimized again within 10 seconds, or does not come to the front
+#### Scenario: Agent does not run
+- **WHEN** the Session Agent does not run and Games usage reaches the Category Limit while a game runs
+- **THEN** the system suspends the game 10 seconds after the start of the Pending Suspension
+- **AND** the game window stays where it is
+
+#### Scenario: Bonus Minutes during a Pending Suspension
+- **WHEN** a game is a Pending Suspension and the parent approves 15 Bonus Minutes before the 10 seconds end
+- **THEN** the system does not suspend the game
+
+#### Scenario: Taskbar click on a minimized Suspended App
+- **WHEN** a Suspended App was minimized before its suspension and the child clicks its taskbar button
+- **THEN** the window does not come to the front
+- **AND** the child can use the desktop and the other programs
 
 ## MODIFIED Requirements
 
 ### Requirement: Suspend the programs of an exhausted category
-When the Category Usage of a category reaches the limit of the day of an exe (its App Limit or else its Category Limit), the system SHALL suspend, within 60 seconds, each process of that exe in the session of that Restricted User, if the exe was a Foreground Window of that user today. During a Session End Hold of the session, the system SHALL NOT suspend a process of that session. The session SHALL stay unlocked. The system SHALL NOT close or kill any of these processes.
+When the Category Usage of a category reaches the limit of the day of an exe (its App Limit or else its Category Limit), the system SHALL suspend, within 70 seconds, each process of that exe in the session of that Restricted User, if the exe was a Foreground Window of that user today. The 70 seconds include the 10 seconds of the Pending Suspension. During a Session End Hold of the session, the system SHALL NOT suspend a process of that session. The session SHALL stay unlocked. The system SHALL NOT close or kill any of these processes.
 
 #### Scenario: Games limit ends while a game runs
 - **WHEN** Games usage reaches the Category Limit while a Steam game and a Study program run
@@ -113,7 +126,7 @@ When the Category Usage of a category reaches the limit of the day of an exe (it
 
 #### Scenario: Game starts after the limit ended
 - **WHEN** Games is exhausted for today and the child starts a Games exe and brings it to the front
-- **THEN** the system suspends that process within 60 seconds after the agent reports it
+- **THEN** the system suspends that process within 70 seconds after the agent reports it
 
 #### Scenario: Background helper of an exhausted category
 - **WHEN** Unknown is exhausted and an Unknown tray helper runs that was never a Foreground Window today
@@ -124,11 +137,11 @@ When the Category Usage of a category reaches the limit of the day of an exe (it
 - **THEN** the system does not suspend the game during the hold
 
 ### Requirement: Keep a suspended process suspended
-If a recorded process runs again (for example, the child resumes it with a tool), the system SHALL suspend it again within 60 seconds while its exe still has no time left. During a Session End Hold of its session, the system SHALL wait until the hold ends, and SHALL then suspend it again within 60 seconds.
+If a recorded process runs again (for example, the child resumes it with a tool), the system SHALL suspend it again within 70 seconds while its exe still has no time left. The 70 seconds include the 10 seconds of the Pending Suspension. During a Session End Hold of its session, the system SHALL wait until the hold ends, and SHALL then suspend it again within 20 seconds.
 
 #### Scenario: Child resumes a suspended game
 - **WHEN** Games is exhausted and the child resumes the suspended game with a tool
-- **THEN** the system suspends the game again within 60 seconds
+- **THEN** the system suspends the game again within 70 seconds
 
 #### Scenario: Recorded game during a hold
 - **WHEN** the system resumed a recorded game for a sign-out and the hold is active

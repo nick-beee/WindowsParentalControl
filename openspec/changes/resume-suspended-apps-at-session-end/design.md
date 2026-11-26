@@ -20,7 +20,8 @@ Facts from the VM run (Windows 10 22H2, task 6.7 of `add-app-categories`):
 
 **Goals:**
 - A Suspended App never makes Windows close the other programs of the child at a sign-out, a restart or a shutdown.
-- A cancelled sign-out leaves the same state as before the sign-out: the games are suspended again.
+- After a cancelled sign-out, each game that is still there is suspended again.
+- A frozen window does not cover the screen: the agent minimizes it before the suspension.
 - The new unauthenticated request gains the child at most a short, bounded play time.
 - The hold logic is pure code with xUnit tests on the Mac.
 
@@ -33,9 +34,9 @@ Facts from the VM run (Windows 10 22H2, task 6.7 of `add-app-categories`):
 
 ### D1. Detect the end of the session in the Session Agent
 The agent creates a hidden top-level window (WPF `HwndSource`, style `WS_POPUP`, never shown) and hooks its window procedure. Windows sends `WM_QUERYENDSESSION` and `WM_ENDSESSION` to every top-level window of the session, also to a hidden one.
-- `WM_QUERYENDSESSION` with `lParam` = `0` (shutdown or restart) or with `ENDSESSION_LOGOFF` (0x80000000, sign-out): start the session-end resume (D3). Then return TRUE. The agent never blocks or cancels the end of the session.
+- `WM_QUERYENDSESSION` without `ENDSESSION_CLOSEAPP` in `lParam`: start the session-end resume (D3). Then return TRUE. This covers `lParam` = `0` (shutdown), `ENDSESSION_LOGOFF` (0x80000000, sign-out) and `ENDSESSION_CRITICAL` (0x40000000, the restart of R4). The agent never blocks or cancels the end of the session.
 - `lParam` with `ENDSESSION_CLOSEAPP` (0x1): the Restart Manager closes only this program, for example the installer during an upgrade. The session does not end, so the agent does nothing. The service stops during an upgrade and resumes all processes anyway.
-- `WM_ENDSESSION` with `wParam` = FALSE: the end of the session was cancelled. The agent sends `POST /api/agent/session-end-cancelled` (D4).
+- The agent does not handle `WM_ENDSESSION`. Windows sends `WM_ENDSESSION(TRUE)` to each program right after it answers, so a cancel never reaches the agent (R2).
 - *Alternative:* `SERVICE_CONTROL_PRESHUTDOWN` in the service. Rejected: Windows does not send it for a sign-out. For a shutdown, Windows first ends the user sessions and queries their programs, and only then sends the service controls. Task 1.3 checks this order on the VM.
 - *Alternative:* the `SessionLogoff` session change event. Rejected: it arrives after the session ended.
 - *Alternative:* SENS logoff events or the Winlogon event log. Rejected: Windows does not document that they arrive before the programs are queried.
@@ -55,21 +56,22 @@ The `WM_QUERYENDSESSION` handler runs on the UI thread and must return well with
 
 ### D4. Session End Hold with a rate limit (the security trade-off)
 New pure class `SessionEndHolds` in `ParentalControl.Domain/Categories` (no WinAPI, xUnit tests):
-- `Request(sessionId, userId, now, trusted)` returns Granted or Refused. A hold lasts `HoldDuration` (default 60 seconds).
-- A request that is not `trusted` (from the agent) is refused if the user has an *unconfirmed* hold in the last `UnconfirmedWindow` (default 15 minutes). A hold is unconfirmed if it ended by a cancel or by its timeout while the session still existed. A hold that ended with the end of the session is confirmed and does not count. So "sign out, sign in, sign out again" works.
-- `Cancel(sessionId, now)` ends the hold as unconfirmed. `SessionEnded(sessionId)` ends it as confirmed. `IsHeld(sessionId, now)` tells the planner.
-- Each end of a hold as unconfirmed (cancel or timeout) returns whether the parent gets a Telegram alert: yes for the first unconfirmed hold of the user on a local date, no for each later one on the same date. The class keeps the date of the last alert per user.
+- `Request(sessionId, userId, nowUtc, trusted)` returns Granted, AlreadyHeld or Refused. A hold lasts `HoldDuration` (default 60 seconds). A request for a session that has an active hold does not extend it (AlreadyHeld).
+- A request that is not `trusted` (from the agent) is refused if the user has a hold that started in the last `UnconfirmedWindow` (default 15 minutes) and that is not confirmed. This includes an active hold of another session, and a hold that timed out but that `Expire` did not process yet. A hold that ended with the end of the session is confirmed and does not count. So "sign out, sign in, sign out again" works.
+- `SessionEnded(sessionId)` ends the hold as confirmed. `HeldSessions(nowUtc)` tells the planner.
+- `Expire(nowUtc, today, sessionExists)` ends each hold whose time is over. If the session still exists, the hold is unconfirmed, and the result tells whether the parent gets a Telegram alert: yes for the first unconfirmed hold of the user on a local date, no for each later one on the same date. If the session does not exist any more, the hold is confirmed. This covers a Forced Logoff, because the route removes the session from the tracker at once.
+- A trusted hold (Forced Logoff, D5) is never refused. If it ends unconfirmed (the logoff failed), it counts against the limit like every other hold, and the parent gets the alert. That case shows a fault, so the alert is correct.
 - The hold state is in memory in `CategoryEnforcer`. No new table and no new column.
 
 `SuspensionPlanner` gets a new input `HeldSessions`. It does not suspend a process in a held session, new or recorded. A recorded process in a held session keeps its record. A resume because time is available again still happens.
 
 The end of a hold:
-- Timeout: the enforcer schedules `RequestTick()` at the end of the hold. If the session still exists, the tick suspends again each process whose exe has no time left.
-- Cancel: `POST /api/agent/session-end-cancelled` ends the hold and calls `RequestTick()` at once.
-- After a timeout or a cancel (an unconfirmed hold), the enforcer writes an event to the `events` table. If `SessionEndHolds` says so, it also sends a Telegram alert that names the user ("a sign-out did not complete"). So the parent gets at most one such alert per Restricted User per day.
-- Session end: `SessionTracker.OnUserLogoff` and `SynchronizeSessions` (a stale session) raise a new event `SessionEnded(sessionId)`. The enforcer ends the hold as confirmed.
+- Timeout: the enforcer schedules a follow-up tick shortly after the end of the hold. If the session still exists, the tick makes each process whose exe has no time left a Pending Suspension (D9), and the next follow-up tick suspends it 10 seconds later. So a process is suspended again within about 20 seconds after the end of the hold.
+- After a timeout while the session still exists (an unconfirmed hold), the enforcer writes an event to the `events` table. If `SessionEndHolds` says so, it also sends a Telegram alert that names the user ("a sign-out did not complete"). So the parent gets at most one such alert per Restricted User per day.
+- Session end: `SessionTracker.OnUserLogoff` and `SynchronizeSessions` (a stale session) raise a new event `SessionEnded(sessionId)`. `OnUserLogoff` raises it also if the tracker does not know the session any more (Forced Logoff removes it first). The enforcer ends the hold as confirmed.
+- There is no cancel request. A cancelled sign-out ends the hold by its timeout (decision 2 below).
 
-**Trade-off.** The session-ending request is unauthenticated. The child can send it with `curl`, or can send a fake `WM_QUERYENDSESSION` to the agent window. A granted fake request gains the child at most `HoldDuration` plus one requested tick (about 70 seconds) per 15 minutes, about 8% of the time. A refused request gains nothing through the service. Through the agent, it gains at most the existing 60 seconds until the tick suspends again. This equals what a tool already gives the child today (the spec accepts it, "Keep a suspended process suspended"). Each request, refusal and unconfirmed hold goes to the log and to the event table, and an unconfirmed hold alerts the parent. The cancel request can only make enforcement stricter, so the service accepts it without a limit. Only the request that makes enforcement looser has a limit.
+**Trade-off.** The session-ending request is unauthenticated. The child can send it with `curl`, or can send a fake `WM_QUERYENDSESSION` to the agent window. A granted fake request gains the child at most `HoldDuration` plus about 20 seconds (a follow-up tick and the Pending Suspension), so about 80 seconds per 15 minutes, about 9% of the time. A refused request gains nothing through the service. Through the agent, it gains at most 70 seconds until the tick suspends again. This equals what a tool already gives the child (the spec accepts it, "Keep a suspended process suspended"). Each request, refusal and unconfirmed hold goes to the log and to the event table, and an unconfirmed hold alerts the parent.
 - *Alternative:* verify the end of the session in the service. Rejected: no service-side signal comes before Windows queries the programs (D1). The service can only confirm afterwards (`SessionLogoff`). The rate limit uses exactly this confirmation.
 - *Alternative:* re-suspend a recorded process only after the service saw it run for 60 seconds, for every process (no new request). Rejected: it doubles the time that a tool resume gains (up to 120 seconds) all day, and it does not stop a new suspension during a sign-out.
 - *Alternative:* check the caller of the request (the owner pid of the TCP connection with `GetExtendedTcpTable`, then the exe path and the session of that pid). Not in this change: a fake `WM_QUERYENDSESSION` to the real agent passes this check, so it adds little. Issue #6 adds a protected channel.
@@ -77,19 +79,43 @@ The end of a hold:
 ### D5. Forced Logoff resumes first
 `POST /api/admin/force-logoff` (admin auth) calls `CategoryEnforcer.ResumeSessionForEnd(sessionId, trusted: true)` before `SessionManager.ForceLogoff` (`WTSLogoffSession`). The call starts a trusted hold without the rate limit. The logon denial in `SessionTracker.OnUserLogon` also calls `ForceLogoff`, but a new session has no Suspended App, so it needs no change.
 
-### D6. The status poll carries the Suspended Apps
-`GET /api/agent/status` adds `suspendedApps: [{ pid, startTimeUtc }]` for the user (from `SuspensionRepository.GetForUser`). The agent keeps the last list for D3 and D7. The `suspendedPids` of the activity response stay for the audio mute. The list only names processes of the child, so it gives the child no new information.
+### D6. The status poll carries the Suspended Apps and the Pending Suspensions
+`GET /api/agent/status` adds two lists for a Restricted User:
+- `suspendedApps: [{ pid, startTimeUtc }]` from `SuspensionRepository.GetForUser`. The agent keeps the last list for the local resume of D3.
+- `pendingApps: [{ pid, startTimeUtc }]`: the Pending Suspensions of the user (D9). The agent minimizes their windows (D7).
 
-### D7. Minimize the windows of a Suspended App in the agent
-On each status poll (5 seconds), for each Suspended App of the list in the agent's session, the agent finds the top-level windows of the pid (`EnumWindows`, `GetWindowThreadProcessId`, `IsWindowVisible`, `IsIconic`). For each visible window that is not minimized, it calls `ShowWindowAsync(hwnd, SW_FORCEMINIMIZE)`. Windows documents `SW_FORCEMINIMIZE` for a window whose thread does not respond, and it is meant for calls from another thread. So it can work after the suspension.
-- *Decision gate:* task 1.2 checks on the VM that `SW_FORCEMINIMIZE` minimizes the window of a suspended process, also a borderless full-screen game and a window that Windows shows as "Not Responding". If it does not work, the change uses a two-phase suspension: the service marks the process as pending in the status response, the agent minimizes it with `ShowWindowAsync(hwnd, SW_MINIMIZE)` while it still runs, and the service suspends it 10 seconds later. That changes the 60-second bound of the suspension to 70 seconds, so it needs `/opsx:update` of the spec before the implementation.
-- *Alternative:* the service minimizes the windows. Rejected: the service runs in session 0, and a window of the child's session is not reachable from session 0 (session isolation).
-- *Alternative:* the service starts a helper process in the child's session (`CreateProcessAsUserW`) for each suspension. Rejected: the agent already runs there.
+The status poll runs every 5 seconds, so at least one poll falls into the 10 seconds of a Pending Suspension. The activity response comes every 20 seconds only, so it cannot carry the pending list. The `suspendedPids` of the activity response stay for the audio mute. The lists only name processes of the child, so they give the child no new information.
+
+### D7. Minimize the windows before the suspension (Pending Suspension)
+The window of a suspended process cannot be minimized: Windows queues `SW_FORCEMINIMIZE` until the process runs again (R3). So the agent minimizes the window *before* the suspension:
+1. The service makes a process that is due for suspension a Pending Suspension (D9) and lists it in `pendingApps` of the status response.
+2. On each status poll, for each pending pid, the agent checks that the process still has the listed start time (`ProcessControl.QueryPathAndStart`). Then it finds the top-level windows of the pid (`EnumWindows`, `GetWindowThreadProcessId`, `IsWindowVisible`, `IsIconic`) and calls `ShowWindowAsync(hwnd, SW_MINIMIZE)` for each visible window that is not minimized. The process still runs, so the window handles the request at once.
+3. The service suspends the process 10 seconds after the start of the Pending Suspension, also if the agent does not run or does not answer.
+
+`EnumWindows` only lists the windows of the desktop of the agent, so the agent never touches a window of another session.
+
+The agent does not minimize a window again after the suspension. That cannot work (R3). After Alt+Tab or a click on the taskbar button, Windows queues the restore of a suspended window, so the window does not come to the front, and the desktop stays usable (R3).
+
+**Security note.** A minimized window is a request to the window, and the child can restore the window before the suspension. The security rule holds because the suspension never depends on the agent: the service suspends at the end of the 10 seconds without an answer of the agent.
+
+- *Alternative (rejected):* `SW_FORCEMINIMIZE` on the suspended window. R3 shows that Windows queues it until the process runs again.
+- *Alternative (rejected):* a short resume-minimize-suspend cycle in the agent (R3, `minimize-resume`). It races with the enforcer: if the service resumes or suspends the process during the cycle, the suspend count of Windows goes wrong, and a game can stay frozen without a record. Nothing then resumes it.
+- *Alternative (rejected):* no minimization. The frozen window then covers the screen, as before this change.
+- *Alternative (rejected):* the service minimizes the windows. The service runs in session 0, and a window of the child's session is not reachable from session 0 (session isolation).
 
 ### D8. New WinAPI and no new storage
-- New P/Invokes: `SetProcessShutdownParameters` (kernel32), `EnumWindows`, `GetWindowThreadProcessId`, `IsWindowVisible`, `IsIconic`, `ShowWindowAsync` (user32). Messages: `WM_QUERYENDSESSION` (0x11), `WM_ENDSESSION` (0x16), with `ENDSESSION_CLOSEAPP` and `ENDSESSION_LOGOFF`.
+- New P/Invokes: `SetProcessShutdownParameters` (kernel32), `EnumWindows`, `GetWindowThreadProcessId`, `IsWindowVisible`, `IsIconic`, `ShowWindowAsync` with `SW_MINIMIZE` (user32). Message: `WM_QUERYENDSESSION` (0x11), with `ENDSESSION_CLOSEAPP`.
 - Reused from Core: `OpenProcess`, `GetProcessTimes`, `NtResumeProcess` (in `ProcessControl.Resume`), `WTSLogoffSession`.
 - No new table and no new column. A new event text in the existing `events` table.
+
+### D9. Pending Suspension in a pure class
+New pure class `PendingSuspensions` in `ParentalControl.Domain/Categories` (no WinAPI, xUnit tests). The key is the pid and the start time.
+- `Step(due, nowUtc)` gets the `ToSuspend` list of the planner. A process that is new in the list becomes pending with the time `nowUtc`. A process that is pending for at least `Delay` (10 seconds) is due now: `Step` returns it as Ready and removes it. Each pending process that is not in the list any more is dropped: its session is held, its exe has time left again, or it ended.
+- `Pending` lists the pending processes for the status response. `NextDueUtc` is the time of the next Ready step.
+- The enforcer suspends only the Ready actions. It keeps the state in memory and writes no record for a pending process. A record makes the planner suspend the process at once, and it stops the Category Usage of the exe in `/api/agent/activity`.
+- Every suspension goes through this step: a new process, a recorded process that runs again, and a process after the end of a hold. So every bound of the spec is the old bound plus 10 seconds.
+
+**Follow-up tick.** The regular tick runs every 60 seconds. Without more ticks, a Pending Suspension waits until the next regular tick (up to 120 seconds). So the enforcer keeps one timer. After each tick and after each granted hold, it sets the timer to the earliest of `NextDueUtc` and the end of each hold, plus 0.5 seconds. The margin makes sure that the follow-up tick does not come a few milliseconds before the due time. The timer calls `RequestTick()`.
 
 ## Risks / Trade-offs
 
@@ -97,11 +123,13 @@ On each status poll (5 seconds), for each Suspended App of the list in the agent
 - [The order from D2 does not hold.] → The resume still happens within about 2 seconds, and the game answers late. Task 1.1 checks on the VM that the blocking screen then closes without a click.
 - [The sign-out takes longer than the hold, for example because Notepad waits for the child to save for more than 60 seconds.] → The service suspends the game again, and the game can block the rest of the sign-out. The child sees the blocking screen in that case only. `HoldDuration` is a constant that is easy to change.
 - [The child cancels a sign-out and signs out again within 15 minutes.] → The service refuses the second hold. The local resume still happens, so the game is only blocked if a tick runs during the few seconds of the sign-out.
+- [A cancelled sign-out.] → Windows already closed each program that answered before the program that cancelled, also the agent (R2). The service starts the agent again at the next tick in an unlocked session. The hold ends by its timeout, it is unconfirmed, and the parent gets the alert.
+- [The Pending Suspension gives the child 10 seconds more per suspension.] → Accepted (decision 1 below). The bound becomes 70 seconds.
 - [A fake request] → bounded, see D4.
 - [The service restarts during a hold.] → The hold is lost and the next tick suspends the game again. A service restart during a sign-out is rare.
 - [Fast Startup: a Windows 10 shutdown ends the user sessions and hibernates session 0, so the service does not stop.] → The session end confirms the hold. After the boot, the planner drops the old records because the processes are gone. Task 3.4 checks this on the VM.
 - [A process that the service suspended less than 5 seconds before the sign-out is not in the agent's list.] → The service path (D3, step 2) resumes it.
-- [The child restores a minimized frozen window from the taskbar.] → The next poll minimizes it again within 5 seconds.
+- [The agent does not run or the child restores the window in the 10 seconds.] → The service suspends the process anyway. The frozen window then stays on the screen, as before this change.
 
 ## Migration Plan
 
@@ -116,9 +144,22 @@ On each status poll (5 seconds), for each Suspended App of the list in the agent
 3. When the child signs out, Windows closes the resumed game like every other program. This is acceptable: it is the action of the child, not of a limit.
 4. A repeated resume of a Suspended App with a tool stays out of scope. GitHub issue #24 tracks it.
 
+## Decisions after the VM gate (2026-11-26)
+
+The orchestrator made these decisions under the delegation of the user, after the VM results of group 1.
+
+1. Minimize: two-phase suspension. When a process becomes due for suspension, the service first tells the Session Agent (through the existing agent channel, for example the activity or status response) to minimize the windows of that pid and start time while the process still runs, and the service suspends the process 10 s later. If the agent does not run or does not answer, the service still suspends after the 10 s. The bound in the spec changes from 60 s to 70 s where it applies. Rejected: a short resume-minimize-suspend cycle (race with the enforcer, frozen game without a record), no minimization.
+2. Cancel path: remove the `session-end-cancelled` signal. A Session End Hold ends by its timeout (60 s) or by the confirmed logoff event; after the timeout the tick suspends again each process that is still there.
+
+Note: a minimized window is a request to the window; the security rule holds because the suspension never depends on the agent.
+
+Details of the implementation:
+- The channel is the status response (`pendingApps`, D6), because only the 5-second status poll reaches the agent within the 10 seconds.
+- The two-phase step applies to every suspension (D9). The bounds of the spec change: suspend within 70 seconds, suspend again within 70 seconds, suspend again within 20 seconds after the end of a hold, and a fake request gains at most the hold plus 20 seconds.
+
 ## Open Questions
 
-- D7 failed on the VM, and the cancel path of D1 does not work as designed. Both need a decision of the parent before group 2 starts. See "VM results of group 1" for the options.
+- None. The two decisions above close the questions of group 1.
 
 ## VM results of group 1 (2026-11-26)
 
@@ -216,3 +257,5 @@ D7 (minimize):
 Cancel path (R2):
 - Remove `POST /api/agent/session-end-cancelled` and the agent report of a cancel. A cancelled sign-out ends the hold by its timeout. The tick at the end of the hold then suspends again each process that still exists. Change the scenario "Sign-out cancelled by the child": Windows closes the resumed game before the cancel, and a process that is still there is suspended again within 10 s after the end of the hold.
 - A cancelled sign-out then always gives an unconfirmed hold and the daily alert. This is correct: the sign-out did not complete.
+
+The chosen options are in "Decisions after the VM gate": option 1 for D7, and the removal of the cancel path. With the Pending Suspension, the bound after the end of a hold is 20 s, not 10 s.
