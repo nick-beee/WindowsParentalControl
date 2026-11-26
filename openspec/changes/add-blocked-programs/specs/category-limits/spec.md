@@ -19,7 +19,7 @@ If a recorded process runs again (for example, the child resumes it with a tool)
 - **THEN** the system suspends Chrome again within 70 seconds
 
 ### Requirement: Resume suspended programs
-The system SHALL resume a suspended process when its exe has time left again under its limit of the day: on a new day, after new Bonus Minutes, after the parent raises or removes a Category Limit or an App Limit, or after an App Rule change gives the exe a limit with time left. It SHALL resume all processes it suspended when the service stops. It SHALL resume the processes of a session when that session ends, as the requirement "Resume Suspended Apps when the session ends" states. A process that the system suspended because its exe is a Blocked Program SHALL stay suspended while the block applies, also if its exe has time left; `blocked-programs` defines when it resumes.
+The system SHALL resume a suspended process when its exe has time left again under its limit of the day: on a new day, after new Bonus Minutes, after the parent raises or removes a Category Limit or an App Limit, or after an App Rule change gives the exe a limit with time left. It SHALL resume all processes it suspended when the service stops. It SHALL resume the processes of a session when that session ends, as the requirement "Resume Suspended Apps when the session ends" states. A process that the system suspended because its exe is a Blocked Program SHALL stay suspended while the block applies, also if its exe has time left, until the session ends or the service stops; `blocked-programs` defines when it resumes.
 
 #### Scenario: Next morning
 - **WHEN** a game was suspended yesterday and the date changes
