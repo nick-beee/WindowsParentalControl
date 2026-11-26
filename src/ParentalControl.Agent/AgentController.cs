@@ -28,7 +28,9 @@ public sealed record AgentStatusResponse(
     string? lastDeclinedReason = null,
     DateTime? lastDeclinedTime = null,
     ActivePromptDto? activePrompt = null,
-    string? language = null);
+    string? language = null,
+    List<AgentAppDto>? suspendedApps = null,
+    List<AgentAppDto>? pendingApps = null);
 
 public sealed class AgentController : IDisposable
 {
@@ -47,11 +49,15 @@ public sealed class AgentController : IDisposable
     // The Language Preset of the texts. "de" until the first status poll gives the preset of the service.
     private string _language = LanguagePreset.Default;
     private TextSet _texts = AgentTexts.For(LanguagePreset.Default);
+    private readonly SessionEndWatcher _sessionEndWatcher;
+    // The Suspended Apps of the last status poll, for the resume at the end of the session. Read on the UI thread.
+    private IReadOnlyList<AgentAppDto> _suspendedApps = [];
 
     public AgentController(System.Windows.Application app)
     {
         _app = app;
         _widgetWindow = new WidgetWindow();
+        _sessionEndWatcher = new SessionEndWatcher(() => _suspendedApps);
 
         _notifyIcon = new System.Windows.Forms.NotifyIcon
         {
@@ -175,6 +181,14 @@ public sealed class AgentController : IDisposable
                 });
             }
 
+            _suspendedApps = status.suspendedApps ?? [];
+            var pendingApps = status.pendingApps ?? [];
+            if (pendingApps.Count > 0)
+            {
+                // Minimize the windows of a Pending Suspension while the process still runs. The service suspends it anyway.
+                await Task.Run(() => WindowMinimizer.Minimize(pendingApps));
+            }
+
             if (!status.isRestricted)
             {
                 if (_widgetWindow.Visibility == System.Windows.Visibility.Visible)
@@ -286,6 +300,12 @@ public sealed class AgentController : IDisposable
         }
     }
 
+    /// <summary>Called after the WPF message loop ended because of a session end. See <see cref="SessionEndWatcher.WaitForQuery"/>.</summary>
+    public void WaitForSessionEndQuery(TimeSpan timeout, long sessionEndingMs) => _sessionEndWatcher.WaitForQuery(timeout, sessionEndingMs);
+
+    /// <summary>Tells if the hidden window already got the query of the end of the session that WPF reported.</summary>
+    public bool IsSessionEndQueryHandled(long sessionEndingMs) => _sessionEndWatcher.IsQueryOfThisEnd(sessionEndingMs);
+
     public void Dispose()
     {
         if (_disposed) return;
@@ -296,6 +316,7 @@ public sealed class AgentController : IDisposable
         _watchTimer?.Stop();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
+        _sessionEndWatcher.Dispose();
         _httpClient.Dispose();
         try
         {

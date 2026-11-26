@@ -57,10 +57,11 @@ public class SuspensionPlannerTests
         IEnumerable<SessionProcess> processes,
         Func<int, string, ExeVerdict> verdict,
         Func<int, string, bool>? seen = null,
-        IEnumerable<SuspensionRecord>? records = null) =>
+        IEnumerable<SuspensionRecord>? records = null,
+        IReadOnlySet<int>? held = null) =>
         SuspensionPlanner.Plan(new PlannerInput(
             processes.ToList(), KidSessions, verdict, seen ?? Seen(Game, Minecraft, Word, Helper, WebView, NewExe, Agent, Explorer, TaskManager),
-            (records ?? []).ToList(), Agent, WindowsFolder));
+            (records ?? []).ToList(), Agent, WindowsFolder, held));
 
     [Fact]
     public void Exhausted_category_suspends_its_process_and_not_a_Study_program()
@@ -245,5 +246,52 @@ public class SuspensionPlannerTests
     {
         var plan = Plan([Proc(10, null, suspended: false)], Verdict(Rules, Tuesday, gamesUsed: 125), records: [Record(10, Game)]);
         Assert.True(Assert.Single(plan.ToSuspend).IsRecorded);
+    }
+
+    // Session End Hold (spec: "Session End Hold", "Suspend the programs of an exhausted category", "Keep a suspended process suspended").
+
+    [Fact]
+    public void Tick_during_the_sign_out_does_not_suspend_the_resumed_game()
+    {
+        // The service resumed the recorded game for the sign-out. Its threads run, and Games is still exhausted.
+        var plan = Plan([Proc(10, Game, suspended: false)], Verdict(Rules, Tuesday, gamesUsed: 125), records: [Record(10, Game)],
+            held: new HashSet<int> { KidSession });
+        Assert.Empty(plan.ToSuspend);
+        Assert.Empty(plan.ToResume);
+        Assert.Empty(plan.ToDrop);
+    }
+
+    [Fact]
+    public void Limit_ends_during_a_sign_out_suspends_no_new_process()
+    {
+        var plan = Plan([Proc(10, Game), Proc(11, Word)], Verdict(Rules, Tuesday, gamesUsed: 120), held: new HashSet<int> { KidSession });
+        Assert.Empty(plan.ToSuspend);
+    }
+
+    [Fact]
+    public void Recorded_game_during_a_hold_keeps_its_record_and_is_suspended_after_the_hold()
+    {
+        var records = new[] { Record(10, Game) };
+        var during = Plan([Proc(10, Game)], Verdict(Rules, Tuesday, gamesUsed: 125), records: records, held: new HashSet<int> { KidSession });
+        Assert.Empty(during.ToSuspend);
+        Assert.Empty(during.ToDrop);
+
+        var after = Plan([Proc(10, Game)], Verdict(Rules, Tuesday, gamesUsed: 125), records: records);
+        Assert.True(Assert.Single(after.ToSuspend).IsRecorded);
+    }
+
+    [Fact]
+    public void Time_back_during_a_hold_still_resumes()
+    {
+        var plan = Plan([Proc(10, Game, suspended: true)], Verdict(Rules, Tuesday, gamesUsed: 125, bonus: 15), records: [Record(10, Game)],
+            held: new HashSet<int> { KidSession });
+        Assert.Equal([10], plan.ToResume.Select(r => r.Pid));
+    }
+
+    [Fact]
+    public void Hold_of_another_session_does_not_stop_a_suspension()
+    {
+        var plan = Plan([Proc(10, Game)], Verdict(Rules, Tuesday, gamesUsed: 120), held: new HashSet<int> { AdminSession });
+        Assert.Single(plan.ToSuspend);
     }
 }

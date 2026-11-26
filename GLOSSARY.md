@@ -43,7 +43,13 @@ The whole minutes that a Restricted User spends with an exe of one App Category 
 The daily limit of an App Category: the weekend value on Saturday and Sunday, the weekday value on the other days, plus today's Bonus Minutes. A category can have no limit.
 
 ## Suspended App
-A process of a Restricted User that the service suspends (`NtSuspendProcess`) because its exe has no time left under its App Limit or Category Limit. The process stays open and its audio is muted. The service records it and resumes it when time is available again or when the service stops. The service never closes or kills it.
+A process of a Restricted User that the service suspends (`NtSuspendProcess`) because its exe has no time left under its App Limit or Category Limit. The process stays open and its audio is muted. The service records it and resumes it when time is available again, when the service stops, or when its session ends (sign-out, restart, shutdown or Forced Logoff), so that it can answer the end-session query of Windows. The service never closes or kills it.
+
+## Pending Suspension
+A process that the service suspends 10 seconds later. In this time the Session Agent minimizes the windows of the process while it still runs, because the window of a suspended process cannot be minimized. The service suspends the process at the end of the 10 seconds, also if the agent does not answer. It drops a Pending Suspension without a suspension if the exe has time left again, the process ended, or a Session End Hold of the session started. Each suspension starts as a Pending Suspension.
+
+## Session End Hold
+A short time (60 seconds) after the service resumed the Suspended Apps of a session because the session ends. During the hold the service suspends no process of that session. The hold ends when the session ends (a confirmed hold) or when its time is over while the session still exists (an unconfirmed hold). An unconfirmed hold writes an event and alerts the parent at most once per day. The request of the Session Agent has no authentication, so the service grants at most one unconfirmed hold per Restricted User in 15 minutes.
 
 ## Language Preset
 A named set of default child texts: "de" (German), "en" (English) or "id" (Indonesian). A new install uses "de". The preset sets the language of the service messages, the Session Agent and the child request page. It does not change the language of the admin UIs. A preset switch replaces only the texts that the parent did not edit.

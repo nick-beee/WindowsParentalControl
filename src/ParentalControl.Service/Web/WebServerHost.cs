@@ -24,17 +24,19 @@ public sealed class WebServerHost : BackgroundService
     private readonly TelegramBotService _telegramBotService;
     private readonly Serilog.ILogger _logger;
     private readonly ForegroundHistory _foregroundHistory;
+    private readonly CategoryEnforcer _categoryEnforcer;
     private readonly HashSet<string> _validAdminTokens = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string ProcessName, string WindowTitle, DateTime LastSeen)> _liveActivities = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CaptureCommandState> _captureStates = new(StringComparer.OrdinalIgnoreCase);
     public static event Action<ScreenCaptureRecord>? OnCaptureReceived;
     public WebServerHost(SessionTracker sessionTracker, TelegramBotService telegramBotService, Serilog.ILogger logger,
-        ForegroundHistory foregroundHistory)
+        ForegroundHistory foregroundHistory, CategoryEnforcer categoryEnforcer)
     {
         _sessionTracker = sessionTracker;
         _telegramBotService = telegramBotService;
         _logger = logger;
         _foregroundHistory = foregroundHistory;
+        _categoryEnforcer = categoryEnforcer;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -578,11 +580,22 @@ public sealed class WebServerHost : BackgroundService
                 }
             }
 
+            // The Suspended Apps (for the resume at the end of the session) and the Pending Suspensions (the agent
+            // minimizes their windows). Both name only processes of the child.
+            var suspendedApps = SuspensionRepository.GetForUser(user.Id)
+                .Select(r => new { pid = r.Pid, startTimeUtc = DateTime.SpecifyKind(r.StartTimeUtc, DateTimeKind.Utc) })
+                .ToArray();
+            var pendingApps = _categoryEnforcer.GetPendingApps(user.Id)
+                .Select(p => new { pid = p.Pid, startTimeUtc = DateTime.SpecifyKind(p.StartTimeUtc, DateTimeKind.Utc) })
+                .ToArray();
+
             return Results.Ok(new
             {
                 username = user.Username,
                 isRestricted = true,
                 remainingSeconds,
+                suspendedApps,
+                pendingApps,
                 curfew,
                 isLocked,
                 isCurfewClamped,
@@ -730,6 +743,35 @@ public sealed class WebServerHost : BackgroundService
             {
                 return Results.BadRequest();
             }
+        });
+
+        // Session end (posted by the Session Agent from WM_QUERYENDSESSION). The request has no authentication (issue #6):
+        // the session must belong to a Restricted User, and the enforcer limits the holds of each user.
+        app.MapPost("/api/agent/session-ending", async (HttpContext ctx) =>
+        {
+            int sessionId;
+            string reason;
+            try
+            {
+                using var reader = new StreamReader(ctx.Request.Body);
+                var doc = JsonDocument.Parse(await reader.ReadToEndAsync());
+                sessionId = doc.RootElement.GetProperty("sessionId").GetInt32();
+                reason = doc.RootElement.TryGetProperty("reason", out var r) && r.GetString() is "shutdown" ? "shutdown" : "logoff";
+            }
+            catch
+            {
+                return Results.BadRequest();
+            }
+
+            var user = _sessionTracker.ActiveSessions.TryGetValue(sessionId, out var session) ? UserRepository.GetBySid(session.UserSid) : null;
+            if (user is null || !user.IsRestricted)
+            {
+                _logger.Warning("Session end request for session {SessionId} ignored: no session of a Restricted User", sessionId);
+                return Results.Ok(new { result = "ignored" });
+            }
+
+            var result = _categoryEnforcer.ResumeSessionForEnd(sessionId, user, trusted: false, $"agent {reason}");
+            return Results.Ok(new { result = result.ToString() });
         });
 
         // Agent Silent Screen Capture Upload API
@@ -1029,6 +1071,13 @@ public sealed class WebServerHost : BackgroundService
             var sessionId = doc.RootElement.GetProperty("sessionId").GetInt32();
 
             NotificationManager.SendMessage(sessionId, "Parental Control", SessionTexts.For(SettingsRepository.GetLanguagePreset())["session_ended"], true, 5);
+
+            // A Suspended App cannot answer the end-session query: resume it first (trusted hold, no rate limit).
+            var logoffUser = _sessionTracker.ActiveSessions.TryGetValue(sessionId, out var logoffSession)
+                ? UserRepository.GetBySid(logoffSession.UserSid) : null;
+            if (logoffUser is { IsRestricted: true })
+                _categoryEnforcer.ResumeSessionForEnd(sessionId, logoffUser, trusted: true, "forced logoff");
+
             SessionManager.ForceLogoff(sessionId);
             _sessionTracker.RemoveSession(sessionId);
 
