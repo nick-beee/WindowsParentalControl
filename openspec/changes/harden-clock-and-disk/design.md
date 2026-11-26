@@ -43,7 +43,7 @@ All decisions below were decided by the orchestrator under the user's delegation
 
 ### D1. The Control Time Zone is a registry value
 The Control Time Zone is the string value `ControlTimeZone` in `HKLM\SOFTWARE\ParentalControl` (64-bit view). It holds a Windows time zone ID, for example `W. Europe Standard Time`. The service writes it with the code of `DataFolderRegistry`, which sets the owner and the protected DACL of the key on each write. Each reader checks the key with `DataFolderTrust`, as for `DataFolderPath`.
-- If the value is absent at a start, the service reads the system time zone (D5) and writes it. It writes an event and sends one Telegram message to the parent with the name of the zone and the place to change it. If the send fails, the message stays in the in-memory outbox of the parent alerts (D8) and the service tries again every minute while it runs. The message goes only when the service itself writes the value, so a later start does not send it again.
+- If the value is absent at a start, the service reads the system time zone (D5) and writes it. It writes Windows event 1018 (the database may not be open yet) and sends one Telegram message to the parent with the name of the zone and the place to change it. If the send fails, the message stays in the in-memory outbox of the parent alerts (D8) and the service tries again every minute while it runs. The message goes only when the service itself writes the value, so a later start does not send it again.
 - If the key is not trusted or the ID is not known to Windows (`TimeZoneInfo.FindSystemTimeZoneById` throws), the service uses the last valid zone of this process, else the system time zone. It writes event 1017 and alerts the parent at most once per control day. It does not write the system zone over a value that is present but invalid; the parent fixes it in the Admin app.
 - The Admin app runs elevated (`requireAdministrator`), so it can write the value.
 - *Alternative: a setting in the `settings` table.* Rejected. A quarantine or a relocation of the data folder gives a new, empty database. The setting is then absent, and the default is the system time zone at that moment. The child controls that zone, and the child can also cause the quarantine.
@@ -128,7 +128,7 @@ The setup does not set an NTFS disk quota for the Restricted User.
 ### D10. Terms, ADR and event types
 - `GLOSSARY.md` gets Control Time Zone, Pending Usage and Storage Lockdown. `CONTEXT.md`: the Allowance Time resets at midnight of the Control Time Zone; the Clock Tampering Detection entry names the time zone report.
 - ADR 0013 records the Control Time Zone (0011 and 0012 are reserved by open changes). It changes the meaning of each stored day key and of each time in the Weekly Schedule, so it is hard to reverse.
-- New `EventType` values: `TIME_ZONE_CHANGE` and `STORAGE_LOCKDOWN`. Windows event IDs 1015 (Storage Lockdown entry), 1016 (exit), 1017 (Control Time Zone unknown or untrusted).
+- New `EventType` values: `TIME_ZONE_CHANGE` and `STORAGE_LOCKDOWN`. Windows event IDs 1015 (Storage Lockdown entry), 1016 (exit), 1017 (Control Time Zone unknown or untrusted), 1018 (the service set the Control Time Zone at its first start).
 
 ### WinAPI calls and stored values
 - New WinAPI calls: `GetDynamicTimeZoneInformation` (kernel32), `GetDiskFreeSpaceExW` (kernel32).

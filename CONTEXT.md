@@ -1,7 +1,7 @@
 # Domain Context & Glossary
 
 ### Allowance Time
-The maximum duration of active session time (in minutes) permitted for a User within a single calendar day. Resets automatically at midnight.
+The maximum duration of active session time (in minutes) permitted for a User within a single calendar day. Resets automatically at midnight of the Control Time Zone, not at midnight of the Windows time zone.
 
 ### Schedule Window
 A defined time interval during a day (bounded by a start time and an end time) during which a User is authorized to maintain an active session.
@@ -96,7 +96,7 @@ An explanatory message provided by an Administrator when rejecting a Grace Reque
 A floating countdown overlay executing in the Session Agent that dynamically responds to active application geometry by relocating to a secondary display or collapsing into an unobtrusive semi-transparent mini pill during exclusive or borderless fullscreen execution.
 
 ### Clock Tampering Detection
-Continuous service-level comparison between monotonic system uptime (`Environment.TickCount64`) and wall clock (`DateTime.UtcNow`), triggering administrative Telegram alerts, audit logs, and monotonic quota clamping if retroactive or accelerated clock drift exceeds 60 seconds.
+Continuous service-level comparison between monotonic system uptime (`Environment.TickCount64`) and wall clock (`DateTime.UtcNow`), triggering administrative Telegram alerts, audit logs, and monotonic quota clamping if retroactive or accelerated clock drift exceeds 60 seconds. The elapsed session time comes from the monotonic clock, so the end of daylight saving time is not tampering. A change of the Windows time zone is not tampering either: the service writes a `TIME_ZONE_CHANGE` event and alerts the parent at most once per day (the time zone report), and the limits keep the Control Time Zone.
 
 ### Corner Docking
 Standardized anchor presets (`Top-Right`, `Top-Left`, `Bottom-Right`, `Bottom-Left`) utilized by the Adaptive Widget on secondary displays or in compact pill mode to guarantee predictable margins and DPI-safe positioning across varying monitor resolutions.

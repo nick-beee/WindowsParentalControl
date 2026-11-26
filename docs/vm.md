@@ -53,3 +53,14 @@ A session lock or a logon must happen in the console, not over RDP. You can driv
 - The service log is in `C:\ProgramData\ParentalControl\logs\` (the newest file).
 - The database is in `C:\ProgramData\ParentalControl\`.
 - Test hook for the suspend fallback: set `PARENTAL_CONTROL_TEST_SUSPEND_FAIL=<exe file name>` in the `Environment` value of the service key, then restart the service. Remove the value after the test.
+- Test hook for the Storage Lockdown: set `PARENTAL_CONTROL_TEST_WRITE_FAIL=C:\ProgramData\pc-write-fail.flag` in the `Environment` value of the service key, then restart the service. While that file exists, each database write fails and each read works. Create the file as `nick` to start the failure, delete it to end it. Remove the value after the test.
+
+## Time zone and disk tests
+
+These are the VM steps of the change `harden-clock-and-disk` (group 6 of its tasks).
+
+- Change the time zone as `Kid` (a standard user has `SeTimeZonePrivilege`): `tzutil /s "Tokyo Standard Time"`. Show the current zone with `tzutil /g`. Set it back as `nick` with `tzutil /s "W. Europe Standard Time"`.
+- Read the registry values: `reg query HKLM\SOFTWARE\ParentalControl`. It shows `ControlTimeZone` and `LastSystemTimeZone`.
+- Read the Windows events of the service: `powershell -NoProfile -Command "Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1015,1016,1017,1018} -MaxEvents 20 | Format-List TimeCreated,Id,Message"`.
+- Fill the disk as `Kid`: read the free bytes with `fsutil volume diskfree C:`, then `fsutil file createnew %USERPROFILE%\fill.bin <free bytes>`. Free it as `nick`: `del C:\Users\Kid\fill.bin`.
+- Do not fill the disk of the snapshot `test-base`. Roll back to `test-base` after the tests.
