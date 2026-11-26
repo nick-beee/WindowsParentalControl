@@ -28,3 +28,16 @@ public sealed class PromptResponsePayload
     public int PromptId { get; set; }
     public int? SessionId { get; set; }
 }
+
+public sealed class AdminLoginBlockedPayload
+{
+    public string MachineName { get; set; } = string.Empty;
+    public string Source { get; set; } = string.Empty;
+    public bool AllSources { get; set; }
+    public DateTime BlockedUntilLocal { get; set; }
+}
+
+public sealed class AdminSetupNeededPayload
+{
+    public string MachineName { get; set; } = string.Empty;
+}

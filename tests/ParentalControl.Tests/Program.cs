@@ -7,6 +7,7 @@ using ParentalControl.Core;
 using ParentalControl.Core.Services;
 using ParentalControl.Domain.Categories;
 using ParentalControl.Domain.Messages;
+using ParentalControl.Domain.AdminAccess;
 
 Console.WriteLine("=== Running ParentalControl Self-Checks ===");
 
@@ -664,6 +665,88 @@ Console.WriteLine("✅ App Categories, Rules, Category Usage & Suspension Record
     Debug.Assert(ProcessControl.Resume(helper.Id, helperStart.Value, out _) != ProcessOpResult.Ok, "Resume of an ended process should report that it is gone");
 }
 Console.WriteLine("✅ Process List, Suspend & Resume Passed.");
+
+// Admin sign-in storage and start check (require-admin-sign-in, tasks 3.1 and 3.3)
+{
+    var now = DateTimeOffset.UtcNow;
+    AdminAccessRepository.DeleteAllFailures();
+    AdminAccessRepository.AddFailure(LoginSource.Local, now.AddMinutes(-5));
+    AdminAccessRepository.AddFailure(LoginSource.Local, now.AddMinutes(-4));
+    AdminAccessRepository.AddFailure("192.168.1.50", now.AddMinutes(-3));
+    AdminAccessRepository.AddFailure(LoginSource.Local, now.AddHours(-25));
+    DatabaseManager.Initialize(); // the rows survive a new Initialize()
+    Debug.Assert(DatabaseManager.DataFolderSecured, "A test data folder counts as secured");
+    var recentFailures = AdminAccessRepository.GetRecentFailures(now);
+    Debug.Assert(recentFailures.Count == 3, "Only the failures of the last 24 hours should be listed");
+    Debug.Assert(recentFailures.All(f => Math.Abs((f.FailedAtUtc - now).TotalMinutes) < 6), "Failure times should round-trip");
+    Debug.Assert(AdminAccessRepository.DeleteFailuresOlderThan24Hours(now) == 1, "The failure of 25 hours ago should be deleted");
+    Debug.Assert(AdminAccessRepository.DeleteFailuresOfSource("192.168.1.50") == 1, "Delete by source should remove only that source");
+    Debug.Assert(AdminAccessRepository.GetRecentFailures(now).All(f => f.Source == LoginSource.Local), "The failures of the other source should stay");
+    Debug.Assert(AdminAccessRepository.DeleteAllFailures() == 2, "Delete all should remove the rest");
+
+    // SetMany writes all keys or none.
+    SettingsRepository.SetMany(new Dictionary<string, string> { ["admin_test_a"] = "1", ["admin_test_b"] = "2" });
+    Debug.Assert(SettingsRepository.Get("admin_test_a") == "1" && SettingsRepository.Get("admin_test_b") == "2", "SetMany should write all keys");
+    static IEnumerable<KeyValuePair<string, string>> FailHalfway()
+    {
+        yield return new("admin_test_c", "3");
+        throw new InvalidOperationException("test");
+    }
+    var setManyFailed = false;
+    try { SettingsRepository.SetMany(FailHalfway()); } catch (InvalidOperationException) { setManyFailed = true; }
+    Debug.Assert(setManyFailed && SettingsRepository.Get("admin_test_c") == "", "SetMany should write no key when it fails");
+
+    // Session epoch: missing = 0, increment, garbage = not valid, increment repairs it.
+    Debug.Assert(AdminAccessRepository.GetSessionEpoch() == 0, "The epoch should start at 0");
+    AdminAccessRepository.SignOutAllSessions();
+    Debug.Assert(AdminAccessRepository.GetSessionEpoch() == 1, "Sign out all should increment the epoch");
+    SettingsRepository.Set(SettingsRepository.KeyAdminSessionEpoch, "garbage");
+    Debug.Assert(AdminAccessRepository.GetSessionEpoch() is null, "An epoch that is not a number should not be valid");
+    AdminAccessRepository.SignOutAllSessions();
+    Debug.Assert(AdminAccessRepository.GetSessionEpoch() == 1, "Increment should repair an epoch that is not a number");
+
+    // Setup in one transaction; the confirmation code cannot log in.
+    Debug.Assert(!AdminAccessRepository.IsCredentialSetUp(), "A fresh install should not be set up");
+    var invalidSetupRefused = false;
+    try { AdminAccessRepository.CompleteSetup("SHORT", 1, now); } catch (ArgumentException) { invalidSetupRefused = true; }
+    Debug.Assert(invalidSetupRefused && !AdminAccessRepository.IsCredentialSetUp(), "A setup with an invalid secret should save nothing");
+    var adminSecret = TotpService.GenerateSecret();
+    Debug.Assert(TotpSecret.TryDecode(adminSecret, out var adminKey), "A new secret should be valid");
+    var confirmStep = Totp.StepAt(now);
+    var confirmCode = Totp.ComputeCode(adminKey, confirmStep);
+    Debug.Assert(Totp.TryVerify(adminSecret, confirmCode, now, Totp.NoStepUsed, out var matchedStep) && matchedStep == confirmStep, "The confirmation code should be valid");
+    AdminAccessRepository.AddFailure(LoginSource.Local, now);
+    AdminAccessRepository.CompleteSetup(adminSecret.ToLowerInvariant(), matchedStep, now);
+    Debug.Assert(AdminAccessRepository.IsCredentialSetUp(), "The setup should be complete");
+    Debug.Assert(SettingsRepository.Get(SettingsRepository.KeyTotpSecret) == adminSecret, "The secret should be saved in normal form");
+    Debug.Assert(AdminAccessRepository.GetSessionEpoch() == 2, "The setup should end all Admin Sessions");
+    Debug.Assert(AdminAccessRepository.GetRecentFailures(now).Count == 0, "The setup should clear the login limit");
+    Debug.Assert(AdminAccessRepository.GetSetupTime() is not null, "The setup time should be saved");
+    Debug.Assert(!Totp.TryVerify(adminSecret, confirmCode, now, AdminAccessRepository.GetLastUsedStep(), out _), "The confirmation code should not log in");
+
+    // Start check: the four upgrade cases.
+    static AdminStartupPlan PlanWith(string enabled, string secret)
+    {
+        SettingsRepository.Set(SettingsRepository.KeyTotpEnabled, enabled);
+        SettingsRepository.Set(SettingsRepository.KeyTotpSecret, secret);
+        return AdminSetup.PlanStart(
+            SettingsRepository.Get(SettingsRepository.KeyTotpEnabled),
+            SettingsRepository.Get(SettingsRepository.KeyTotpSecret),
+            noticeSent: false, telegramConfigured: true);
+    }
+    var planValid = PlanWith("true", adminSecret);
+    Debug.Assert(!planValid.DisableTotp && !planValid.SendSetupNotice && AdminAccessRepository.IsCredentialSetUp(), "TOTP on with a valid secret keeps its sign-in");
+    var planEmpty = PlanWith("true", "");
+    Debug.Assert(planEmpty.DisableTotp && planEmpty.SendSetupNotice && !AdminAccessRepository.IsCredentialSetUp(), "TOTP on with an empty secret is not set up");
+    var planShort = PlanWith("true", TotpSecret.Encode(new byte[9]));
+    Debug.Assert(planShort.DisableTotp && !AdminAccessRepository.IsCredentialSetUp(), "TOTP on with a 9-byte secret is not set up");
+    var planOff = PlanWith("false", adminSecret);
+    Debug.Assert(!planOff.DisableTotp && planOff.SendSetupNotice && !AdminAccessRepository.IsCredentialSetUp(), "TOTP off with an old secret is not set up");
+
+    SettingsRepository.Set(SettingsRepository.KeyTotpEnabled, "false");
+    SettingsRepository.Set(SettingsRepository.KeyTotpSecret, "");
+}
+Console.WriteLine("✅ Admin Sign-In Storage & Start Check Passed.");
 
 // Cleanup test user
 UserRepository.DeleteBySid(testSid);

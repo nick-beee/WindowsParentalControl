@@ -1055,6 +1055,61 @@ public sealed class TelegramBotService
         return success;
     }
 
+    /// <summary>
+    /// Tells the parent that a source or all sources reached the limit on failed admin logins.
+    /// Returns false without a Telegram configuration; the caller then writes the event to the log only.
+    /// </summary>
+    public async Task<bool> SendAdminLoginBlockedAlertAsync(string source, DateTime blockedUntilLocal, bool allSources)
+    {
+        var token = SettingsRepository.Get(SettingsRepository.KeyTelegramBotToken);
+        var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
+        if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
+
+        var payload = new AdminLoginBlockedPayload
+        {
+            MachineName = Environment.MachineName,
+            Source = source,
+            AllSources = allSources,
+            BlockedUntilLocal = blockedUntilLocal
+        };
+        var success = await SendWithRetryAsync(() => SendTextMessageAsync(chatId, BuildAdminLoginBlockedText(payload)));
+        if (!success)
+        {
+            PendingNotificationRepository.Enqueue("ADMIN_LOGIN_BLOCKED", JsonSerializer.Serialize(payload), DateTime.Now);
+        }
+        return success;
+    }
+
+    /// <summary>
+    /// Tells the parent one time that the Remote Admin Interface is locked until the setup in the Admin app.
+    /// Returns false without a Telegram configuration. Returns true when the message is sent, or when it waits in the
+    /// Offline Notification Queue because the PC is offline.
+    /// </summary>
+    public async Task<bool> SendAdminSetupNeededNoticeAsync()
+    {
+        var token = SettingsRepository.Get(SettingsRepository.KeyTelegramBotToken);
+        var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
+        if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
+
+        var payload = new AdminSetupNeededPayload { MachineName = Environment.MachineName };
+        var success = await SendWithRetryAsync(() => SendTextMessageAsync(chatId, BuildAdminSetupNeededText(payload)));
+        if (!success)
+        {
+            PendingNotificationRepository.Enqueue("ADMIN_SETUP_NEEDED", JsonSerializer.Serialize(payload), DateTime.Now);
+        }
+        return true;
+    }
+
+    private static string BuildAdminLoginBlockedText(AdminLoginBlockedPayload payload) =>
+        ParentalControl.Domain.AdminAccess.AdminAccessTexts.TelegramLoginBlocked(
+            EscapeMarkdown(payload.MachineName),
+            EscapeMarkdown(ParentalControl.Domain.AdminAccess.AdminAccessTexts.SourceName(payload.Source)),
+            payload.AllSources ? ParentalControl.Domain.AdminAccess.LoginLimitScope.AllSources : ParentalControl.Domain.AdminAccess.LoginLimitScope.Source,
+            payload.BlockedUntilLocal);
+
+    private static string BuildAdminSetupNeededText(AdminSetupNeededPayload payload) =>
+        ParentalControl.Domain.AdminAccess.AdminAccessTexts.TelegramSetupNeeded(EscapeMarkdown(payload.MachineName));
+
     public async Task<bool> SendPromptResponseAlertAsync(SessionPrompt prompt, int? sessionId = null)
     {
         var token = SettingsRepository.Get(SettingsRepository.KeyTelegramBotToken);
@@ -1174,6 +1229,23 @@ public sealed class TelegramBotService
                     {
                         var (text, keyboard) = BuildAdminSignInAlert(payload.SessionId, payload.Username, payload.MachineName, item.EventTime, lang);
                         sent = await SendTextMessageWithKeyboardAsync(chatId, text, keyboard);
+                    }
+                }
+
+                else if (item.NotificationType == "ADMIN_LOGIN_BLOCKED")
+                {
+                    var payload = JsonSerializer.Deserialize<AdminLoginBlockedPayload>(item.PayloadJson);
+                    if (payload != null)
+                    {
+                        sent = await SendTextMessageAsync(chatId, BuildAdminLoginBlockedText(payload));
+                    }
+                }
+                else if (item.NotificationType == "ADMIN_SETUP_NEEDED")
+                {
+                    var payload = JsonSerializer.Deserialize<AdminSetupNeededPayload>(item.PayloadJson);
+                    if (payload != null)
+                    {
+                        sent = await SendTextMessageAsync(chatId, BuildAdminSetupNeededText(payload));
                     }
                 }
 

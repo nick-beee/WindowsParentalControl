@@ -17,13 +17,51 @@ public static class DatabaseManager
 
     public static string ConnectionString => $"Data Source={DatabasePath}";
 
-    public static void Initialize()
+    /// <summary>
+    /// True when the owner and the access rules of the data folder are known to be safe: the service set them
+    /// at this start, or the tests use their own folder (<c>PARENTAL_CONTROL_DATA_DIR</c>). While it is false,
+    /// the Remote Admin Interface is not set up (fail closed).
+    /// </summary>
+    public static bool DataFolderSecured { get; private set; }
+
+    /// <summary>The error of the last try to secure the data folder, or null.</summary>
+    public static Exception? DataFolderSecurityError { get; private set; }
+
+    private static bool UsesCustomDataDirectory => !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("PARENTAL_CONTROL_DATA_DIR"));
+
+    /// <param name="enforceDataFolderSecurity">
+    /// True only in the service (LocalSystem): it makes the Administrators group the owner of the data folder and
+    /// replaces all access rules of the folder and its files. The Admin app passes false and only protects a new folder.
+    /// </param>
+    public static void Initialize(bool enforceDataFolderSecurity = false)
     {
         var dirInfo = new DirectoryInfo(DataDirectory);
-        if (!dirInfo.Exists)
+        if (UsesCustomDataDirectory)
+        {
+            DataFolderSecured = true;
+            DataFolderSecurityError = null;
+        }
+        else if (enforceDataFolderSecurity)
+        {
+            if (!dirInfo.Exists)
+                Directory.CreateDirectory(DataDirectory);
+            try
+            {
+                Platform.DataFolderSecurity.Apply(DataDirectory);
+                DataFolderSecured = true;
+                DataFolderSecurityError = null;
+            }
+            catch (Exception ex)
+            {
+                DataFolderSecured = false;
+                DataFolderSecurityError = ex;
+            }
+        }
+
+        if (!Directory.Exists(DataDirectory))
         {
             Directory.CreateDirectory(DataDirectory);
-            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("PARENTAL_CONTROL_DATA_DIR")))
+            if (!UsesCustomDataDirectory)
             {
                 try
                 {
@@ -237,6 +275,13 @@ public static class DatabaseManager
                 PRIMARY KEY (pid, start_time_utc)
             );
 
+            CREATE TABLE IF NOT EXISTS admin_login_failures (
+                id INTEGER PRIMARY KEY,
+                source TEXT NOT NULL,
+                failed_at_utc TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_admin_login_failures_time ON admin_login_failures (failed_at_utc);
             CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events (timestamp);
             CREATE INDEX IF NOT EXISTS idx_events_user_timestamp ON events (user_sid, timestamp);
             CREATE INDEX IF NOT EXISTS idx_grace_user_date ON grace_requests (user_id, date);
