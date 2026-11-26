@@ -72,6 +72,10 @@ CI на `windows-latest`, обновления из форка (PR #2), OpenSpec
 - #15 — README и `CONTEXT.md` расходятся с кодом в описании блокировки.
 - #16 — убрать `.claude/settings.local.json` из git.
 
+### Веб-панель как SPA (после #18 и #11)
+
+- #26 — перенести веб-панель на React + TypeScript + Vite (ADR 0009). Закрывает #25 (CSP).
+
 ### Этап 4. Сервер и ИИ
 
 - Новая программа → сервер в локальной сети. Метаданные: путь, имя, ProductName/CompanyName/FileDescription, издатель подписи, папка (`steamapps\common`, `Epic Games`), заголовок окна, командная строка, SHA256.
