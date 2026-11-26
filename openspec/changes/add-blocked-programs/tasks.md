@@ -70,11 +70,14 @@ PR #20 (`add-german-child-texts`), PR #21 (`require-admin-sign-in`) and PR #22 (
 - [ ] 8.3 Add `notifyBlockedTelegram` to `GET` and `POST /api/admin/settings`. Verify with `curl` on VM 102 that the value survives a service restart.
 - [ ] 8.4 Verify with `curl` on VM 102 that each new or changed route returns 401 without an admin session. The console gate test (task 11.3) already checks `GET /api/admin/blocked-starts` and a `PUT` of a block in CI.
 
-## 9. Admin UI (depends on issue #26)
+## 9. Admin UI (React admin of PR #35)
 
-- [ ] 9.1 In the React admin, add a block switch to each row of the App Rules table and to the form for a new rule; show the error text of a refused block. Verify with a Vitest component test and on VM 102.
-- [ ] 9.2 Add a "Blocked today" list (user, program, count, first and last time, path as text) from `/api/admin/blocked-starts`. Verify with a Vitest component test that a path with `<script>` shows as text.
-- [ ] 9.3 Add the switch for the Telegram notice to the settings view. Verify with a Vitest component test.
+- [x] 9.1 In the React admin, add a block switch to each row of the App Rules table and to the form for a new rule. The switch saves at once with the stored values of the rule; show the error text of a refused block, and the switch stays as stored. Verify with a Vitest component test.
+- [ ] 9.1a Verify on VM 102 that the switch blocks and unblocks a rule, and that a block of a System rule shows the error text of the server.
+- [x] 9.2 Add a "Blocked starts" list (user, program, counts, first and last time, path as text) from `/api/admin/blocked-starts`, for the today of the service or a selected day. Verify with a Vitest component test that a path with `<script>` shows as text.
+- [x] 9.3 Add the switch for the Telegram notice and the text `msgProgramBlocked` to the settings view. Verify with a Vitest component test.
+- [x] 9.4 Add the field `defaultBrowser` to `GET /api/admin/app-rules` (`CategoryDefaults.IsBlockedBrowser`), and show a badge for the 15 default browser rules. Verify with an xUnit test and a Vitest component test.
+- [x] 9.5 Show a hint below the App Rules: a blocked Edge opens no PDF files, so the parent installs another PDF reader (design D9). Verify with a Vitest component test.
 
 ## 10. Documentation
 

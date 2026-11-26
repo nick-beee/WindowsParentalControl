@@ -15,7 +15,7 @@ The parent wants to block some programs fully. For now, this includes all web br
 - The service never blocks: an exe below the Windows folder, an exe below the Parental Control install folder (the service, the Session Agent, the admin app), `msedgewebview2.exe`, a process of another user or session, and a process whose path it cannot read.
 - The child gets one session message per program and day. The texts are German by default, with "en" and "id" presets.
 - The parent sees each blocked program of the day in the event log and through a new admin API route. An optional Telegram notice comes at most one time per program and day. It is on by default.
-- The web admin API gets the block field on the existing App Rule routes and a new read route for the blocked starts of today. The UI for it goes into the new React admin (issue #26).
+- The web admin API gets the block field on the existing App Rule routes and a new read route for the blocked starts of today. The UI for it goes into the React admin (issue #26, merged with PR #35).
 
 ## Out of scope
 
@@ -46,4 +46,4 @@ The parent wants to block some programs fully. For now, this includes all web br
 - New NuGet dependency `System.Management` (Microsoft, MIT) in the Service project.
 - The child text catalog (`src/ParentalControl.Domain/Messages`, spec `child-messages`) gets one new child message key.
 - `GLOSSARY.md`: new terms Blocked Program and Blocked Start; a wider definition of Suspended App.
-- Dependencies: issue #26 (React admin UI). PR #20 (text catalog), PR #21 (Admin Session) and PR #22 (resume at session end, Pending Suspension, Session End Hold) are merged; a blocked suspension uses the Pending Suspension and the Session End Hold of PR #22 (design D15).
+- Dependencies: PR #35 (React admin UI, issue #26), PR #20 (text catalog), PR #21 (Admin Session), PR #22 (resume at session end, Pending Suspension, Session End Hold) and PR #35 are merged; a blocked suspension uses the Pending Suspension and the Session End Hold of PR #22 (design D15).

@@ -211,11 +211,16 @@ When Telegram is set up and the notice setting is on, the system SHALL send the 
 - **AND** the event log still has the entry
 
 ### Requirement: Parent manages blocks through the admin API
-The admin API SHALL let a signed-in admin read and set the block of each App Rule, read the blocked starts of a day, and read and set the Telegram notice setting. After each change of a block, the system SHALL close each new Blocked Start, and SHALL suspend each running process of a new Blocked Program as the requirement "Suspend a Blocked Program that already runs" states. A request without a valid Admin Session SHALL be refused.
+The admin API SHALL let a signed-in admin read and set the block of each App Rule, read the blocked starts of a day, and read and set the Telegram notice setting. It SHALL mark each file rule of a default blocked browser. After each change of a block, the system SHALL close each new Blocked Start, and SHALL suspend each running process of a new Blocked Program as the requirement "Suspend a Blocked Program that already runs" states. A request without a valid Admin Session SHALL be refused.
 
 #### Scenario: Block a new program
 - **WHEN** the parent adds a file rule for `game2.exe` with the block on and the child then starts `game2.exe`
 - **THEN** the system closes the process
+
+#### Scenario: Default browser marked
+- **WHEN** the parent opens the App Rules and the rules for `chrome.exe` and `Minecraft.exe` exist
+- **THEN** the rule for `chrome.exe` is marked as a default browser
+- **AND** the rule for `Minecraft.exe` is not marked
 
 #### Scenario: Not signed in
 - **WHEN** a request without a valid Admin Session turns off the block of the rule for `chrome.exe`

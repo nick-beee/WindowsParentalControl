@@ -248,14 +248,14 @@ Rejected alternatives:
 ### D13. The admin API
 Decided by the orchestrator under the user's delegation (2026-11-26).
 
-- `GET /api/admin/app-rules` returns `blocked` for each rule.
+- `GET /api/admin/app-rules` returns `blocked` for each rule, and `defaultBrowser`: true for a file rule of one of the 15 default browsers (`CategoryDefaults.IsBlockedBrowser`, letter case ignored). The UI shows a badge for it. The value comes from the list in the code, not from a column, so the UI has no second copy of the list.
 - `POST /api/admin/app-rules` reads the optional boolean `blocked` (missing = `false`).
-- `PUT /api/admin/app-rules/{id}` reads `blocked`. A missing field keeps the stored value. The current `AdminPage.cs` sends no `blocked`, so an edit of the category there does not remove a block.
+- `PUT /api/admin/app-rules/{id}` reads `blocked`. A missing field keeps the stored value. The save button of a rule row in the React admin sends no `blocked`, so an edit of the category does not remove a block. The block switch sends the stored values of the rule with `blocked`.
 - `GET /api/admin/blocked-starts` (D11).
 - `GET /api/admin/settings` and `POST /api/admin/settings` get `notifyBlockedTelegram`, and `msgProgramBlocked` like the other editable child texts (D10).
 - The validation of D2 returns status 400 with an error text.
 - All routes are below `/api/admin/`, so the Admin Session gate of PR #21 covers them without a change. `AdminRoutePolicy` is deny by default and needs no new entry: it classifies each new and changed route as `Admin`. The Domain test of the policy lists the routes, and the console gate test checks that they are mapped behind the gate and refuse a request without an Admin Session (status 401).
-- The UI is a task for the React admin (issue #26): a block switch in the rules table, a "Blocked today" list, and the notice setting. Until #26, the default rules work without a UI, and the parent can call the API.
+- The UI is in the React admin of PR #35 (ADR 0009): a block switch in the rules table and in the form for a new rule, a badge for the default browsers, a hint about PDF files and Edge (D9), a "Blocked starts" list for a day, and the notice setting with the text `msgProgramBlocked` in the settings view.
 
 Rejected alternative: *separate routes for blocked rules*: two ways to change one rule.
 
@@ -264,7 +264,7 @@ Decided by the orchestrator under the user's delegation (2026-11-26).
 
 - PR #20 (the text catalog) is merged. D10 adds a key to that catalog.
 - PR #21 and PR #22 are merged. This change is rebased on them (D15).
-- Issue #26 is a dependency of the UI tasks only.
+- The React admin (issue #26, PR #35) is merged. The UI tasks (group 9) build on it.
 - PR #22 is archived first. Each MODIFIED requirement of `category-limits` in this change starts from the current text of `openspec/specs/category-limits/spec.md` and only adds the parts of the block.
 
 ### D15. Blocked suspensions in the two-phase suspension and the Session End Hold of PR #22
