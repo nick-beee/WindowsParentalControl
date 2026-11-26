@@ -19,22 +19,36 @@ public static class TcpConnectionOwner
     {
         try
         {
-            var pid = FindOwnerPid(client, server);
-            if (pid is null)
+            var match = FindOwner(client, server);
+            if (match is null)
                 return null;
-            var (sessionId, userSid) = ReadProcess(pid.Value);
+            var pid = match.Value.Pid;
+            var (sessionId, userSid) = ReadProcess(pid);
             if (sessionId is null || userSid is null)
                 return null;
+
+            // N3: a session without a user (session 0) has no session user. A session with a user whose SID the
+            // service cannot read is not known, and the policy refuses it.
             string? sessionUser = null;
+            var sessionUserKnown = true;
             try
             {
-                sessionUser = SessionManager.GetSessionUserSid(sessionId.Value);
+                if (SessionManager.GetSessionUsername(sessionId.Value) is { Length: > 0 })
+                {
+                    sessionUser = SessionManager.GetSessionUserSid(sessionId.Value);
+                    sessionUserKnown = sessionUser is not null;
+                }
             }
             catch
             {
-                // Without the session user, the decision uses the process user only.
+                sessionUserKnown = false;
             }
-            return new ConnectionOwner(pid.Value, sessionId.Value, userSid, sessionUser);
+            return new ConnectionOwner(pid, sessionId.Value, userSid, sessionUser)
+            {
+                SessionUserKnown = sessionUserKnown,
+                ProcessStartUtc = ReadProcessStartUtc(pid),
+                ConnectionCreatedUtc = match.Value.CreatedUtc,
+            };
         }
         catch
         {
@@ -46,7 +60,13 @@ public static class TcpConnectionOwner
     /// The owner process of the client end: the row of the TCP table whose local end is the client and whose remote
     /// end is the server. Null if there is no such row, or if more than one process matches.
     /// </summary>
-    public static int? FindOwnerPid(IPEndPoint client, IPEndPoint server)
+    public static int? FindOwnerPid(IPEndPoint client, IPEndPoint server) => FindOwner(client, server)?.Pid;
+
+    /// <summary>
+    /// The owner process of the client end and the time when Windows made the connection (null if the table does not
+    /// give it). The time lets the policy see a process id that Windows gave to a new process (N2).
+    /// </summary>
+    public static (int Pid, DateTime? CreatedUtc)? FindOwner(IPEndPoint client, IPEndPoint server)
     {
         var clientAddress = LoginSource.Canonical(client.Address);
         var serverAddress = LoginSource.Canonical(server.Address);
@@ -54,6 +74,7 @@ public static class TcpConnectionOwner
             return null;
 
         int? found = null;
+        DateTime? created = null;
         foreach (var row in ReadTable(clientAddress.AddressFamily))
         {
             if (row.LocalPort != client.Port || row.RemotePort != server.Port)
@@ -63,33 +84,51 @@ public static class TcpConnectionOwner
             if (found is not null && found != row.Pid)
                 return null;
             found = row.Pid;
+            created = row.CreatedUtc;
         }
-        return found;
+        return found is null ? null : (found.Value, created);
     }
 
-    private readonly record struct TcpRow(IPAddress LocalAddress, int LocalPort, IPAddress RemoteAddress, int RemotePort, int Pid);
+    private readonly record struct TcpRow(IPAddress LocalAddress, int LocalPort, IPAddress RemoteAddress, int RemotePort, int Pid, DateTime? CreatedUtc = null);
 
     private const int AF_INET = 2;
     private const int AF_INET6 = 23;
     private const int TCP_TABLE_OWNER_PID_CONNECTIONS = 4;
+    private const int TCP_TABLE_OWNER_MODULE_CONNECTIONS = 7;
     private const int ERROR_INSUFFICIENT_BUFFER = 122;
 
     [DllImport("iphlpapi.dll", SetLastError = true)]
     private static extern uint GetExtendedTcpTable(IntPtr table, ref int size, [MarshalAs(UnmanagedType.Bool)] bool order,
         int addressFamily, int tableClass, uint reserved);
 
+    /// <summary>
+    /// Reads the table with the create time of each connection (<c>TCP_TABLE_OWNER_MODULE_CONNECTIONS</c>). If that
+    /// fails, it reads the table with the owner process only.
+    /// </summary>
     private static List<TcpRow> ReadTable(AddressFamily family)
     {
         var af = family == AddressFamily.InterNetworkV6 ? AF_INET6 : AF_INET;
+        try
+        {
+            return ReadTable(af, TCP_TABLE_OWNER_MODULE_CONNECTIONS, af == AF_INET ? ParseV4Module : ParseV6Module);
+        }
+        catch
+        {
+            return ReadTable(af, TCP_TABLE_OWNER_PID_CONNECTIONS, af == AF_INET ? ParseV4 : ParseV6);
+        }
+    }
+
+    private static List<TcpRow> ReadTable(int af, int tableClass, Func<IntPtr, List<TcpRow>> parse)
+    {
         var size = 0;
         var buffer = IntPtr.Zero;
         try
         {
             for (var attempt = 0; attempt < 5; attempt++)
             {
-                var result = GetExtendedTcpTable(buffer, ref size, false, af, TCP_TABLE_OWNER_PID_CONNECTIONS, 0);
+                var result = GetExtendedTcpTable(buffer, ref size, false, af, tableClass, 0);
                 if (result == 0)
-                    return af == AF_INET ? ParseV4(buffer) : ParseV6(buffer);
+                    return parse(buffer);
                 if (result != ERROR_INSUFFICIENT_BUFFER)
                     throw new System.ComponentModel.Win32Exception((int)result, "GetExtendedTcpTable failed");
                 if (buffer != IntPtr.Zero)
@@ -104,6 +143,55 @@ public static class TcpConnectionOwner
             if (buffer != IntPtr.Zero)
                 Marshal.FreeHGlobal(buffer);
         }
+    }
+
+    // MIB_TCPTABLE_OWNER_MODULE: DWORD count, padding to 8 bytes, then rows of 160 bytes: state, local address, local
+    // port, remote address, remote port, owner pid (6 DWORDs), the create time (LARGE_INTEGER at 24), then 16 ULONGLONGs.
+    private static List<TcpRow> ParseV4Module(IntPtr table)
+    {
+        var count = Marshal.ReadInt32(table);
+        var rows = new List<TcpRow>(count);
+        var row = table + 8;
+        for (var i = 0; i < count; i++, row += 160)
+        {
+            var local = new IPAddress(BitConverter.GetBytes(Marshal.ReadInt32(row + 4)));
+            var localPort = Port(Marshal.ReadInt32(row + 8));
+            var remote = new IPAddress(BitConverter.GetBytes(Marshal.ReadInt32(row + 12)));
+            var remotePort = Port(Marshal.ReadInt32(row + 16));
+            rows.Add(new TcpRow(local, localPort, remote, remotePort, Marshal.ReadInt32(row + 20), FileTime(Marshal.ReadInt64(row + 24))));
+        }
+        return rows;
+    }
+
+    // MIB_TCP6TABLE_OWNER_MODULE: DWORD count, padding to 8 bytes, then rows of 192 bytes: local address (16 bytes),
+    // local scope ID, local port, remote address (16 bytes), remote scope ID, remote port, state, owner pid (56 bytes),
+    // the create time (LARGE_INTEGER at 56), then 16 ULONGLONGs.
+    private static List<TcpRow> ParseV6Module(IntPtr table)
+    {
+        var count = Marshal.ReadInt32(table);
+        var rows = new List<TcpRow>(count);
+        var row = table + 8;
+        var bytes = new byte[16];
+        for (var i = 0; i < count; i++, row += 192)
+        {
+            Marshal.Copy(row, bytes, 0, 16);
+            var local = new IPAddress(bytes);
+            var localPort = Port(Marshal.ReadInt32(row + 20));
+            Marshal.Copy(row + 24, bytes, 0, 16);
+            var remote = new IPAddress(bytes);
+            var remotePort = Port(Marshal.ReadInt32(row + 44));
+            rows.Add(new TcpRow(local, localPort, remote, remotePort, Marshal.ReadInt32(row + 52), FileTime(Marshal.ReadInt64(row + 56))));
+        }
+        return rows;
+    }
+
+    /// <summary>A FILETIME in UTC, or null for 0 or a value that is not a valid time.</summary>
+    private static DateTime? FileTime(long value)
+    {
+        if (value <= 0)
+            return null;
+        try { return DateTime.FromFileTimeUtc(value); }
+        catch (ArgumentOutOfRangeException) { return null; }
     }
 
     // MIB_TCPTABLE_OWNER_PID: DWORD count, then rows of 6 DWORDs:
@@ -162,6 +250,26 @@ public static class TcpConnectionOwner
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool ProcessIdToSessionId(int pid, out int sessionId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetProcessTimes(IntPtr process, out long creation, out long exit, out long kernel, out long user);
+
+    /// <summary>The start time of a process (UTC), or null.</summary>
+    public static DateTime? ReadProcessStartUtc(int pid)
+    {
+        var process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (process == IntPtr.Zero)
+            return null;
+        try
+        {
+            return GetProcessTimes(process, out var creation, out _, out _, out _) ? FileTime(creation) : null;
+        }
+        finally
+        {
+            CloseHandle(process);
+        }
+    }
 
     [DllImport("advapi32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

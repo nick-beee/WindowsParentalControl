@@ -5,7 +5,20 @@ namespace ParentalControl.Domain.AdminAccess;
 /// <param name="SessionId">The Windows session of the process.</param>
 /// <param name="UserSid">The user of the process token, or null if the service could not read it.</param>
 /// <param name="SessionUserSid">The user who is logged on to that session, or null if nobody is (session 0).</param>
-public sealed record ConnectionOwner(int ProcessId, int SessionId, string? UserSid, string? SessionUserSid);
+public sealed record ConnectionOwner(int ProcessId, int SessionId, string? UserSid, string? SessionUserSid)
+{
+    /// <summary>
+    /// False if the session has a user, but the service could not read the SID of that user (N3). The decision is
+    /// then to refuse: the session can be the session of the child.
+    /// </summary>
+    public bool SessionUserKnown { get; init; } = true;
+
+    /// <summary>The start time of the owner process (UTC), or null if the service could not read it.</summary>
+    public DateTime? ProcessStartUtc { get; init; }
+
+    /// <summary>The time when the connection was made (UTC, from the TCP table), or null if Windows did not give it.</summary>
+    public DateTime? ConnectionCreatedUtc { get; init; }
+}
 
 public enum LocalClientDecision
 {
@@ -17,6 +30,16 @@ public enum LocalClientDecision
     RefuseUnknownOwner,
     /// <summary>The owner is a service account. Such a process can send requests for any user.</summary>
     RefuseServiceAccount,
+    /// <summary>
+    /// The owner is not a local or domain user account (<c>S-1-5-21-…</c>), for example a virtual account of Window
+    /// Manager (<c>S-1-5-90-…</c>) or of the font driver host (<c>S-1-5-96-…</c>), a service SID, or an Azure AD account.
+    /// </summary>
+    RefuseNotUserAccount,
+    /// <summary>
+    /// The owner process started after the connection: the first owner ended and Windows gave its process id to a new
+    /// process (N2).
+    /// </summary>
+    RefuseProcessIdReused,
 }
 
 /// <summary>
@@ -45,14 +68,25 @@ public static class LocalClientPolicy
         if (source != LoginSource.Local)
             return LocalClientDecision.Allow;
 
-        if (owner is null || string.IsNullOrEmpty(owner.UserSid))
+        if (owner is null || string.IsNullOrEmpty(owner.UserSid) || !owner.SessionUserKnown)
             return LocalClientDecision.RefuseUnknownOwner;
         if (IsRestricted(owner.UserSid, restrictedSids) || IsRestricted(owner.SessionUserSid, restrictedSids))
             return LocalClientDecision.RefuseRestrictedUser;
         if (ServiceAccounts.Contains(owner.UserSid))
             return LocalClientDecision.RefuseServiceAccount;
+        if (!IsUserAccount(owner.UserSid) || (owner.SessionUserSid is not null && !IsUserAccount(owner.SessionUserSid)))
+            return LocalClientDecision.RefuseNotUserAccount;
+        if (owner.ProcessStartUtc is { } started && owner.ConnectionCreatedUtc is { } created
+            && started > created + ProcessStartTolerance)
+            return LocalClientDecision.RefuseProcessIdReused;
         return LocalClientDecision.Allow;
     }
+
+    /// <summary>The clock of the TCP table and of the process times can differ a little.</summary>
+    public static readonly TimeSpan ProcessStartTolerance = TimeSpan.FromSeconds(1);
+
+    /// <summary>True for a SID of a local or domain account (<c>S-1-5-21-…</c>). Only such an account is a parent.</summary>
+    public static bool IsUserAccount(string sid) => sid.StartsWith("S-1-5-21-", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsRestricted(string? sid, IReadOnlySet<string> restrictedSids) =>
         !string.IsNullOrEmpty(sid) && restrictedSids.Any(r => string.Equals(r, sid, StringComparison.OrdinalIgnoreCase));
