@@ -13,7 +13,7 @@ An enhanced screen time, application telemetry, and schedule curfew management s
 ### 2. Unskippable In-Session Modal Warnings & Curfew Alerts
 - Service dispatches native Win32 `WTSSendMessageW` modal dialogs directly from `LocalSystem` into the user's active session.
 - Displays session welcome banner at logon with daily quota and curfew boundaries.
-- Automatic countdown warnings at configurable intervals (default: 15m, 5m, 1m) before forced logoff.
+- Automatic countdown warnings at configurable intervals (default: 15m, 5m, 1m) before the Enforced Workstation Lock.
 - Dedicated **Curfew Warning** dialogs if schedule cutoffs approach before quota is exhausted.
 - Cannot be silenced, minimized, or suppressed by Windows Focus Assist / Do Not Disturb.
 
