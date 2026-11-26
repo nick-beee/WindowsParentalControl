@@ -10,6 +10,7 @@ public static class SettingsRepository
     public const string KeyTelegramNotifySignIn = "telegram_notify_sign_in";
     public const string KeyTelegramNotifySignOut = "telegram_notify_sign_out";
     public const string KeyTelegramNotifyAdminLogon = "telegram_notify_admin_logon";
+    public const string KeyTelegramNotifyBreak = "telegram_notify_break"; // a notice at each Break start, off by default
     public const string KeyTotpSecret = "totp_secret";
     public const string KeyTotpEnabled = "totp_enabled"; // "true" = the setup of the admin sign-in is complete
     public const string KeyTotpLastStep = "totp_last_step"; // the TOTP time step of the last used code (replay guard)
@@ -69,6 +70,11 @@ public static class SettingsRepository
     public static bool IsTelegramNotifyAdminLogonEnabled()
     {
         return Get(KeyTelegramNotifyAdminLogon, "true") == "true";
+    }
+
+    public static bool IsTelegramNotifyBreakEnabled()
+    {
+        return Get(KeyTelegramNotifyBreak, "false") == "true";
     }
 
     public static List<string> GetPromptResponsePresets()

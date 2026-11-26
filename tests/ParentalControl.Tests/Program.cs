@@ -1592,6 +1592,21 @@ Console.WriteLine("✅ Start Gate & Lockdown after a Failed Open Passed.");
 }
 Console.WriteLine("✅ Loopback Connection Owner Passed.");
 
+// Breaks: the default rule without a row, a stored rule and a stored state.
+Console.WriteLine("\nTesting Break Repository...");
+Debug.Assert(BreakRepository.GetRule(user.Id) == ParentalControl.Domain.Breaks.BreakRule.Default, "A user without a rule row should get the default rule 45/10/on");
+Debug.Assert(BreakRepository.GetState(user.Id) == ParentalControl.Domain.Breaks.BreakState.Empty, "A user without a state row should get the empty state");
+BreakRepository.SetRule(user.Id, new ParentalControl.Domain.Breaks.BreakRule(false, 60, 15));
+Debug.Assert(BreakRepository.GetRule(user.Id) == new ParentalControl.Domain.Breaks.BreakRule(false, 60, 15), "The stored rule should read back");
+var breakStart = new DateTime(2026, 11, 26, 14, 0, 0, 123, DateTimeKind.Utc);
+var breakState = new ParentalControl.Domain.Breaks.BreakState(31, breakStart.AddMinutes(-1), breakStart, breakStart.AddMinutes(10), true, false);
+BreakRepository.SaveState(user.Id, breakState);
+Debug.Assert(BreakRepository.GetState(user.Id) == breakState, "The stored state should read back with the same UTC times");
+BreakRepository.SaveState(user.Id, breakState.ResetCycle());
+Debug.Assert(BreakRepository.GetState(user.Id).BreakEndsUtc is null, "A reset state should store no Break");
+Debug.Assert(SettingsRepository.IsTelegramNotifyBreakEnabled() == false, "telegram_notify_break should be off by default");
+Console.WriteLine("✅ Break Repository Passed.");
+
 // Cleanup test user
 UserRepository.DeleteBySid(testSid);
 ScheduleRepository.DeleteForUser(user.Id);
