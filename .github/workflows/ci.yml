@@ -24,17 +24,46 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # The web admin (web/admin, ADR 0009): lint, type check, component tests, then the bundle.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/admin/package-lock.json
+
+      - name: Web admin - install
+        working-directory: web/admin
+        run: npm ci --no-audit --no-fund
+
+      - name: Web admin - lint
+        working-directory: web/admin
+        run: npm run lint
+
+      - name: Web admin - type check
+        working-directory: web/admin
+        run: npm run typecheck
+
+      - name: Web admin - tests
+        working-directory: web/admin
+        run: npm test
+
+      - name: Web admin - build
+        working-directory: web/admin
+        run: npm run build
+
       - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
 
       # Build each project on its own: the .NET 8 SDK cannot read ParentalControl.slnx.
+      # The steps above built the web admin, so the service build embeds it without npm.
       - name: Build
         shell: pwsh
         run: |
           Get-ChildItem src -Recurse -Filter *.csproj | ForEach-Object {
-            dotnet build $_.FullName -c Debug
+            dotnet build $_.FullName -c Debug -p:SkipAdminSpaBuild=true
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 

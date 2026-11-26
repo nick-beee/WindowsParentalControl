@@ -1132,18 +1132,19 @@ public sealed class WebServerHost : BackgroundService
             }
         });
 
-        // Web Admin Page: the setup text before the setup, else the login form or the dashboard.
+        // Web Admin Page: the single-page app of web/admin (ADR 0009). The service selects its view: the setup text
+        // before the setup, the refused text for a process of a Restricted User, else the login form or the dashboard.
         app.MapGet("/admin", (HttpContext ctx) =>
         {
             if (!_adminAccess.IsSetUp)
-                return Results.Content(AdminPage.RenderSetupNeeded(), "text/html; charset=utf-8");
+                return AdminSpa.Page(ctx, AdminSpa.ViewSetup);
             if (_adminAccess.CheckClient(ctx.Connection) != LocalClientDecision.Allow)
-                return Results.Content(AdminPage.RenderLogin(AdminAccessTexts.LocalClientRefused), "text/html; charset=utf-8",
-                    statusCode: StatusCodes.Status403Forbidden);
+                return AdminSpa.Page(ctx, AdminSpa.ViewRefused, StatusCodes.Status403Forbidden);
             if (!_adminAccess.IsSessionValid(ctx))
-                return Results.Content(AdminPage.RenderLogin(), "text/html; charset=utf-8");
-            return Results.Content(AdminPage.RenderDashboard(), "text/html; charset=utf-8");
+                return AdminSpa.Page(ctx, AdminSpa.ViewLogin);
+            return AdminSpa.Page(ctx, AdminSpa.ViewApp);
         });
+        app.MapGet("/admin/assets/{file}", (HttpContext ctx, string file) => AdminSpa.Asset(ctx, file));
 
         // Web Admin Login API. The gate has checked the Origin.
         app.MapPost("/api/admin/login", async (HttpContext ctx) =>
@@ -1162,17 +1163,16 @@ public sealed class WebServerHost : BackgroundService
                     });
                     return Results.Redirect("/admin");
                 case AdminLoginOutcome.NotSetUp:
-                    return Results.Content(AdminPage.RenderSetupNeeded(), "text/html; charset=utf-8", statusCode: StatusCodes.Status401Unauthorized);
+                    return LoginRefusal(ctx, StatusCodes.Status401Unauthorized, "notSetUp", AdminAccessTexts.SetupText,
+                        () => AdminPage.RenderSetupNeeded());
                 case AdminLoginOutcome.RefusedClient:
-                    return Results.Content(AdminPage.RenderLogin(AdminAccessTexts.LocalClientRefused), "text/html; charset=utf-8",
-                        statusCode: StatusCodes.Status403Forbidden);
+                    return LoginRefusal(ctx, StatusCodes.Status403Forbidden, "refused", AdminAccessTexts.LocalClientRefused);
                 case AdminLoginOutcome.Blocked:
                     var until = (result.Limit!.BlockedUntilUtc ?? DateTimeOffset.UtcNow).ToLocalTime().DateTime;
-                    return Results.Content(AdminPage.RenderLogin(AdminAccessTexts.Blocked(result.Limit.Scope, until)), "text/html; charset=utf-8",
-                        statusCode: StatusCodes.Status429TooManyRequests);
+                    return LoginRefusal(ctx, StatusCodes.Status429TooManyRequests, "blocked", AdminAccessTexts.Blocked(result.Limit.Scope, until),
+                        blockedUntil: AdminAccessTexts.FormatTime(until));
                 default:
-                    return Results.Content(AdminPage.RenderLogin(AdminAccessTexts.InvalidCode), "text/html; charset=utf-8",
-                        statusCode: StatusCodes.Status401Unauthorized);
+                    return LoginRefusal(ctx, StatusCodes.Status401Unauthorized, "invalid", AdminAccessTexts.InvalidCode);
             }
         });
 
@@ -2146,6 +2146,20 @@ public sealed class WebServerHost : BackgroundService
                 await next();
                 return;
         }
+    }
+
+    /// <summary>
+    /// The answer to a refused login. A form post gets the HTML page as before. A JSON request (the web admin, ADR 0009)
+    /// gets <c>{ error, message, blockedUntil }</c>: the German text of <see cref="AdminAccessTexts"/>, so the page
+    /// shows the text of the service and, for a block, the time when the block ends.
+    /// </summary>
+    private static IResult LoginRefusal(HttpContext ctx, int statusCode, string error, string message,
+        Func<string>? formPage = null, string? blockedUntil = null)
+    {
+        if (!ctx.Request.HasFormContentType)
+            return Results.Json(new { error, message, blockedUntil }, statusCode: statusCode);
+        var html = formPage?.Invoke() ?? AdminPage.RenderLogin(message);
+        return Results.Content(html, "text/html; charset=utf-8", statusCode: statusCode);
     }
 
     /// <summary>Reads the code of a login from a form or a JSON body. A body without a code gives null.</summary>
