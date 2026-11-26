@@ -18,6 +18,7 @@ using ParentalControl.Domain.Web;
 using ParentalControl.Domain.Captures;
 using ParentalControl.Domain.Messages;
 using ParentalControl.Domain.AdminAccess;
+using ParentalControl.Domain.Breaks;
 using Microsoft.AspNetCore.Routing;
 
 namespace ParentalControl.Service.Web;
@@ -29,6 +30,7 @@ public sealed class WebServerHost : BackgroundService
     private readonly Serilog.ILogger _logger;
     private readonly ForegroundHistory _foregroundHistory;
     private readonly CategoryEnforcer _categoryEnforcer;
+    private readonly BreakEnforcer _breakEnforcer;
     private readonly AdminAccessService _adminAccess;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string ProcessName, string WindowTitle, DateTime LastSeen)> _liveActivities = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CaptureCommandState> _captureStates = new(StringComparer.OrdinalIgnoreCase);
@@ -85,7 +87,7 @@ public sealed class WebServerHost : BackgroundService
 
     /// <param name="startup">The start gate of the service, or null in a test (the database is ready then).</param>
     public WebServerHost(SessionTracker sessionTracker, TelegramBotService telegramBotService, Serilog.ILogger logger,
-        ForegroundHistory foregroundHistory, CategoryEnforcer categoryEnforcer, ServiceStartup? startup = null)
+        ForegroundHistory foregroundHistory, CategoryEnforcer categoryEnforcer, BreakEnforcer breakEnforcer, ServiceStartup? startup = null)
     {
         _startup = startup;
         _sessionTracker = sessionTracker;
@@ -93,6 +95,7 @@ public sealed class WebServerHost : BackgroundService
         _logger = logger;
         _foregroundHistory = foregroundHistory;
         _categoryEnforcer = categoryEnforcer;
+        _breakEnforcer = breakEnforcer;
         _adminAccess = new AdminAccessService(telegramBotService, logger);
     }
 
@@ -1897,7 +1900,11 @@ public sealed class WebServerHost : BackgroundService
                 telegramNotifyAdminLogon = SettingsRepository.IsTelegramNotifyAdminLogonEnabled(),
                 promptResponsePresets = SettingsRepository.GetMessage(SettingsRepository.KeyPromptResponsePresets),
                 msgCategoryWarn = SettingsRepository.GetMessage(SettingsRepository.KeyMsgCategoryWarn),
-                msgCategorySuspended = SettingsRepository.GetMessage(SettingsRepository.KeyMsgCategorySuspended)
+                msgCategorySuspended = SettingsRepository.GetMessage(SettingsRepository.KeyMsgCategorySuspended),
+                telegramNotifyBreak = SettingsRepository.IsTelegramNotifyBreakEnabled(),
+                msgBreakWarn = SettingsRepository.GetMessage(SettingsRepository.KeyMsgBreakWarn),
+                msgBreakStart = SettingsRepository.GetMessage(SettingsRepository.KeyMsgBreakStart),
+                msgBreakRunning = SettingsRepository.GetMessage(SettingsRepository.KeyMsgBreakRunning)
             });
         });
 
@@ -1934,6 +1941,20 @@ public sealed class WebServerHost : BackgroundService
                 if (doc.RootElement.TryGetProperty("msgCategorySuspended", out var mcs) && !string.IsNullOrWhiteSpace(mcs.GetString()))
                 {
                     SettingsRepository.Set(SettingsRepository.KeyMsgCategorySuspended, mcs.GetString()!.Trim());
+                }
+                if (doc.RootElement.TryGetProperty("telegramNotifyBreak", out var nb))
+                {
+                    SettingsRepository.Set(SettingsRepository.KeyTelegramNotifyBreak, nb.GetBoolean() ? "true" : "false");
+                }
+                foreach (var (field, key) in new[]
+                {
+                    ("msgBreakWarn", SettingsRepository.KeyMsgBreakWarn),
+                    ("msgBreakStart", SettingsRepository.KeyMsgBreakStart),
+                    ("msgBreakRunning", SettingsRepository.KeyMsgBreakRunning),
+                })
+                {
+                    if (doc.RootElement.TryGetProperty(field, out var text) && !string.IsNullOrWhiteSpace(text.GetString()))
+                        SettingsRepository.Set(key, text.GetString()!.Trim());
                 }
 
                 return Results.Ok(new { success = true });
@@ -2049,6 +2070,77 @@ public sealed class WebServerHost : BackgroundService
             return Results.Ok(new { success = true });
         });
 
+        // ═══ Breaks (add-usage-breaks, design D14). The admin gate covers each route below /api/admin/. ═══
+        app.MapGet("/api/admin/breaks", (HttpContext ctx) =>
+        {
+            var now = DateTime.UtcNow;
+            return Results.Ok(_breakEnforcer.GetStatus().Select(s => BreakItem(s, now)).ToList());
+        });
+
+        app.MapPut("/api/admin/breaks/{userId:int}", async (HttpContext ctx, int userId) =>
+        {
+            var user = UserRepository.GetById(userId);
+            if (user is null || !user.IsRestricted)
+                return Results.NotFound(new { error = "No Restricted User with this id." });
+
+            JsonElement root;
+            try { root = (await JsonDocument.ParseAsync(ctx.Request.Body)).RootElement.Clone(); }
+            catch (JsonException) { return Results.BadRequest(new { error = "Invalid JSON." }); }
+
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("enabled", out var enabledProp)
+                || enabledProp.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+                || !TryReadWholeNumber(root, "useMinutes", out var useMinutes)
+                || !TryReadWholeNumber(root, "breakMinutes", out var breakMinutes))
+                return Results.BadRequest(new { error = "The fields enabled (true or false), useMinutes and breakMinutes (whole numbers) are required." });
+
+            var rule = new BreakRule(enabledProp.GetBoolean(), useMinutes, breakMinutes);
+            if (!rule.IsValid)
+                return Results.BadRequest(new
+                {
+                    error = $"useMinutes must be from {BreakRule.MinUseMinutes} to {BreakRule.MaxUseMinutes}, " +
+                            $"breakMinutes from {BreakRule.MinBreakMinutes} to {BreakRule.MaxBreakMinutes}."
+                });
+
+            _breakEnforcer.ChangeRule(user, rule);
+            _logger.Information("Web Admin set the Break Rule of {Username} to {Rule}", user.Username, rule);
+            var status = _breakEnforcer.GetStatus().First(s => s.UserId == user.Id);
+            return Results.Ok(BreakItem(status, DateTime.UtcNow));
+        });
+
+        app.MapPost("/api/admin/breaks/{userId:int}/end", (HttpContext ctx, int userId) =>
+        {
+            var user = UserRepository.GetById(userId);
+            if (user is null || !user.IsRestricted)
+                return Results.NotFound(new { error = "No Restricted User with this id." });
+
+            // The session stays locked: the child unlocks it (hard rule, no program closes).
+            return _breakEnforcer.EndByParent(user) == ParentEndOutcome.Ended
+                ? Results.Ok(new { ended = true })
+                : Results.Conflict(new { error = "No Break of this user runs." });
+        });
+
+    }
+
+    /// <summary>One item of <c>GET /api/admin/breaks</c>. <c>breakEndsAt</c> is a UTC time, or null if no Break runs.</summary>
+    private static object BreakItem(BreakStatus s, DateTime nowUtc) => new
+    {
+        userId = s.UserId,
+        username = s.Username,
+        enabled = s.Rule.Enabled,
+        useMinutes = s.Rule.UseMinutes,
+        breakMinutes = s.Rule.BreakMinutes,
+        continuousUseMinutes = s.ContinuousUseMinutes,
+        breakEndsAt = s.BreakEndsUtc is { } end && end > nowUtc
+            ? DateTime.SpecifyKind(end, DateTimeKind.Utc).ToString("O", System.Globalization.CultureInfo.InvariantCulture)
+            : null,
+    };
+
+    /// <summary>Reads a required whole number. Returns false if the field is missing, not a number or not whole.</summary>
+    private static bool TryReadWholeNumber(JsonElement root, string name, out int value)
+    {
+        value = 0;
+        return root.TryGetProperty(name, out var prop) && prop.ValueKind == JsonValueKind.Number && prop.TryGetInt32(out value);
     }
 
     /// <summary>

@@ -17,6 +17,12 @@ public class AdminRoutePolicyTests
     [InlineData("/api/admin/login/extra")]
     [InlineData("/api/admin/settings")]
     [InlineData("api/admin/grant")]
+    [InlineData("/api/admin/breaks")]
+    [InlineData("/api/admin/breaks/{userId:int}")]
+    [InlineData("/api/admin/breaks/{userId:int}/end")]
+    [InlineData("/api/admin/breaks/3")]
+    [InlineData("/api/admin/breaks/3/end")]
+    [InlineData("/API/Admin/Breaks/3/End/")]
     public void Paths_below_api_admin_are_admin(string path)
     {
         Assert.Equal(AdminRouteClass.Admin, AdminRoutePolicy.Classify(path));

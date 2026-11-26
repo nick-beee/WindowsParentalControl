@@ -40,7 +40,7 @@ public sealed class BreakEnforcer
         };
     }
 
-    // --- Parent (Telegram now, the admin API after PR #21) ---
+    // --- Parent (Telegram and the admin API) ---
 
     /// <summary>The Break Rule and the break state of each Restricted User.</summary>
     public IReadOnlyList<BreakStatus> GetStatus()
