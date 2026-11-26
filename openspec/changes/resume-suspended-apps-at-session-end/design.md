@@ -260,3 +260,13 @@ Cancel path (R2):
 - A cancelled sign-out then always gives an unconfirmed hold and the daily alert. This is correct: the sign-out did not complete.
 
 The chosen options are in "Decisions after the VM gate": option 1 for D7, and the removal of the cancel path. With the Pending Suspension, the bound after the end of a hold is 20 s, not 10 s.
+
+## VM results of part 2 (2026-11-26)
+
+These runs used the product build on VM 102. The notes in `tasks.md` have the log lines.
+
+- **Order of the two queries in the agent (D1).** WPF gets its `WM_QUERYENDSESSION` first and raises `SessionEnding`. The hidden window gets its query 3 to 22 ms later, while WPF still pumps messages, and it resumes the Suspended Apps. At a sign-out, a restart and a shutdown, Windows ended the agent before `Application.Run` returned. At a Forced Logoff, `Application.Run` returned after the query, and the wait ended after 0 ms. So the 3 s wait is a guard that no run needed. No run logged `WM_ENDSESSION`: Windows ends the agent right after its query.
+- **The blocking screen cancels by itself.** If nobody clicks on "Closing 1 app and signing out", Windows 10 cancels the sign-out after about 60 s. The result is the same as a click on Cancel (R2): the session stays, and the hold ends unconfirmed.
+- **The fallback of D2 holds.** A suspended program that the agent did not resume showed on the blocking screen. A resume 8.7 s after the query removed it, and the sign-out completed without a click.
+- **Fast Startup on the VM.** A shutdown from the Ctrl+Alt+Del screen used Fast Startup (boot type 0x1), unlike the `shutdown /s /hybrid` run of R4. The first tick after the next sign-in dropped the old record.
+- **The hold state is in memory (D4).** A restart of the service resets the 15-minute window and the daily alert. The child cannot restart the service. A reboot also resets the state, but it ends the session of the child, so it gives at most one 60 s hold for each reboot. This stays as designed.
