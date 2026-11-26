@@ -1125,7 +1125,7 @@ static class TestNative
     private struct ByHandleInfo
     {
         public uint Attributes;
-        public long Creation, Access, Write;
+        public uint CreationLow, CreationHigh, AccessLow, AccessHigh, WriteLow, WriteHigh; // FILETIME: 4-byte alignment
         public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
     }
 

@@ -295,13 +295,14 @@ public static class DataFolderGuard
         public const uint ProtectedDacl = 0x8000_0000;   // PROTECTED_DACL_SECURITY_INFORMATION
         public const uint UnprotectedDacl = 0x2000_0000; // UNPROTECTED_DACL_SECURITY_INFORMATION
 
+        // FILETIME is two DWORDs with 4-byte alignment, so the times are uint pairs here (a long would add padding).
         [StructLayout(LayoutKind.Sequential)]
         private struct BY_HANDLE_FILE_INFORMATION
         {
             public uint FileAttributes;
-            public long CreationTime;
-            public long LastAccessTime;
-            public long LastWriteTime;
+            public uint CreationTimeLow, CreationTimeHigh;
+            public uint LastAccessTimeLow, LastAccessTimeHigh;
+            public uint LastWriteTimeLow, LastWriteTimeHigh;
             public uint VolumeSerialNumber;
             public uint FileSizeHigh;
             public uint FileSizeLow;
