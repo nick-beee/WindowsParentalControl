@@ -133,6 +133,7 @@ Decided by the orchestrator under the user's delegation (2026-11-26).
 - The re-suspension after a resume by a tool, the resume at a service stop (`ResumeAll`), and the D6 fallback of stage 1 apply without a change, because they use the same records.
 - PR #22 resumes each record when the session ends. A blocked suspension thus does not bring back issue #4.
 - A blocked suspension goes through the Pending Suspension and the Session End Hold like a limit suspension (D15).
+- The check "is the process suspended" (decided after the VM check, 2026-11-26): a thread in a wait with the reason `Executive` counts as suspended if at least one other thread waits with the reason `Suspended` (`ThreadSuspension.AllSuspended`). The Edge crash handler has two such threads. With the stage-1 check, the planner suspended it again at each tick, the suspend count grew each minute, and a resume with at most 10 `NtResumeProcess` calls left it suspended. The bug was in stage 1 too, but a blocked suspension lasts all day, so it showed on VM 102.
 
 Rejected alternatives:
 - *Close it anyway*: breaks the hard rule.

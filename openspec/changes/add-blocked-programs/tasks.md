@@ -46,12 +46,16 @@ PR #20 (`add-german-child-texts`), PR #21 (`require-admin-sign-in`) and PR #22 (
 ## 7. Service: detection and enforcement
 
 - [x] 7.1 Add the NuGet package `System.Management` (8.0.x) to `ParentalControl.Service.csproj`. Verify that `dotnet build -p:EnableWindowsTargeting=true` and the CI build pass.
-- [ ] 7.2 Add `ProcessStartWatcher` (WMI `Win32_ProcessStartTrace`, filter on restricted sessions, bounded channel, restart at the next tick after an error) (design D3). Verify by a log line at start and on VM 102 in task 7.7.
-- [ ] 7.3 Add `BlockEnforcer`: the consumer of the channel, the block epoch from its start and `CategoryConfigCache.Changed`, the `BlockedStartDecider`, the close through `ProcessControl.Terminate`, `RequestTick` of `CategoryEnforcer` after a failed close, the upsert in `blocked_starts`, the event log entry, the child message and the Telegram notice with their dedupe flags (design D4, D5, D10, D11, D12). Verify that the build passes and in task 7.7.
-- [ ] 7.4 In `CategoryEnforcer.Tick`, run the decider for each listed process before the planner, give `Close` results to `BlockEnforcer`, mark them as a pending close for the planner, and set `IsBlocked` in the verdict. A blocked suspension updates `blocked_starts` and sends the child message once. Verify that the build passes and in task 7.7.
-- [ ] 7.5 Wire the watcher and the enforcer in `Program.cs` / `UsageMonitorWorker`, start them after the database, and stop them before `ResumeAll` at a service stop. Verify on VM 102 that a service stop leaves no blocked process suspended.
+- [x] 7.2 Add `ProcessStartWatcher` (WMI `Win32_ProcessStartTrace`, filter on restricted sessions, bounded channel, restart at the next tick after an error) (design D3). Verify by a log line at start and on VM 102 in task 7.7.
+  - VM 102 (2026-11-26): each service start logs `Process start watcher started (WMI Win32_ProcessStartTrace)`. After `net stop winmgmt /y` the log shows `Process start watcher stopped ("CallCanceled")`, and the next tick starts the watcher again.
+- [x] 7.3 Add `BlockEnforcer`: the consumer of the channel, the block epoch from its start and `CategoryConfigCache.Changed`, the `BlockedStartDecider`, the close through `ProcessControl.Terminate`, `RequestTick` of `CategoryEnforcer` after a failed close, the upsert in `blocked_starts`, the event log entry, the child message and the Telegram notice with their dedupe flags (design D4, D5, D10, D11, D12). Verify that the build passes and in task 7.7.
+  - VM 102: verified through the scenarios of 7.7.
+- [x] 7.4 In `CategoryEnforcer.Tick`, run the decider for each listed process before the planner, give `Close` results to `BlockEnforcer`, mark them as a pending close for the planner, and set `IsBlocked` in the verdict. A blocked suspension updates `blocked_starts` and sends the child message once. Verify that the build passes and in task 7.7.
+  - VM 102: verified through the scenarios of 7.7 (tick suspensions after a service start and after a WMI stop).
+- [x] 7.5 Wire the watcher and the enforcer in `Program.cs` / `UsageMonitorWorker`, start them after the database, and stop them before `ResumeAll` at a service stop. Verify on VM 102 that a service stop leaves no blocked process suspended.
+  - VM 102, first run: failed. The Edge crash handler (`--type=crashpad-handler`) has 2 threads in an `Executive` wait that never show `Suspended`. The planner suspended it again at each tick (11 suspends in 10 minutes), and after `sc stop` 8 of its 10 threads stayed suspended. Fix `48e051d` (`ThreadSuspension.AllSuspended`, xUnit tests). After the fix: no repeated suspension of the crash handler, and after `sc stop` no thread of any `msedge.exe` was suspended.
 - [x] 7.6 Add the message key `msg_program_blocked` with the de, en and id texts of design D10 to `ChildMessageKeys` and `MessageCatalog` in `src/ParentalControl.Domain/Messages`, with `{name}`. Verify that the catalog tests (same placeholders in each preset) pass with the new key, and add a test for the German text of the spec scenario "German message".
-- [ ] 7.7 Manual check on VM 102 (console, not RDP) as `Kid`, after a rollback to `test-base` and an install of the build:
+- [x] 7.7 Manual check on VM 102 (console, not RDP) as `Kid`, after a rollback to `test-base` and an install of the build:
   - Start Edge from the Start menu. Expected: the Edge window closes within 2 seconds; `Kid` gets one German message; `blocked_starts` has one row for `msedge.exe` with `closed_count` 1; the event log has one `PROGRAM_BLOCKED` entry.
   - Start Edge again. Expected: it closes; no second message; `closed_count` 2.
   - Sign out and sign in as `Kid`. Expected: if Startup Boost starts Edge, it closes without a message.
@@ -62,18 +66,37 @@ PR #20 (`add-german-child-texts`), PR #21 (`require-admin-sign-in`) and PR #22 (
   - Stop the WMI service (`net stop winmgmt /y`) and start Chrome. Expected: Chrome is suspended within 70 seconds, not closed; the watcher starts again after `net start winmgmt`.
   - Sign out while a blocked browser is suspended. Expected: the sign-out finishes and no other program of `Kid` is closed.
   - Start the sign-out while a blocked browser is suspended and Notepad has unsaved text, and cancel it. Expected: the browser is not suspended during the Session End Hold, and is suspended again within 20 seconds after the hold; a new Chrome start during the hold is closed (design D15).
+  - Results on VM 102 (2026-11-26, console as `Kid`, build `48e051d` on `main` with PR #31). A process logger (WMI start and stop events) recorded each exit; the service closes with exit code 1.
+  - Edge start (Win+R `msedge`; Open-Shell takes the Win key, the parent is `explorer.exe` as from the Start menu): closed, one German message, `closed_count` 1, one `PROGRAM_BLOCKED` event. The first `msedge.exe` (7228) exited by itself with code 0; its child 6540 was closed with code 1.
+  - Second Edge start: closed, no second message, `closed_count` 2.
+  - Close time, measured as Kid from the start of the process to its exit: 25 starts (10 Edge, 15 Chrome). 24 closed in 0.23 to 1.7 s. One Edge start took about 3.2 s: the WMI start event arrived late, at the same time in the service and in the logger. Open question for the spec: "within 2 seconds" holds in 24 of 25 starts.
+  - Startup Boost (`--no-startup-window --win-session-start`, parent `explorer.exe`) at the sign-in: closed, marked `(silent)`, no message. It started only after the privacy screens of Windows were answered. An Edge that ran before the deploy was suspended silently after 10 s (reason `blocked`, `child_notified` 0).
+  - Firefox: a start with the service running was closed (the launcher exited by itself with code 0, the browser process was closed). Started while the service was stopped: after the service start, 9 processes got a Pending Suspension, the window was minimized (`IsIconic` true) and all were suspended 11 s later with the reason `blocked`. Nothing was closed.
+  - Block on a running Firefox, then new content: Ctrl+T made no new process (Firefox reuses its content processes). A local page that loads a new cross-site iframe every 1.5 s made 7 new `firefox.exe` children of the old browser after the block. Each got a Pending Suspension and was suspended; none was closed.
+  - Block removed (API and React switch): Firefox resumed 0.02 s after the change.
+  - WebView2: the new Outlook (`olk.exe`) started 6 `msedgewebview2.exe` processes; they ran and were never suspended or closed (no service log line for `msedgewebview2` all day).
+  - `net stop winmgmt /y`, then a Chrome start: not closed; the next tick (20 s after the start) gave it a Pending Suspension, and its 15 processes were suspended with the reason `blocked`. The restart of the watcher started WMI again, so `net start winmgmt` was not necessary.
+  - Sign-out with a suspended blocked program: the hold started, the program was resumed, and the session ended 0.5 s later. Windows ended the other programs of the session with its logoff code `0x40010004`; the service closed nothing.
+  - Cancelled sign-out (D15) with a blocked copy of Notepad (`C:\Games\npblock.exe`) with unsaved text, because Edge and Firefox end themselves at a sign-out request: no suspension during the hold; a Chrome start during the hold was closed in 0.5 s; after the hold, npblock got a Pending Suspension at once and was suspended 10.5 s after the end of the hold.
+  - Hard rule: the service log has 134 closes (64 `msedge.exe`, 69 `chrome.exe`, 1 `firefox.exe`). Each one was a browser process, closed in the same second as its start event. 61 closes of sandboxed Chromium processes failed with "access denied"; each fell back to suspension, and the process ended by itself after its parent. No lock and no parent alert followed.
+  - Observed (PR #22, not this change): after a hold that the session did not confirm, the service refuses the next hold for 15 minutes. In that time, Windows ended the suspended npblock (with its unsaved text) and a suspended Chrome at a sign-out.
 
 ## 8. Web admin API
 
-- [ ] 8.1 Add `blocked` to `GET`, `POST` and `PUT /api/admin/app-rules` (missing on `PUT` keeps the stored value) with the validation of design D2 (status 400). Verify with an assert in `tests/ParentalControl.Tests` or a `curl` call on VM 102: a blocked System rule returns 400; a `PUT` without `blocked` keeps the block.
-- [ ] 8.2 Add `GET /api/admin/blocked-starts?date=` (design D11). Verify with `curl` on VM 102 after task 7.7: the list has `msedge.exe` with the counts.
-- [ ] 8.3 Add `notifyBlockedTelegram` to `GET` and `POST /api/admin/settings`. Verify with `curl` on VM 102 that the value survives a service restart.
-- [ ] 8.4 Verify with `curl` on VM 102 that each new or changed route returns 401 without an admin session. The console gate test (task 11.3) already checks `GET /api/admin/blocked-starts` and a `PUT` of a block in CI.
+- [x] 8.1 Add `blocked` to `GET`, `POST` and `PUT /api/admin/app-rules` (missing on `PUT` keeps the stored value) with the validation of design D2 (status 400). Verify with an assert in `tests/ParentalControl.Tests` or a `curl` call on VM 102: a blocked System rule returns 400; a `PUT` without `blocked` keeps the block.
+  - VM 102: a block on the System rule `C:\Windows\` (`PUT`) and on a new System rule (`POST`) gives 400 "A rule for System cannot have a block."; `msedgewebview2.exe` gives 400; a folder rule below `C:\Windows\` or the install folder gives 400. A `PUT` of `chrome.exe` to Video without `blocked` kept the block.
+- [x] 8.2 Add `GET /api/admin/blocked-starts?date=` (design D11). Verify with `curl` on VM 102 after task 7.7: the list has `msedge.exe` with the counts.
+  - VM 102: `msedge.exe` closed 2 / suspended 2 and `chrome.exe` closed 4 at that time; another day gives an empty list; `date=bad` gives 400.
+- [x] 8.3 Add `notifyBlockedTelegram` to `GET` and `POST /api/admin/settings`. Verify with `curl` on VM 102 that the value survives a service restart.
+  - VM 102: `notifyBlockedTelegram` true by default; set to false, still false after the service restart; set back to true.
+- [x] 8.4 Verify with `curl` on VM 102 that each new or changed route returns 401 without an admin session. The console gate test (task 11.3) already checks `GET /api/admin/blocked-starts` and a `PUT` of a block in CI.
+  - VM 102, from the Mac without a session: `GET` and `POST /api/admin/app-rules`, `PUT /api/admin/app-rules/19`, `GET /api/admin/blocked-starts`, `GET` and `POST /api/admin/settings` give 401; the block of rule 19 stayed on.
 
 ## 9. Admin UI (React admin of PR #35)
 
 - [x] 9.1 In the React admin, add a block switch to each row of the App Rules table and to the form for a new rule. The switch saves at once with the stored values of the rule; show the error text of a refused block, and the switch stays as stored. Verify with a Vitest component test.
-- [ ] 9.1a Verify on VM 102 that the switch blocks and unblocks a rule, and that a block of a System rule shows the error text of the server.
+- [x] 9.1a Verify on VM 102 that the switch blocks and unblocks a rule, and that a block of a System rule shows the error text of the server.
+  - VM 102, headless browser on the Mac: the `firefox.exe` switch removed and set the block (the database and the service log follow); the `C:\Windows\` switch shows "Sperre nicht geändert: A rule for System cannot have a block." and stays off. The "Gesperrte Starts" panel shows firefox, msedge and chrome with the counts, local times and paths. The PDF hint and the "Standard-Browser" badge show.
 - [x] 9.2 Add a "Blocked starts" list (user, program, counts, first and last time, path as text) from `/api/admin/blocked-starts`, for the today of the service or a selected day. Verify with a Vitest component test that a path with `<script>` shows as text.
 - [x] 9.3 Add the switch for the Telegram notice and the text `msgProgramBlocked` to the settings view. Verify with a Vitest component test.
 - [x] 9.4 Add the field `defaultBrowser` to `GET /api/admin/app-rules` (`CategoryDefaults.IsBlockedBrowser`), and show a badge for the 15 default browser rules. Verify with an xUnit test and a Vitest component test.
@@ -93,7 +116,8 @@ PR #20 (`add-german-child-texts`), PR #21 (`require-admin-sign-in`) and PR #22 (
 
 ## Workflow follow-up
 
-- Run `/opsx:verify` after the VM checks of task 7.7 and group 8.
+- Run `/opsx:verify` after the VM checks of task 7.7 and group 8. Done on VM 102 on 2026-11-26 (notes in 7.7 and group 8).
+- Still open: the Telegram notice of design D12 (no bot on the VM, issue #13) and the final check on the child's PC.
 - Before the archive: if `openspec/specs/category-limits/spec.md` changed after this rebase (for example by PR #31), start each MODIFIED block of this change again from the current text (design D14).
 - Archive the change with `/opsx:archive` after the final check on the child's PC.
 - Open follow-up issues: the allow-list mode ("allowed programs"), the detection of a renamed or portable browser.
