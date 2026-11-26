@@ -63,6 +63,8 @@ A category covers many background processes that the child never uses directly: 
 
 ### D4. Counting
 `POST /api/agent/activity` resolves the category of the sample (rules are cached in memory and reloaded when the admin changes them) and calls `CategoryUsageRepository.AddSeconds(userId, category, seconds)`. It uses the same seconds accumulator pattern as `AppUsageRepository` (in memory, commit whole minutes). The endpoint already ignores samples of a locked session; System samples are not counted.
+- A sample of an exe that has a suspension record of the user is not counted: a frozen window in front is not use (found in the 9.1 run).
+- For a Store app the window belongs to `ApplicationFrameHost.exe` in the Windows folder (System). The agent reports the process of the first child window that belongs to another process, so the app counts under its own exe.
 
 ### D5. Enforcement in the 60-second tick
 After the existing session checks, `UsageMonitorWorker.ProcessTick` runs a new `CategoryEnforcer.Tick()` (in the Service project):
