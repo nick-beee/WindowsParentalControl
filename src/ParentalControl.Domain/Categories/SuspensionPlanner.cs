@@ -27,6 +27,7 @@ public sealed record SuspensionPlan(
 /// <param name="Records">The current suspension records.</param>
 /// <param name="AgentExePath">The full path of the Session Agent exe. It is never suspended.</param>
 /// <param name="WindowsFolder">The Windows folder. An exe below it is never suspended, also if no App Rule puts it in System.</param>
+/// <param name="HeldSessions">The sessions with a Session End Hold. No process of such a session is suspended; a resume still happens.</param>
 public sealed record PlannerInput(
     IReadOnlyList<SessionProcess> Processes,
     IReadOnlyDictionary<int, int> RestrictedSessions,
@@ -34,7 +35,8 @@ public sealed record PlannerInput(
     Func<int, string, bool> WasForeground,
     IReadOnlyList<SuspensionRecord> Records,
     string? AgentExePath,
-    string? WindowsFolder);
+    string? WindowsFolder,
+    IReadOnlySet<int>? HeldSessions = null);
 
 /// <summary>
 /// Decides which processes to suspend, which recorded processes to resume and which records to drop.
@@ -42,6 +44,7 @@ public sealed record PlannerInput(
 /// a process outside the sessions of Restricted Users, or an exe that was not a Foreground Window today.
 /// A recorded process stays suspended while its exe has no time left, also if the exe was not a
 /// Foreground Window since the last service start.
+/// During a Session End Hold of a session, it suspends no process of that session, and the records of the session stay.
 /// </summary>
 public static class SuspensionPlanner
 {
@@ -54,6 +57,7 @@ public static class SuspensionPlanner
         var toSuspend = new List<SuspendAction>();
         var toResume = new List<SuspensionRecord>();
         var toDrop = new List<SuspensionRecord>();
+        var held = input.HeldSessions ?? new HashSet<int>();
 
         var byPid = new Dictionary<int, SessionProcess>();
         foreach (var p in input.Processes)
@@ -83,7 +87,7 @@ public static class SuspensionPlanner
 
             if (verdict is not { IsExhausted: true } || verdict.Category == AppCategory.System)
                 toResume.Add(record);
-            else if (!process.IsSuspended)
+            else if (!process.IsSuspended && !held.Contains(process.SessionId))
                 toSuspend.Add(new SuspendAction(process, record.UserId, verdict.Category, path!, IsRecorded: true));
         }
 
@@ -91,7 +95,7 @@ public static class SuspensionPlanner
         {
             if (recordedPids.Contains(process.Pid))
                 continue;
-            if (!input.RestrictedSessions.TryGetValue(process.SessionId, out var userId))
+            if (!input.RestrictedSessions.TryGetValue(process.SessionId, out var userId) || held.Contains(process.SessionId))
                 continue;
             var path = WindowsPath.Canonicalize(process.ExePath);
             if (path is null || IsExcluded(path, agentPath, windowsFolder))
