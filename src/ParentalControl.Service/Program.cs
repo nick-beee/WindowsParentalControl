@@ -14,6 +14,8 @@ var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddSingleton(logger);
 builder.Services.AddSingleton<TelegramBotService>();
 builder.Services.AddSingleton<SessionTracker>();
+builder.Services.AddSingleton<ParentalControl.Domain.Categories.ForegroundHistory>();
+builder.Services.AddSingleton<CategoryEnforcer>();
 builder.Services.AddHostedService<UsageMonitorWorker>();
 builder.Services.AddHostedService<TelegramWorker>();
 builder.Services.AddHostedService<WebServerHost>();

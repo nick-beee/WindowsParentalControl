@@ -147,6 +147,8 @@ public static class AdminPage
                     .btn-group-responsive { width: 100%; display: flex; gap: 0.35rem; }
                     .btn-group-responsive .btn { flex: 1; text-align: center; justify-content: center; font-size: 0.72rem; padding: 0.4rem 0.2rem; }
                 }
+                .cat-input { background:#0b1120;border:1px solid #334155;color:#f8fafc;padding:0.35rem 0.5rem;border-radius:0.4rem;font-size:0.8rem;width:90px }
+                .cat-input:disabled { opacity:0.5 }
             </style>
         </head>
         <body>
@@ -228,6 +230,37 @@ public static class AdminPage
                             <span style="font-size:0.75rem;color:#64748b;font-style:italic">No captures yet</span>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <!-- ═══ APP CATEGORIES ═══ -->
+            <div class="card" style="margin-bottom: 2rem;">
+                <h2 style="margin-bottom:0.25rem">🗂️ App Categories &amp; Limits</h2>
+                <div style="font-size:0.8rem;color:#64748b;margin-bottom:1rem">
+                    When a category has no time left, its programs are paused (suspended), not closed. They continue tomorrow or after bonus minutes.
+                    Empty field = no limit. Weekend = Saturday and Sunday. Values from 0 to 1440 minutes.
+                </div>
+                <div id="categoryLimitsContainer">Loading categories...</div>
+
+                <h3 style="color:#38bdf8;margin:1.5rem 0 0.5rem">📏 App Rules</h3>
+                <div style="font-size:0.8rem;color:#94a3b8;margin-bottom:0.75rem">
+                    A rule maps an exe to a category by its file name (for example <code>RobloxPlayerBeta.exe</code>) or by a folder (for example <code>C:\Games\</code>).
+                    A file-name rule wins over a folder rule, and the longest folder wins. An exe without a rule is in Unknown.<br>
+                    <strong>App Limit:</strong> it shares the time of its category. The app stops when all programs of the category together reach the App Limit.
+                    Example: Games 120, Minecraft 180 → the other games stop at 120 minutes of Games, Minecraft at 180.
+                    An App Limit below the Category Limit stops the app earlier: Roblox 60 = Roblox only while all games together are below 60 minutes.
+                </div>
+                <div id="appRulesContainer">Loading rules...</div>
+                <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;margin-top:0.75rem">
+                    <select id="newRuleType" class="cat-input" style="width:auto">
+                        <option value="file">File name</option>
+                        <option value="folder">Folder</option>
+                    </select>
+                    <input id="newRulePattern" class="cat-input" style="width:260px" placeholder="game.exe or C:\Games\">
+                    <select id="newRuleCategory" class="cat-input" style="width:auto"></select>
+                    <input id="newRuleWeekday" class="cat-input" type="number" min="0" max="1440" placeholder="App Limit weekday">
+                    <input id="newRuleWeekend" class="cat-input" type="number" min="0" max="1440" placeholder="App Limit weekend">
+                    <button class="btn btn-primary" onclick="addRule()">➕ Add Rule</button>
                 </div>
             </div>
 
@@ -499,6 +532,14 @@ public static class AdminPage
                             <label style="display:block;font-size:0.8rem;color:#94a3b8;margin-bottom:0.35rem">Preset Alasan Pesan Interaktif (satu baris per alasan):</label>
                             <textarea id="cfgPromptPresets" rows="4" style="width:100%;background:#090d16;border:1px solid #334155;color:#f8fafc;padding:0.6rem;border-radius:0.4rem;font-size:0.85rem;resize:vertical"></textarea>
                         </div>
+                        <div style="margin-top:0.5rem">
+                            <label style="display:block;font-size:0.8rem;color:#94a3b8;margin-bottom:0.35rem">Category warning to the child. Placeholders: {name}, {minutes}:</label>
+                            <textarea id="cfgMsgCategoryWarn" rows="2" style="width:100%;background:#090d16;border:1px solid #334155;color:#f8fafc;padding:0.6rem;border-radius:0.4rem;font-size:0.85rem;resize:vertical"></textarea>
+                        </div>
+                        <div>
+                            <label style="display:block;font-size:0.8rem;color:#94a3b8;margin-bottom:0.35rem">Message when the programs of a category pause. Placeholder: {name}:</label>
+                            <textarea id="cfgMsgCategorySuspended" rows="2" style="width:100%;background:#090d16;border:1px solid #334155;color:#f8fafc;padding:0.6rem;border-radius:0.4rem;font-size:0.85rem;resize:vertical"></textarea>
+                        </div>
                     </div>
                     <div style="display:flex;justify-content:flex-end;gap:0.5rem">
                         <button class="btn btn-secondary" onclick="closeSettingsModal()">Cancel</button>
@@ -748,25 +789,25 @@ public static class AdminPage
                     for (let i = 0; i < topAppsCount; i++) {
                         const app = apps[i];
                         const color = COLOR_PALETTE[i % COLOR_PALETTE.length];
-                        stackedHtml += `<div class="stacked-bar-segment" style="width:${app.percentage}%;background:${color}" title="${app.processName}: ${app.minutes}m (${app.percentage}%)"></div>`;
+                        stackedHtml += `<div class="stacked-bar-segment" style="width:${app.percentage}%;background:${color}" title="${esc(app.processName)}: ${app.minutes}m (${app.percentage}%)"></div>`;
                     }
                     stackedBar.innerHTML = stackedHtml;
                     stackedSummary.textContent = `${apps.length} applications logged`;
 
                     // Render Ranked Apps Table
-                    let html = '<div class="table-responsive"><table><thead><tr><th style="min-width:90px">User</th><th style="min-width:140px">Process / Game</th><th style="min-width:180px">Window Title Summary</th><th style="min-width:110px">Share</th><th style="min-width:80px">Duration</th></tr></thead><tbody>';
+                    let html = '<div class="table-responsive"><table><thead><tr><th style="min-width:90px">User</th><th style="min-width:140px">Process / Game</th><th style="min-width:180px">Window Title Summary</th><th style="min-width:110px">Share</th><th style="min-width:80px">Duration</th><th style="min-width:120px">Category</th></tr></thead><tbody>';
                     for (let i = 0; i < apps.length; i++) {
                         const a = apps[i];
                         const color = COLOR_PALETTE[i % COLOR_PALETTE.length];
                         html += `<tr>
-                            <td><strong>${a.username}</strong></td>
+                            <td><strong>${esc(a.username)}</strong></td>
                             <td>
                                 <div style="display:flex;align-items:center;gap:0.4rem">
                                     <span style="width:10px;height:10px;border-radius:2px;background:${color};display:inline-block"></span>
-                                    <code style="background:#090d16;padding:0.2rem 0.45rem;border-radius:0.25rem;font-size:0.8rem">${a.processName}</code>
+                                    <code style="background:#090d16;padding:0.2rem 0.45rem;border-radius:0.25rem;font-size:0.8rem">${esc(a.processName)}</code>
                                 </div>
                             </td>
-                            <td style="color:#cbd5e1;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${a.windowTitle || '-'}">${a.windowTitle || '-'}</td>
+                            <td style="color:#cbd5e1;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(a.windowTitle || '-')}">${esc(a.windowTitle || '-')}</td>
                             <td style="width:150px">
                                 <div style="font-size:0.75rem;color:#94a3b8;margin-bottom:2px">${a.percentage}%</div>
                                 <div class="progress-track">
@@ -774,6 +815,7 @@ public static class AdminPage
                                 </div>
                             </td>
                             <td><strong>${formatMinutes(a.minutes)}</strong></td>
+                            <td>${categorySelect(a.fileRuleCategory, 'data-process="' + esc(a.processName) + '" onchange="assignCategory(this)"', true)}</td>
                         </tr>`;
                     }
                     html += '</tbody></table></div>';
@@ -1446,6 +1488,8 @@ public static class AdminPage
                             document.getElementById('cfgNotifySignOut').checked = data.telegramNotifySignOut;
                             document.getElementById('cfgNotifyAdminLogon').checked = data.telegramNotifyAdminLogon;
                             document.getElementById('cfgPromptPresets').value = data.promptResponsePresets || '';
+                            document.getElementById('cfgMsgCategoryWarn').value = data.msgCategoryWarn || '';
+                            document.getElementById('cfgMsgCategorySuspended').value = data.msgCategorySuspended || '';
                             document.getElementById('settingsTelegramWarning').style.display = data.telegramConfigured ? 'none' : 'block';
                         }
                     } catch (e) {
@@ -1467,7 +1511,9 @@ public static class AdminPage
                             telegramNotifySignIn: document.getElementById('cfgNotifySignIn').checked,
                             telegramNotifySignOut: document.getElementById('cfgNotifySignOut').checked,
                             telegramNotifyAdminLogon: document.getElementById('cfgNotifyAdminLogon').checked,
-                            promptResponsePresets: document.getElementById('cfgPromptPresets').value
+                            promptResponsePresets: document.getElementById('cfgPromptPresets').value,
+                            msgCategoryWarn: document.getElementById('cfgMsgCategoryWarn').value,
+                            msgCategorySuspended: document.getElementById('cfgMsgCategorySuspended').value
                         };
                         const res = await fetch('/api/admin/settings', {
                             method: 'POST',
@@ -1488,9 +1534,163 @@ public static class AdminPage
                     }
                 }
 
+                // ═══ App Categories ═══
+                // Exe names, paths and window titles come from the child's computer: escape them before any innerHTML.
+                function esc(value) {
+                    return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
+                }
+
+                const CATEGORIES = ['Games', 'Video', 'Social', 'Study', 'Creative', 'System', 'Unknown'];
+
+                function categorySelect(selected, attrs, withEmpty) {
+                    let html = `<select class="cat-input" style="width:auto" ${attrs}>`;
+                    if (withEmpty) html += `<option value="" ${selected ? '' : 'selected'}>(no file rule)</option>`;
+                    for (const c of CATEGORIES) html += `<option value="${c}" ${c === selected ? 'selected' : ''}>${c}</option>`;
+                    return html + '</select>';
+                }
+
+                function minutesValue(id) {
+                    const v = document.getElementById(id).value.trim();
+                    return v === '' ? null : Number(v);
+                }
+
+                async function apiJson(url, method, body) {
+                    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+                    let data = {};
+                    try { data = await res.json(); } catch (e) { }
+                    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+                    return data;
+                }
+
+                let appRules = [];
+
+                async function loadCategories() {
+                    try {
+                        const [cats, rules] = await Promise.all([apiJson('/api/admin/categories', 'GET'), apiJson('/api/admin/app-rules', 'GET')]);
+                        appRules = rules.rules;
+                        renderCategoryLimits(cats.categories, cats.usageToday);
+                        renderRules(rules.rules);
+                    } catch (e) {
+                        document.getElementById('categoryLimitsContainer').textContent = 'Cannot load categories: ' + e.message;
+                    }
+                }
+
+                function renderCategoryLimits(categories, usageToday) {
+                    let html = '<div class="table-responsive"><table><thead><tr><th>Category</th><th>Weekday (min)</th><th>Weekend (min)</th><th>Used today</th><th></th></tr></thead><tbody>';
+                    for (const c of categories) {
+                        const used = usageToday.filter(u => u.category === c.category).map(u => `${esc(u.username)}: ${formatMinutes(u.minutes)}`).join(', ') || '-';
+                        const dis = c.editable ? '' : 'disabled title="System is never limited"';
+                        html += `<tr>
+                            <td><strong>${c.category}</strong></td>
+                            <td><input id="limWd_${c.category}" class="cat-input" type="number" min="0" max="1440" value="${c.weekdayMinutes ?? ''}" placeholder="no limit" ${dis}></td>
+                            <td><input id="limWe_${c.category}" class="cat-input" type="number" min="0" max="1440" value="${c.weekendMinutes ?? ''}" placeholder="no limit" ${dis}></td>
+                            <td style="color:#cbd5e1">${used}</td>
+                            <td>${c.editable ? `<button class="btn btn-secondary" onclick="saveCategoryLimit('${c.category}')">💾 Save</button>` : ''}</td>
+                        </tr>`;
+                    }
+                    document.getElementById('categoryLimitsContainer').innerHTML = html + '</tbody></table></div>';
+                    if (!document.getElementById('newRuleCategory').options.length)
+                        document.getElementById('newRuleCategory').outerHTML = categorySelect('Games', 'id="newRuleCategory"', false);
+                }
+
+                async function saveCategoryLimit(category) {
+                    try {
+                        await apiJson('/api/admin/categories', 'PUT', {
+                            category,
+                            weekdayMinutes: minutesValue(`limWd_${category}`),
+                            weekendMinutes: minutesValue(`limWe_${category}`)
+                        });
+                        await loadCategories();
+                    } catch (e) { alert('Not saved: ' + e.message); }
+                }
+
+                function renderRules(rules) {
+                    if (!rules.length) {
+                        document.getElementById('appRulesContainer').innerHTML = '<div class="empty">No rules. Every program is in Unknown.</div>';
+                        return;
+                    }
+                    let html = '<div class="table-responsive"><table><thead><tr><th>Type</th><th>File name / folder</th><th>Category</th><th>App Limit weekday</th><th>App Limit weekend</th><th></th></tr></thead><tbody>';
+                    for (const r of rules) {
+                        html += `<tr>
+                            <td>${r.matchType === 'file' ? 'File' : 'Folder'}${r.isDefault ? ' <span style="color:#64748b;font-size:0.7rem">default</span>' : ''}</td>
+                            <td><code style="background:#090d16;padding:0.2rem 0.45rem;border-radius:0.25rem;font-size:0.8rem">${esc(r.pattern)}</code></td>
+                            <td>${categorySelect(r.category, `id="ruleCat_${r.id}"`, false)}</td>
+                            <td><input id="ruleWd_${r.id}" class="cat-input" type="number" min="0" max="1440" value="${r.weekdayMinutes ?? ''}" placeholder="category"></td>
+                            <td><input id="ruleWe_${r.id}" class="cat-input" type="number" min="0" max="1440" value="${r.weekendMinutes ?? ''}" placeholder="category"></td>
+                            <td style="white-space:nowrap">
+                                <button class="btn btn-secondary" onclick="saveRule(${r.id})">💾</button>
+                                <button class="btn btn-secondary" onclick="deleteRule(${r.id})">🗑️</button>
+                            </td>
+                        </tr>`;
+                    }
+                    document.getElementById('appRulesContainer').innerHTML = html + '</tbody></table></div>';
+                }
+
+                async function saveRule(id) {
+                    const rule = appRules.find(r => r.id === id);
+                    try {
+                        await apiJson(`/api/admin/app-rules/${id}`, 'PUT', {
+                            matchType: rule.matchType,
+                            pattern: rule.pattern,
+                            category: document.getElementById(`ruleCat_${id}`).value,
+                            weekdayMinutes: minutesValue(`ruleWd_${id}`),
+                            weekendMinutes: minutesValue(`ruleWe_${id}`)
+                        });
+                        await loadCategories();
+                    } catch (e) { alert('Not saved: ' + e.message); }
+                }
+
+                async function deleteRule(id) {
+                    const rule = appRules.find(r => r.id === id);
+                    if (!confirm(`Delete the rule for ${rule.pattern}?`)) return;
+                    try {
+                        await apiJson(`/api/admin/app-rules/${id}`, 'DELETE');
+                        await loadCategories();
+                        loadDashboard();
+                    } catch (e) { alert('Not deleted: ' + e.message); }
+                }
+
+                async function addRule() {
+                    try {
+                        await apiJson('/api/admin/app-rules', 'POST', {
+                            matchType: document.getElementById('newRuleType').value,
+                            pattern: document.getElementById('newRulePattern').value,
+                            category: document.getElementById('newRuleCategory').value,
+                            weekdayMinutes: minutesValue('newRuleWeekday'),
+                            weekendMinutes: minutesValue('newRuleWeekend')
+                        });
+                        document.getElementById('newRulePattern').value = '';
+                        document.getElementById('newRuleWeekday').value = '';
+                        document.getElementById('newRuleWeekend').value = '';
+                        await loadCategories();
+                        loadDashboard();
+                    } catch (e) { alert('Not added: ' + e.message); }
+                }
+
+                // App Usage table: assign an app to a category with a file-name rule.
+                async function assignCategory(select) {
+                    const processName = select.dataset.process;
+                    const category = select.value;
+                    if (!category) return;
+                    const fileName = /\.exe$/i.test(processName) ? processName : processName + '.exe';
+                    const existing = appRules.find(r => r.matchType === 'file' && r.pattern.toLowerCase() === fileName.toLowerCase());
+                    try {
+                        if (existing) {
+                            await apiJson(`/api/admin/app-rules/${existing.id}`, 'PUT', {
+                                matchType: 'file', pattern: existing.pattern, category,
+                                weekdayMinutes: existing.weekdayMinutes, weekendMinutes: existing.weekendMinutes
+                            });
+                        } else {
+                            await apiJson('/api/admin/app-rules', 'POST', { matchType: 'file', pattern: fileName, category });
+                        }
+                        await loadCategories();
+                    } catch (e) { alert('Not assigned: ' + e.message); }
+                }
+
                 // Initial load and periodic polling every 10s
                 document.getElementById('dateInput').value = currentFilter.date;
                 loadDashboard();
+                loadCategories();
                 setInterval(loadDashboard, 10000);
             </script>
         </body>

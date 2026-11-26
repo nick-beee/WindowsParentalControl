@@ -11,6 +11,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Core Audio API (IAudioSessionManager2, ISimpleAudioVolume) to mute Suspended Apps. MIT. -->
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\ParentalControl.Core\ParentalControl.Core.csproj" />
   </ItemGroup>
 </Project>

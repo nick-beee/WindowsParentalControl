@@ -26,3 +26,21 @@ The elapsed duration between the initial presentation of an Interactive Session 
 ## Offline Notification Queue
 A persistent local storage repository retaining system alerts and session lifecycle notifications during periods of host network unavailability, preserving original event occurrence timestamps until network connectivity is restored.
 
+
+## App Category
+A kind of program that a limit applies to. The set is fixed: Games, Video, Social, Study, Creative, System and Unknown. An exe that no App Rule matches is in Unknown. System is never counted and never suspended.
+
+## App Rule
+A rule that maps an exe to one App Category. It matches the exact exe file name, or a folder prefix of the full exe path on a whole folder boundary. The match ignores letter case. A file-name rule wins over a folder rule, and the longest folder wins over a shorter one. A rule can carry an App Limit.
+
+## App Limit
+An optional weekday and weekend minute value on an App Rule. It replaces the Category Limit for the exes of that rule, but it compares against the same Category Usage. Example: Games 120 minutes and Minecraft 180 minutes. Then the other games stop when all games together reach 120 minutes, and Minecraft stops when all games together reach 180 minutes.
+
+## Category Usage
+The whole minutes that a Restricted User spends with an exe of one App Category as the Foreground Window on one day. The Session Agent samples give the time. System and a locked session add no time.
+
+## Category Limit
+The daily limit of an App Category: the weekend value on Saturday and Sunday, the weekday value on the other days, plus today's Bonus Minutes. A category can have no limit.
+
+## Suspended App
+A process of a Restricted User that the service suspends (`NtSuspendProcess`) because its exe has no time left under its App Limit or Category Limit. The process stays open and its audio is muted. The service records it and resumes it when time is available again or when the service stops. The service never closes or kills it.

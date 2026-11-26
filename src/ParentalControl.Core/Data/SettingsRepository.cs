@@ -26,6 +26,21 @@ public static class SettingsRepository
     public const string KeyMsgLoginDeniedCurfew = "msg_login_denied_curfew";
     public const string KeyMsgRemoteLock = "msg_remote_lock";
     public const string KeyMsgBonusGranted = "msg_bonus_granted";
+    // App Categories. Placeholders: {name} (category or app), {category}, {minutes}.
+    public const string KeyMsgCategoryWarn = "msg_category_warn";
+    public const string KeyMsgCategorySuspended = "msg_category_suspended";
+
+    public static readonly IReadOnlyDictionary<string, string> CategoryMessagesEn = new Dictionary<string, string>
+    {
+        [KeyMsgCategoryWarn] = "{name} time ends in {minutes} minutes. Then the {name} programs pause. They do not close. Please save your progress.",
+        [KeyMsgCategorySuspended] = "{name} time is over for today. The {name} programs are paused, not closed. They continue tomorrow or after bonus minutes.",
+    };
+
+    public static readonly IReadOnlyDictionary<string, string> CategoryMessagesId = new Dictionary<string, string>
+    {
+        [KeyMsgCategoryWarn] = "Waktu {name} akan habis dalam {minutes} menit. Setelah itu program {name} dijeda, tidak ditutup. Harap simpan progres Anda.",
+        [KeyMsgCategorySuspended] = "Waktu {name} untuk hari ini sudah habis. Program {name} dijeda, tidak ditutup. Program berlanjut besok atau setelah menit bonus.",
+    };
     public static string Get(string key, string defaultValue = "")
     {
         using var connection = DatabaseManager.CreateConnection();
@@ -111,6 +126,7 @@ public static class SettingsRepository
             Set(KeyMsgLoginDeniedCurfew, "Sign-in denied: Outside allowed schedule hours.");
             Set(KeyMsgRemoteLock, "Time for a break. Computer will be locked by administrator shortly.");
             Set(KeyMsgBonusGranted, "Administrator has granted you +{minutes} minutes of screen time!");
+            foreach (var (key, text) in CategoryMessagesEn) Set(key, text);
         }
         else
         {
@@ -122,6 +138,7 @@ public static class SettingsRepository
             Set(KeyMsgLoginDeniedCurfew, "Login ditolak: Di luar jadwal jam yang diizinkan.");
             Set(KeyMsgRemoteLock, "Waktunya istirahat. Komputer akan segera dikunci oleh administrator.");
             Set(KeyMsgBonusGranted, "Administrator telah menambahkan +{minutes} menit waktu layar untuk Anda!");
+            foreach (var (key, text) in CategoryMessagesId) Set(key, text);
         }
     }
 

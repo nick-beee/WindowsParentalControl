@@ -13,6 +13,7 @@ using ParentalControl.Core.Security;
 using ParentalControl.Core.Services;
 using ParentalControl.Service.Web.Pages;
 using ParentalControl.Core;
+using ParentalControl.Domain.Categories;
 
 namespace ParentalControl.Service.Web;
 
@@ -21,15 +22,18 @@ public sealed class WebServerHost : BackgroundService
     private readonly SessionTracker _sessionTracker;
     private readonly TelegramBotService _telegramBotService;
     private readonly Serilog.ILogger _logger;
+    private readonly ForegroundHistory _foregroundHistory;
     private readonly HashSet<string> _validAdminTokens = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string ProcessName, string WindowTitle, DateTime LastSeen)> _liveActivities = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CaptureCommandState> _captureStates = new(StringComparer.OrdinalIgnoreCase);
     public static event Action<ScreenCaptureRecord>? OnCaptureReceived;
-    public WebServerHost(SessionTracker sessionTracker, TelegramBotService telegramBotService, Serilog.ILogger logger)
+    public WebServerHost(SessionTracker sessionTracker, TelegramBotService telegramBotService, Serilog.ILogger logger,
+        ForegroundHistory foregroundHistory)
     {
         _sessionTracker = sessionTracker;
         _telegramBotService = telegramBotService;
         _logger = logger;
+        _foregroundHistory = foregroundHistory;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -661,6 +665,10 @@ public sealed class WebServerHost : BackgroundService
                 var username = doc.RootElement.GetProperty("username").GetString();
                 var processName = doc.RootElement.GetProperty("processName").GetString();
                 var windowTitle = doc.RootElement.TryGetProperty("windowTitle", out var wt) ? wt.GetString() ?? "" : "";
+                // Full exe path from a new agent. An old agent sends only the process name. Untrusted text.
+                var exePath = doc.RootElement.TryGetProperty("exePath", out var ep) && ep.ValueKind == JsonValueKind.String
+                    ? ep.GetString() ?? ""
+                    : "";
                 var durationSeconds = 20;
                 if (doc.RootElement.TryGetProperty("durationSeconds", out var dsProp) && dsProp.TryGetInt32(out var dsVal) && dsVal > 0)
                 {
@@ -686,9 +694,27 @@ public sealed class WebServerHost : BackgroundService
                     _liveActivities[user.Username] = (processName, windowTitle, DateTime.Now);
                     var today = DateOnly.FromDateTime(DateTime.Now);
                     AppUsageRepository.AddSeconds(user.Id, today, processName, windowTitle, durationSeconds);
+
+                    // Category Usage. The repository never counts System.
+                    var resolver = CategoryConfigCache.Current.Resolver;
+                    var resolution = string.IsNullOrWhiteSpace(exePath)
+                        ? resolver.ResolveFileName(processName)
+                        : resolver.Resolve(exePath);
+                    _foregroundHistory.Record(user.Id, today, resolution.CanonicalPath);
+
+                    // A Suspended App in front is not use: its frozen window must not take time from the category.
+                    var suspended = SuspensionRepository.GetForUser(user.Id);
+                    var isSuspendedExe = resolution.CanonicalPath is not null && suspended.Any(r =>
+                        string.Equals(WindowsPath.Canonicalize(r.ExePath), resolution.CanonicalPath, StringComparison.OrdinalIgnoreCase));
+                    if (!isSuspendedExe)
+                        CategoryUsageRepository.AddSeconds(user.Id, today, resolution.Category, durationSeconds);
+
+                    // The agent mutes the audio of these processes.
+                    var suspendedPids = suspended.Select(r => r.Pid).Distinct().ToArray();
+                    return Results.Ok(new { success = true, suspendedPids });
                 }
 
-                return Results.Ok(new { success = true });
+                return Results.Ok(new { success = true, suspendedPids = Array.Empty<int>() });
             }
             catch
             {
@@ -907,8 +933,13 @@ public sealed class WebServerHost : BackgroundService
             var usageRecords = AppUsageRepository.GetUsageForRange(targetUserId, fromDate, targetDate);
             var totalMinutes = usageRecords.Sum(r => r.Minutes);
 
+            var categoryResolver = CategoryConfigCache.Current.Resolver;
             var appUsageList = usageRecords.Select(r => new
             {
+                // The table has only the process name: show the category of a file-name rule, else null.
+                fileRuleCategory = categoryResolver.ResolveFileName(r.ProcessName) is { Rule.MatchType: RuleMatchType.File } res
+                    ? res.Category.ToString()
+                    : null,
                 userId = r.UserId,
                 username = users.TryGetValue(r.UserId, out var u) ? u.Username : $"User #{r.UserId}",
                 processName = r.ProcessName,
@@ -1550,7 +1581,9 @@ public sealed class WebServerHost : BackgroundService
                 telegramNotifySignIn = SettingsRepository.IsTelegramNotifySignInEnabled(),
                 telegramNotifySignOut = SettingsRepository.IsTelegramNotifySignOutEnabled(),
                 telegramNotifyAdminLogon = SettingsRepository.IsTelegramNotifyAdminLogonEnabled(),
-                promptResponsePresets = SettingsRepository.Get(SettingsRepository.KeyPromptResponsePresets, SettingsRepository.DefaultPromptResponsePresets)
+                promptResponsePresets = SettingsRepository.Get(SettingsRepository.KeyPromptResponsePresets, SettingsRepository.DefaultPromptResponsePresets),
+                msgCategoryWarn = SettingsRepository.GetMessage(SettingsRepository.KeyMsgCategoryWarn),
+                msgCategorySuspended = SettingsRepository.GetMessage(SettingsRepository.KeyMsgCategorySuspended)
             });
         });
 
@@ -1580,6 +1613,15 @@ public sealed class WebServerHost : BackgroundService
                 {
                     SettingsRepository.Set(SettingsRepository.KeyPromptResponsePresets, pr.GetString() ?? SettingsRepository.DefaultPromptResponsePresets);
                 }
+                // An empty text keeps the old one: GetMessage would otherwise apply the language preset to all messages.
+                if (doc.RootElement.TryGetProperty("msgCategoryWarn", out var mcw) && !string.IsNullOrWhiteSpace(mcw.GetString()))
+                {
+                    SettingsRepository.Set(SettingsRepository.KeyMsgCategoryWarn, mcw.GetString()!.Trim());
+                }
+                if (doc.RootElement.TryGetProperty("msgCategorySuspended", out var mcs) && !string.IsNullOrWhiteSpace(mcs.GetString()))
+                {
+                    SettingsRepository.Set(SettingsRepository.KeyMsgCategorySuspended, mcs.GetString()!.Trim());
+                }
 
                 return Results.Ok(new { success = true });
             }
@@ -1589,8 +1631,168 @@ public sealed class WebServerHost : BackgroundService
             }
         });
 
+        // ═══ App Categories: Category Limits and App Rules (admin only) ═══
+        app.MapGet("/api/admin/categories", (HttpContext ctx) =>
+        {
+            if (!CheckAuth(ctx)) return Results.Unauthorized();
+            var limits = CategoryRepository.GetLimits();
+            var today = DateOnly.FromDateTime(DateTime.Now);
+            var usageToday = UserRepository.GetAll().Where(u => u.IsRestricted).SelectMany(u =>
+                CategoryUsageRepository.GetForUserAndDate(u.Id, today).Select(kv => new
+                {
+                    username = u.Username,
+                    category = kv.Key.ToString(),
+                    minutes = kv.Value,
+                })).ToList();
+            return Results.Ok(new
+            {
+                categories = AppCategories.All.Select(c => new
+                {
+                    category = c.ToString(),
+                    weekdayMinutes = limits[c].WeekdayMinutes,
+                    weekendMinutes = limits[c].WeekendMinutes,
+                    editable = c != AppCategory.System,
+                }),
+                usageToday,
+                maxMinutes = DailyLimit.MaxMinutes,
+            });
+        });
+
+        app.MapPut("/api/admin/categories", async (HttpContext ctx) =>
+        {
+            if (!CheckAuth(ctx)) return Results.Unauthorized();
+            JsonElement root;
+            try { root = (await JsonDocument.ParseAsync(ctx.Request.Body)).RootElement.Clone(); }
+            catch (JsonException) { return Results.BadRequest(new { error = "Invalid JSON." }); }
+
+            if (!root.TryGetProperty("category", out var catProp) || catProp.ValueKind != JsonValueKind.String ||
+                !AppCategories.TryParse(catProp.GetString(), out var category))
+                return Results.BadRequest(new { error = "Unknown category." });
+            if (!TryReadMinutes(root, "weekdayMinutes", out var weekday) || !TryReadMinutes(root, "weekendMinutes", out var weekend))
+                return Results.BadRequest(new { error = $"A limit must be a whole number from 0 to {DailyLimit.MaxMinutes}, or empty for no limit." });
+
+            try
+            {
+                CategoryRepository.SetLimit(category, new DailyLimit(weekday, weekend));
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+
+            _logger.Information("Web Admin set the {Category} limit to {Weekday}/{Weekend}", category, weekday?.ToString() ?? "none", weekend?.ToString() ?? "none");
+            return Results.Ok(new { success = true });
+        });
+
+        app.MapGet("/api/admin/app-rules", (HttpContext ctx) =>
+        {
+            if (!CheckAuth(ctx)) return Results.Unauthorized();
+            return Results.Ok(new
+            {
+                rules = AppRuleRepository.GetAllRows().Select(r => new
+                {
+                    id = r.Rule.Id,
+                    matchType = r.Rule.MatchType == RuleMatchType.File ? "file" : "folder",
+                    pattern = r.Rule.Pattern,
+                    category = r.Rule.Category.ToString(),
+                    weekdayMinutes = r.Rule.AppLimit?.WeekdayMinutes,
+                    weekendMinutes = r.Rule.AppLimit?.WeekendMinutes,
+                    isDefault = r.IsDefault,
+                }),
+            });
+        });
+
+        app.MapPost("/api/admin/app-rules", async (HttpContext ctx) =>
+        {
+            if (!CheckAuth(ctx)) return Results.Unauthorized();
+            var (rule, error) = await ReadRuleAsync(ctx);
+            if (rule is null) return Results.BadRequest(new { error });
+            try
+            {
+                var id = AppRuleRepository.Insert(rule.Value.MatchType, rule.Value.Pattern, rule.Value.Category, rule.Value.AppLimit);
+                _logger.Information("Web Admin added App Rule {Id}: {Type} {Pattern} -> {Category}", id, rule.Value.MatchType, rule.Value.Pattern, rule.Value.Category);
+                return Results.Ok(new { success = true, id });
+            }
+            catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+        });
+
+        app.MapPut("/api/admin/app-rules/{id:long}", async (HttpContext ctx, long id) =>
+        {
+            if (!CheckAuth(ctx)) return Results.Unauthorized();
+            var (rule, error) = await ReadRuleAsync(ctx);
+            if (rule is null) return Results.BadRequest(new { error });
+            try
+            {
+                if (!AppRuleRepository.Update(id, rule.Value.MatchType, rule.Value.Pattern, rule.Value.Category, rule.Value.AppLimit))
+                    return Results.NotFound(new { error = "Rule not found." });
+                _logger.Information("Web Admin changed App Rule {Id}: {Type} {Pattern} -> {Category}", id, rule.Value.MatchType, rule.Value.Pattern, rule.Value.Category);
+                return Results.Ok(new { success = true });
+            }
+            catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (InvalidOperationException ex) { return Results.Conflict(new { error = ex.Message }); }
+        });
+
+        app.MapDelete("/api/admin/app-rules/{id:long}", (HttpContext ctx, long id) =>
+        {
+            if (!CheckAuth(ctx)) return Results.Unauthorized();
+            if (!AppRuleRepository.Delete(id))
+                return Results.NotFound(new { error = "Rule not found." });
+            _logger.Information("Web Admin deleted App Rule {Id}", id);
+            return Results.Ok(new { success = true });
+        });
+
         _logger.Information("Starting embedded WebServer on http://0.0.0.0:5050");
         await app.RunAsync(stoppingToken);
+    }
+
+    /// <summary>
+    /// Reads an optional minute value: missing, null or "" = no value; else a whole number from 0 to 1440.
+    /// Returns false for any other value.
+    /// </summary>
+    private static bool TryReadMinutes(JsonElement root, string name, out int? minutes)
+    {
+        minutes = null;
+        if (!root.TryGetProperty(name, out var prop))
+            return true;
+        switch (prop.ValueKind)
+        {
+            case JsonValueKind.Null:
+                return true;
+            case JsonValueKind.String when string.IsNullOrWhiteSpace(prop.GetString()):
+                return true;
+            case JsonValueKind.String when int.TryParse(prop.GetString(), out var fromText):
+                minutes = fromText;
+                break;
+            case JsonValueKind.Number when prop.TryGetInt32(out var number):
+                minutes = number;
+                break;
+            default:
+                return false;
+        }
+        return DailyLimit.IsValidMinutes(minutes);
+    }
+
+    private static async Task<((RuleMatchType MatchType, string Pattern, AppCategory Category, DailyLimit? AppLimit)? Rule, string? Error)> ReadRuleAsync(HttpContext ctx)
+    {
+        JsonElement root;
+        try { root = (await JsonDocument.ParseAsync(ctx.Request.Body)).RootElement.Clone(); }
+        catch (JsonException) { return (null, "Invalid JSON."); }
+
+        var typeText = root.TryGetProperty("matchType", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() : null;
+        RuleMatchType? matchType = typeText?.ToLowerInvariant() switch { "file" => RuleMatchType.File, "folder" => RuleMatchType.Folder, _ => null };
+        if (matchType is null)
+            return (null, "matchType must be \"file\" or \"folder\".");
+
+        var pattern = root.TryGetProperty("pattern", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() ?? "" : "";
+        if (!root.TryGetProperty("category", out var c) || c.ValueKind != JsonValueKind.String || !AppCategories.TryParse(c.GetString(), out var category))
+            return (null, "Unknown category.");
+        if (!TryReadMinutes(root, "weekdayMinutes", out var weekday) || !TryReadMinutes(root, "weekendMinutes", out var weekend))
+            return (null, $"An App Limit must be a whole number from 0 to {DailyLimit.MaxMinutes}, or empty.");
+
+        DailyLimit? appLimit = weekday is null && weekend is null ? null : new DailyLimit(weekday, weekend);
+        var error = AppRule.Validate(matchType.Value, pattern, category, appLimit);
+        return error is null ? ((matchType.Value, pattern, category, appLimit), null) : (null, error);
     }
 
     private bool CheckAuth(HttpContext ctx)

@@ -84,6 +84,13 @@ An enhanced screen time, application telemetry, and schedule curfew management s
 - **Turnaround Timing & Parent Adjudication**: Telegram card reports response with turnaround duration (e.g. *"Dijawab dalam 14 detik"*), plus inline adjudication buttons: `[+15m]`, `[+30m]`, `[🔒 Kunci PC]`.
 - **Durable Offline Telegram Notification Queue**: Captures immutable timestamps on cold boot or host network disconnection, draining queued alerts when network restores and displaying deferred dispatch tags (`• Waktu: 08:00:12 (Terkirim tertunda: 08:45:00)`), eliminating timestamp drift.
 
+### 11. App Categories & Category Limits (pause, never close)
+- **Seven App Categories**: Games, Video, Social, Study, Creative, System and Unknown. Games, Video, Social and Unknown default to 120 minutes on weekdays and 180 on weekends; System can never be limited.
+- **App Rules**: map an exe to a category by its file name (e.g. `RobloxPlayerBeta.exe`) or by a folder (e.g. Steam `steamapps\common`). A rule can carry its own App Limit that shares the category's counter (Games 2 h, Minecraft 3 h). Default rules cover Steam, Epic, Riot, Roblox, Minecraft, Microsoft Office and the Windows folder.
+- **Pause, Never Close**: when a limit ends, the service suspends the category's programs (`NtSuspendProcess`) and the agent mutes them. Windows stay open; programs resume the next day, after Bonus Minutes, after a limit change or when the service stops. If a program cannot be suspended, the session is locked instead.
+- **Warnings & Messages**: 5-minute and 1-minute warnings, then one "paused, not closed" message per category; both texts are editable in the web admin settings.
+- **Web Admin**: edit Category Limits and App Rules, and assign a category straight from the App Usage table.
+
 ## Architecture
 
 ```

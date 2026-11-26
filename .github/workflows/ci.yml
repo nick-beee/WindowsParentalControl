@@ -43,3 +43,8 @@ jobs:
       - name: Test
         shell: pwsh
         run: dotnet run --project tests/ParentalControl.Tests -c Debug
+
+      # The xUnit tests of the pure domain logic (no WinAPI). They also run on the Mac.
+      - name: Domain tests
+        shell: pwsh
+        run: dotnet test tests/ParentalControl.Domain.Tests -c Debug

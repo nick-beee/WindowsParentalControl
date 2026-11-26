@@ -1,11 +1,13 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src\ParentalControl.Core\ParentalControl.Core.csproj" />
+    <Project Path="src\ParentalControl.Domain\ParentalControl.Domain.csproj" />
     <Project Path="src\ParentalControl.Service\ParentalControl.Service.csproj" />
     <Project Path="src\ParentalControl.Admin\ParentalControl.Admin.csproj" />
     <Project Path="src\ParentalControl.Agent\ParentalControl.Agent.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests\ParentalControl.Domain.Tests\ParentalControl.Domain.Tests.csproj" />
     <Project Path="tests\ParentalControl.Tests\ParentalControl.Tests.csproj" />
   </Folder>
 </Solution>
