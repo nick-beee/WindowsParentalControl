@@ -1,6 +1,7 @@
 using ParentalControl.Core.Data;
 using ParentalControl.Core.Models;
 using ParentalControl.Core.Platform;
+using ParentalControl.Core.Services;
 using ParentalControl.Domain.Breaks;
 using ParentalControl.Domain.Messages;
 
@@ -16,11 +17,66 @@ public sealed class BreakEnforcer
 {
     private readonly object _gate = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<int, DateTime> _lastRunningMessage = new();
+    private readonly TelegramBotService? _telegram;
     private readonly Serilog.ILogger _logger;
 
-    public BreakEnforcer(Serilog.ILogger logger)
+    public BreakEnforcer(Serilog.ILogger logger) : this(null, logger) { }
+
+    public BreakEnforcer(TelegramBotService? telegram, Serilog.ILogger logger)
     {
+        _telegram = telegram;
         _logger = logger;
+    }
+
+    /// <summary>Connects Telegram <c>/break</c> and the end button. The chat check is in <see cref="TelegramBotService"/>.</summary>
+    public void AttachTelegram()
+    {
+        TelegramBotService.OnBreakStatusRequested = () => Task.FromResult(GetStatus());
+        TelegramBotService.OnEndBreakRequested = (userId, breakStart) =>
+        {
+            var user = UserRepository.GetById(userId);
+            if (user is null || !user.IsRestricted) return Task.FromResult((ParentEndOutcome.NoBreak, string.Empty));
+            return Task.FromResult((EndByParent(user, breakStart), user.Username));
+        };
+    }
+
+    // --- Parent (Telegram now, the admin API after PR #21) ---
+
+    /// <summary>The Break Rule and the break state of each Restricted User.</summary>
+    public IReadOnlyList<BreakStatus> GetStatus()
+    {
+        var list = new List<BreakStatus>();
+        foreach (var user in UserRepository.GetAll().Where(u => u.IsRestricted).OrderBy(u => u.Username, StringComparer.OrdinalIgnoreCase))
+        {
+            var (result, rule) = Apply(user.Id, (r, state, now) => (new BreakResult(state, Array.Empty<BreakAction>()), r));
+            var s = result.State;
+            list.Add(new BreakStatus(user.Id, user.Username, rule, s.ContinuousUseMinutes, s.BreakStartedUtc, s.BreakEndsUtc));
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// The parent ends the running Break. With <paramref name="expectedStartUnixSeconds"/>, only the Break with that start ends.
+    /// Continuous Use becomes 0. The session stays locked until the child unlocks it.
+    /// </summary>
+    public ParentEndOutcome EndByParent(User user, long? expectedStartUnixSeconds = null)
+    {
+        var (result, outcome) = Apply(user.Id, (rule, state, now) => BreakPlanner.EndByParent(rule, state, now, expectedStartUnixSeconds));
+        Run(user, result);
+        _logger.Information("End of the Break of {Username} by the parent: {Outcome}", user.Username, outcome);
+        return outcome;
+    }
+
+    /// <summary>Stores a new Break Rule and applies design D11 to the state. The caller checks the range.</summary>
+    public void ChangeRule(User user, BreakRule newRule)
+    {
+        var result = Apply(user.Id, (oldRule, state, now) =>
+        {
+            BreakRepository.SetRule(user.Id, newRule);
+            return BreakPlanner.ChangeRule(oldRule, newRule, state, now);
+        });
+        Run(user, result);
+        _logger.Information("Break Rule of {Username} changed to {Rule}", user.Username, newRule);
     }
 
     // --- Count and Rest (called by SessionTracker) ---
@@ -168,6 +224,15 @@ public sealed class BreakEnforcer
         var minutes = BreakPlanner.MinutesLeft(start.StartUtc, start.EndsUtc);
         EventRepository.LogEvent(user.Sid, EventType.BREAK_STARTED, $"Until {endText} ({minutes} min)");
         _logger.Information("Break of {Username} starts: {Minutes} min until {End}", user.Username, minutes, endText);
+
+        if (_telegram is not null && SettingsRepository.IsTelegramNotifyBreakEnabled())
+        {
+            _ = Task.Run(async () =>
+            {
+                try { await _telegram.SendBreakStartedNoticeAsync(user.Id, user.Username, start.StartUtc, start.EndsUtc); }
+                catch (Exception ex) { _logger.Warning(ex, "Telegram notice of the Break start failed"); }
+            });
+        }
 
         var title = SessionTexts.For(SettingsRepository.GetLanguagePreset())["break_title"];
         var message = SettingsRepository.GetMessage(SettingsRepository.KeyMsgBreakStart,

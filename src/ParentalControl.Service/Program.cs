@@ -48,5 +48,9 @@ if (WindowsServiceHelpers.IsWindowsService())
 }
 
 using var host = builder.Build();
+
+// Only connects the Telegram callbacks. TelegramWorker waits for the start gate before it reads a command.
+host.Services.GetRequiredService<BreakEnforcer>().AttachTelegram();
+
 host.Run();
 return Environment.ExitCode;

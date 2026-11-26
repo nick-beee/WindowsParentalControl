@@ -55,7 +55,7 @@ For each VM step: check that the snapshot `test-base` exists before you install 
 
 ## 8. Telegram
 
-- [ ] 8.1 Add the command `/break` to `TelegramBotService`: one line per Restricted User with a Break Rule, and a button `brk_end:<userId>:<breakStartUnixSeconds>` for a running Break. Texts in English and Indonesian, as in PR #20. Verify: an xUnit test for the format and the parse of the callback data (at most 64 bytes) passes.
+- [x] 8.1 Add the command `/break` to `TelegramBotService`: one line per Restricted User with a Break Rule, and a button `brk_end:<userId>:<breakStartUnixSeconds>` for a running Break. Texts in English and Indonesian, as in PR #20. Verify: an xUnit test for the format and the parse of the callback data (at most 64 bytes) passes.
 - [ ] 8.2 Handle the callback: end the Break only if the start in the button equals the stored start; else answer that this Break already ended. Verify on the VM with a test bot: the button ends the running Break; a button of an earlier Break does not end the current one.
 - [ ] 8.3 Send the notice at a Break start when `telegram_notify_break` is on, with the same button. Verify on the VM: with the setting off (default), no notice comes; with the setting on, the notice names `Kid` and the end time.
 - [ ] 8.4 Update the `/help` text with `/break`. Verify: `/help` in the test chat lists `/break`.

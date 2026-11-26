@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using ParentalControl.Core.Data;
 using ParentalControl.Core.Models;
 using ParentalControl.Core.Platform;
+using ParentalControl.Domain.Breaks;
 using ParentalControl.Domain.Messages;
 
 namespace ParentalControl.Core.Services;
@@ -26,6 +27,10 @@ public sealed class TelegramBotService
     public static Func<int, Task<bool>>? OnLockSessionRequested { get; set; }
     public static Func<string, int, Task<bool>>? OnGrantBonusMinutesRequested { get; set; }
     public static Func<Task<List<(int sessionId, string username, string sid)>>>? OnGetActiveSessionsRequested { get; set; }
+    /// <summary>The Break Rule and the break state of each Restricted User (Telegram <c>/break</c>).</summary>
+    public static Func<Task<IReadOnlyList<BreakStatus>>>? OnBreakStatusRequested { get; set; }
+    /// <summary>Ends the Break of a user that started at the given time (Unix seconds). Returns the outcome and the user name.</summary>
+    public static Func<int, long, Task<(ParentEndOutcome Outcome, string Username)>>? OnEndBreakRequested { get; set; }
 
     public TelegramBotService(Serilog.ILogger logger)
     {
@@ -231,6 +236,11 @@ public sealed class TelegramBotService
             return;
         }
         var action = parts[0];
+        if (action == BreakCallback.Action)
+        {
+            await HandleEndBreakCallbackAsync(botToken, configuredChatId, callbackId, messageId, data);
+            return;
+        }
         if (action == "admin_verify")
         {
             var subAction = parts[1].ToLowerInvariant(); // "self" or "lock"
@@ -564,6 +574,88 @@ public sealed class TelegramBotService
         catch { }
     }
 
+    /// <summary>
+    /// The button "end the Break". The chat check ran before. The service ends the Break only if the stored start
+    /// equals the start in the button, so an old button does not end a later Break.
+    /// </summary>
+    private async Task HandleEndBreakCallbackAsync(string botToken, string configuredChatId, string callbackId, long messageId, string data)
+    {
+        var lang = LanguagePreset.ParentLanguage(SettingsRepository.GetLanguagePreset());
+        if (!BreakCallback.TryParse(data, out var userId, out var breakStart))
+        {
+            await AnswerCallbackQueryAsync(botToken, callbackId, "Invalid command.");
+            return;
+        }
+        if (OnEndBreakRequested == null)
+        {
+            await AnswerCallbackQueryAsync(botToken, callbackId, BreakTelegramTexts.NotReady(lang));
+            return;
+        }
+
+        var (outcome, username) = await OnEndBreakRequested(userId, breakStart);
+        if (outcome == ParentEndOutcome.Ended)
+        {
+            var text = BreakTelegramTexts.Ended(EscapeMarkdown(username), lang);
+            await AnswerCallbackQueryAsync(botToken, callbackId, BreakTelegramTexts.Ended(username, lang));
+            await EditMessageTextAsync(botToken, configuredChatId, messageId, text);
+        }
+        else
+        {
+            await AnswerCallbackQueryAsync(botToken, callbackId, BreakTelegramTexts.AlreadyEnded(lang));
+            await EditMessageTextAsync(botToken, configuredChatId, messageId, BreakTelegramTexts.AlreadyEnded(lang));
+        }
+    }
+
+    /// <summary>Telegram <c>/break</c>: one line per Restricted User, and a button for each running Break.</summary>
+    private async Task SendBreakStatusAsync(string chatId)
+    {
+        var lang = LanguagePreset.ParentLanguage(SettingsRepository.GetLanguagePreset());
+        if (OnBreakStatusRequested == null)
+        {
+            await SendTextMessageAsync(chatId, BreakTelegramTexts.NotReady(lang));
+            return;
+        }
+
+        var items = await OnBreakStatusRequested();
+        if (items.Count == 0)
+        {
+            await SendTextMessageAsync(chatId, BreakTelegramTexts.NoUsers(lang));
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+        var lines = items.Select(s => BreakTelegramTexts.Line(s, EscapeMarkdown(s.Username), now, TimeZoneInfo.Local, lang));
+        var text = BreakTelegramTexts.Header(lang) + "\n" + string.Join("\n", lines);
+        var buttons = items
+            .Where(s => s.BreakStartedUtc is not null && s.BreakEndsUtc is { } end && now < end)
+            .Select(s => new object[] { new { text = BreakTelegramTexts.EndButton(s.Username, lang), callback_data = BreakCallback.Format(s.UserId, s.BreakStartedUtc!.Value) } })
+            .ToArray();
+
+        if (buttons.Length == 0)
+            await SendTextMessageAsync(chatId, text);
+        else
+            await SendTextMessageWithKeyboardAsync(chatId, text, new { inline_keyboard = buttons });
+    }
+
+    /// <summary>The notice at a Break start, with the button that ends this Break. The caller checks the setting.</summary>
+    public async Task<bool> SendBreakStartedNoticeAsync(int userId, string username, DateTime startUtc, DateTime endUtc)
+    {
+        var token = SettingsRepository.Get(SettingsRepository.KeyTelegramBotToken);
+        var chatId = SettingsRepository.Get(SettingsRepository.KeyTelegramChatId);
+        if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId)) return false;
+
+        var lang = LanguagePreset.ParentLanguage(SettingsRepository.GetLanguagePreset());
+        var text = BreakTelegramTexts.Notice(EscapeMarkdown(username), startUtc, endUtc, TimeZoneInfo.Local, lang);
+        var keyboard = new
+        {
+            inline_keyboard = new object[][]
+            {
+                new object[] { new { text = BreakTelegramTexts.EndButton(username, lang), callback_data = BreakCallback.Format(userId, startUtc) } }
+            }
+        };
+        return await SendWithRetryAsync(() => SendTextMessageWithKeyboardAsync(chatId, text, keyboard));
+    }
+
     private async Task HandleMessageAsync(string botToken, string configuredChatId, JsonNode message)
     {
         var chatId = message?["chat"]?["id"]?.ToString() ?? "";
@@ -645,6 +737,10 @@ public sealed class TelegramBotService
                 await SendTextMessageAsync(chatId, "❌ Gagal mengambil tangkapan layar. Pastikan pengguna sedang aktif dan sesi tidak sedang terkunci.");
             }
         }
+        else if (text.StartsWith("/break", StringComparison.OrdinalIgnoreCase))
+        {
+            await SendBreakStatusAsync(chatId);
+        }
         else if (text.StartsWith("/status", StringComparison.OrdinalIgnoreCase))
         {
             if (OnStatusRequested != null)
@@ -700,6 +796,7 @@ public sealed class TelegramBotService
                         + "• `/ask [user] [pesan]` — Kirim pesan interaktif ke anak\n"
                         + "• `/capture [user]` — Ambil tangkapan layar desktop diam-diam\n"
                         + "• `/status` — Cek sisa screen time dan aplikasi aktif anak\n"
+                        + BreakTelegramTexts.HelpLine(LanguagePreset.Id) + "\n"
                         + "• `/help` — Tampilkan bantuan ini";
             await SendTextMessageAsync(chatId, helpMsg);
         }
