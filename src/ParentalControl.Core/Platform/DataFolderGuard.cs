@@ -221,16 +221,21 @@ public static class DataFolderGuard
         }
     }
 
-    /// <summary>Puts a new file with the same content at the name. The other names keep the old file.</summary>
+    /// <summary>
+    /// Puts a new file with the same content at the name. The other names keep the old file. The old name is removed
+    /// with POSIX semantics, so a scanner that holds the old file open does not keep the name.
+    /// </summary>
     private static void ReplaceWithCopy(string path)
     {
         var copy = path + ".copy-" + Guid.NewGuid().ToString("N");
         File.Copy(path, copy);
-        File.Move(copy, path, overwrite: true);
+        using (var old = Native.TryOpen(path, Native.FILE_READ_ATTRIBUTES) ?? throw new IOException($"{path} is gone."))
+            Native.DeleteSameObject(path, Native.GetInfo(old));
+        File.Move(copy, path);
         using var handle = Native.TryOpen(path, Native.CheckAccess) ?? throw new IOException($"{path} is missing after the copy.");
         var info = Native.GetInfo(handle);
         if (info.IsReparsePoint || info.LinkCount != 1)
-            throw new IOException($"{path} still has more than one name after the copy.");
+            throw new IOException($"{path} has {info.LinkCount} names after the copy.");
         Native.SetSecurity(handle, FileItemSddl, Native.UnprotectedDacl);
     }
 
@@ -281,6 +286,9 @@ public static class DataFolderGuard
         private const int ERROR_ALREADY_EXISTS = 183;
         private const int FileRenameInfo = 3;
         private const int FileDispositionInfo = 4;
+        private const int FileDispositionInfoEx = 21;
+        private const uint FILE_DISPOSITION_FLAG_DELETE = 0x1;
+        private const uint FILE_DISPOSITION_FLAG_POSIX_SEMANTICS = 0x2;
 
         private const uint OWNER_SECURITY_INFORMATION = 0x1;
         private const uint DACL_SECURITY_INFORMATION = 0x4;
@@ -344,6 +352,10 @@ public static class DataFolderGuard
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool SetFileInformationByHandle(SafeFileHandle file, int infoClass, IntPtr info, uint size);
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetFileInformationByHandle(SafeFileHandle file, int infoClass, ref uint flags, uint size);
+
         [DllImport("advapi32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool GetKernelObjectSecurity(SafeFileHandle handle, uint requestedInformation, byte[]? descriptor, uint length, out uint lengthNeeded);
@@ -386,13 +398,20 @@ public static class DataFolderGuard
                 ((ulong)info.FileIndexHigh << 32) | info.FileIndexLow);
         }
 
-        /// <summary>Deletes the checked item itself. For a link, this deletes the link and not its target.</summary>
+        /// <summary>
+        /// Deletes the checked name itself. For a link, this deletes the link and not its target; for a file with more
+        /// than one name, only this name. POSIX semantics remove the name at once, also while another process (for
+        /// example a virus scanner) holds the item open; Windows versions without them use the classic delete.
+        /// </summary>
         public static void DeleteSameObject(string path, FileInfoByHandle checkedInfo)
         {
             using var handle = OpenSameObject(path, checkedInfo, DELETE | FILE_READ_ATTRIBUTES);
+            var flags = FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS;
+            if (SetFileInformationByHandle(handle, FileDispositionInfoEx, ref flags, 4))
+                return;
             var disposition = new FILE_DISPOSITION_INFO { DeleteFile = true };
             if (!SetFileInformationByHandle(handle, FileDispositionInfo, ref disposition, (uint)Marshal.SizeOf<FILE_DISPOSITION_INFO>()))
-                throw new Win32Exception(Marshal.GetLastWin32Error(), $"Could not delete the link {path}");
+                throw new Win32Exception(Marshal.GetLastWin32Error(), $"Could not delete {path}");
         }
 
         public static void Rename(SafeFileHandle handle, string newFullPath)
