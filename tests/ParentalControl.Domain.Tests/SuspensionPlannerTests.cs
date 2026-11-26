@@ -14,6 +14,9 @@ public class SuspensionPlannerTests
     private const string Helper = @"C:\Users\Kid\AppData\Local\Updater\helper.exe";
     private const string WebView = @"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\131.0\msedgewebview2.exe";
     private const string NewExe = @"C:\Users\Kid\Downloads\new.exe";
+    private const string WindowsFolder = @"C:\Windows";
+    private const string Explorer = @"C:\Windows\explorer.exe";
+    private const string TaskManager = @"C:\WINDOWS\System32\Taskmgr.exe";
     private static readonly DateOnly Tuesday = new(2026, 11, 24);
     private static readonly DateOnly Wednesday = new(2026, 11, 25);
     private static readonly DateTime T0 = new(2026, 11, 24, 8, 0, 0, DateTimeKind.Utc);
@@ -56,8 +59,8 @@ public class SuspensionPlannerTests
         Func<int, string, bool>? seen = null,
         IEnumerable<SuspensionRecord>? records = null) =>
         SuspensionPlanner.Plan(new PlannerInput(
-            processes.ToList(), KidSessions, verdict, seen ?? Seen(Game, Minecraft, Word, Helper, WebView, NewExe, Agent),
-            (records ?? []).ToList(), Agent));
+            processes.ToList(), KidSessions, verdict, seen ?? Seen(Game, Minecraft, Word, Helper, WebView, NewExe, Agent, Explorer, TaskManager),
+            (records ?? []).ToList(), Agent, WindowsFolder));
 
     [Fact]
     public void Exhausted_category_suspends_its_process_and_not_a_Study_program()
@@ -103,6 +106,24 @@ public class SuspensionPlannerTests
     {
         var plan = Plan([Proc(40, WebView)], Verdict(Rules, Tuesday, 0, unknownUsed: 120));
         Assert.Empty(plan.ToSuspend);
+    }
+
+    [Fact]
+    public void Windows_folder_is_never_suspended_also_without_the_System_rule()
+    {
+        // No rule in Rules puts C:\Windows\ in System: explorer and Task Manager are in Unknown.
+        var plan = Plan([Proc(42, Explorer), Proc(43, TaskManager), Proc(44, NewExe)], Verdict(Rules, Tuesday, 0, unknownUsed: 120));
+        var action = Assert.Single(plan.ToSuspend);
+        Assert.Equal(44, action.Process.Pid);
+    }
+
+    [Fact]
+    public void Recorded_process_below_the_Windows_folder_is_resumed()
+    {
+        var plan = Plan([Proc(42, Explorer, suspended: true)], Verdict(Rules, Tuesday, 0, unknownUsed: 120),
+            records: [Record(42, Explorer, category: AppCategory.Unknown)]);
+        Assert.Empty(plan.ToSuspend);
+        Assert.Equal(42, Assert.Single(plan.ToResume).Pid);
     }
 
     [Fact]

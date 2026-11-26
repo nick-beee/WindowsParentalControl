@@ -107,11 +107,15 @@ The Session Agent SHALL mute the audio sessions of the suspended processes and S
 - **THEN** the audio of that process is muted
 
 ### Requirement: Only the child's processes
-The system SHALL suspend only processes that run in a session of the Restricted User whose limit ended. It SHALL NOT suspend processes of another user or session, processes in System, the Session Agent, `msedgewebview2.exe`, or a process whose exe path it cannot read.
+The system SHALL suspend only processes that run in a session of the Restricted User whose limit ended. It SHALL NOT suspend processes of another user or session, processes in System, the Session Agent, `msedgewebview2.exe`, an exe below the Windows folder (also if no App Rule puts it in System), or a process whose exe path it cannot read.
 
 #### Scenario: WebView2 host
 - **WHEN** Unknown is exhausted and a Study app uses `msedgewebview2.exe`
 - **THEN** `msedgewebview2.exe` keeps running
+
+#### Scenario: Windows rule deleted
+- **WHEN** the parent deletes the default rule for the Windows folder and Unknown is exhausted
+- **THEN** `explorer.exe` and Task Manager keep running
 
 #### Scenario: Admin session
 - **WHEN** an Administrator runs the same game in another session at the same time

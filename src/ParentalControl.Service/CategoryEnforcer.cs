@@ -134,7 +134,8 @@ public sealed class CategoryEnforcer : IDisposable
                 },
                 (userId, path) => _foregroundHistory.WasForeground(userId, today, path),
                 records,
-                SessionTracker.GetAgentExecutablePath()));
+                SessionTracker.GetAgentExecutablePath(),
+                Environment.GetFolderPath(Environment.SpecialFolder.Windows)));
 
             foreach (var record in plan.ToDrop)
             {

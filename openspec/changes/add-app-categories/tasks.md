@@ -14,7 +14,7 @@
 ## 3. Limit calculation and suspension planning (pure logic)
 
 - [x] 3.1 Implement `CategoryLimitCalculator` (weekday/weekend limit + Bonus Minutes, Category Limits and App Limits against the shared Category Usage, remaining minutes, 5- and 1-minute warnings per limit, exhausted per exe); verify xUnit tests for the "Saturday", "Bonus Minutes", "Five minutes left", "Game with a longer App Limit", "Longer App Limit reached" and "App Limit shorter than the category" scenarios pass.
-- [x] 3.2 Implement `SuspensionPlanner` (suspend, re-suspend a recorded process that runs again, resume, drop stale records; only foreground-seen exes; never System, the agent exe, `msedgewebview2.exe` or a process without a path); verify xUnit tests cover: exhausted category, background helper not seen in front, WebView2, recorded process running again, time back after bonus, new day, rule moved to another category, pid reused with another start time, stale record, admin session excluded.
+- [x] 3.2 Implement `SuspensionPlanner` (suspend, re-suspend a recorded process that runs again, resume, drop stale records; only foreground-seen exes; never System, the agent exe, `msedgewebview2.exe`, an exe below the Windows folder or a process without a path); verify xUnit tests cover: exhausted category, background helper not seen in front, WebView2, Windows folder without the System rule, recorded process running again, time back after bonus, new day, rule moved to another category, pid reused with another start time, stale record, admin session excluded.
 
 ## 4. Storage
 

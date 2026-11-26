@@ -26,17 +26,19 @@ public sealed record SuspensionPlan(
 /// <param name="WasForeground">True if the exe path was a Foreground Window of the user today.</param>
 /// <param name="Records">The current suspension records.</param>
 /// <param name="AgentExePath">The full path of the Session Agent exe. It is never suspended.</param>
+/// <param name="WindowsFolder">The Windows folder. An exe below it is never suspended, also if no App Rule puts it in System.</param>
 public sealed record PlannerInput(
     IReadOnlyList<SessionProcess> Processes,
     IReadOnlyDictionary<int, int> RestrictedSessions,
     Func<int, string, ExeVerdict> Verdict,
     Func<int, string, bool> WasForeground,
     IReadOnlyList<SuspensionRecord> Records,
-    string? AgentExePath);
+    string? AgentExePath,
+    string? WindowsFolder);
 
 /// <summary>
 /// Decides which processes to suspend, which recorded processes to resume and which records to drop.
-/// It never suspends System, the Session Agent, msedgewebview2.exe, a process without a path,
+/// It never suspends System, the Session Agent, msedgewebview2.exe, an exe below the Windows folder, a process without a path,
 /// a process outside the sessions of Restricted Users, or an exe that was not a Foreground Window today.
 /// A recorded process stays suspended while its exe has no time left, also if the exe was not a
 /// Foreground Window since the last service start.
@@ -48,6 +50,7 @@ public static class SuspensionPlanner
     public static SuspensionPlan Plan(PlannerInput input)
     {
         var agentPath = WindowsPath.Canonicalize(input.AgentExePath);
+        var windowsFolder = WindowsPath.CanonicalizeFolder(input.WindowsFolder);
         var toSuspend = new List<SuspendAction>();
         var toResume = new List<SuspensionRecord>();
         var toDrop = new List<SuspensionRecord>();
@@ -73,7 +76,7 @@ public static class SuspensionPlanner
             if (path is not null
                 && input.RestrictedSessions.TryGetValue(process.SessionId, out var userId)
                 && userId == record.UserId
-                && !IsExcluded(path, agentPath))
+                && !IsExcluded(path, agentPath, windowsFolder))
             {
                 verdict = input.Verdict(userId, path);
             }
@@ -91,7 +94,7 @@ public static class SuspensionPlanner
             if (!input.RestrictedSessions.TryGetValue(process.SessionId, out var userId))
                 continue;
             var path = WindowsPath.Canonicalize(process.ExePath);
-            if (path is null || IsExcluded(path, agentPath))
+            if (path is null || IsExcluded(path, agentPath, windowsFolder))
                 continue;
 
             var verdict = input.Verdict(userId, path);
@@ -106,7 +109,10 @@ public static class SuspensionPlanner
         return new SuspensionPlan(toSuspend, toResume, toDrop);
     }
 
-    private static bool IsExcluded(string canonicalPath, string? canonicalAgentPath) =>
+    // The Windows folder is a hard exclusion: if the parent deletes its default System rule,
+    // explorer.exe and the shell must still keep running.
+    private static bool IsExcluded(string canonicalPath, string? canonicalAgentPath, string? canonicalWindowsFolder) =>
         string.Equals(WindowsPath.GetFileName(canonicalPath), WebView2FileName, StringComparison.OrdinalIgnoreCase)
-        || (canonicalAgentPath is not null && string.Equals(canonicalPath, canonicalAgentPath, StringComparison.OrdinalIgnoreCase));
+        || (canonicalAgentPath is not null && string.Equals(canonicalPath, canonicalAgentPath, StringComparison.OrdinalIgnoreCase))
+        || (canonicalWindowsFolder is not null && WindowsPath.IsBelow(canonicalPath, canonicalWindowsFolder));
 }
