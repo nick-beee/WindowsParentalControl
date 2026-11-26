@@ -45,7 +45,7 @@ PR #20 (`add-german-child-texts`), PR #21 (`require-admin-sign-in`) and PR #22 (
 
 ## 7. Service: detection and enforcement
 
-- [ ] 7.1 Add the NuGet package `System.Management` (8.0.x) to `ParentalControl.Service.csproj`. Verify that `dotnet build -p:EnableWindowsTargeting=true` and the CI build pass.
+- [x] 7.1 Add the NuGet package `System.Management` (8.0.x) to `ParentalControl.Service.csproj`. Verify that `dotnet build -p:EnableWindowsTargeting=true` and the CI build pass.
 - [ ] 7.2 Add `ProcessStartWatcher` (WMI `Win32_ProcessStartTrace`, filter on restricted sessions, bounded channel, restart at the next tick after an error) (design D3). Verify by a log line at start and on VM 102 in task 7.7.
 - [ ] 7.3 Add `BlockEnforcer`: the consumer of the channel, the block epoch from its start and `CategoryConfigCache.Changed`, the `BlockedStartDecider`, the close through `ProcessControl.Terminate`, `RequestTick` of `CategoryEnforcer` after a failed close, the upsert in `blocked_starts`, the event log entry, the child message and the Telegram notice with their dedupe flags (design D4, D5, D10, D11, D12). Verify that the build passes and in task 7.7.
 - [ ] 7.4 In `CategoryEnforcer.Tick`, run the decider for each listed process before the planner, give `Close` results to `BlockEnforcer`, mark them as a pending close for the planner, and set `IsBlocked` in the verdict. A blocked suspension updates `blocked_starts` and sends the child message once. Verify that the build passes and in task 7.7.
