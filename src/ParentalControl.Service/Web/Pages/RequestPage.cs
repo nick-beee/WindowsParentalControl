@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using ParentalControl.Domain.Messages;
 
 namespace ParentalControl.Service.Web.Pages;
 
@@ -18,6 +19,8 @@ public static class RequestPage
     );
 
     public static string Render(
+        TextSet texts,
+        TextSet sessionTexts,
         string username,
         int remainingMinutes,
         int remainingSeconds,
@@ -40,18 +43,24 @@ public static class RequestPage
         var usernameHtml = WebUtility.HtmlEncode(username);
         var usernameJs = JsonSerializer.Serialize(username);
 
+        // The texts follow the Language Preset. A catalog text is encoded like a value from the database.
+        string H(string key) => WebUtility.HtmlEncode(texts[key]);
+        // Encodes the text first, then fills its placeholders with values that are already HTML.
+        string HFill(string key, params (string Name, object Value)[] values) =>
+            TextTemplate.Fill(WebUtility.HtmlEncode(texts[key]), values);
+
         var sessionStatusBadge = "";
         if (!isSessionActive)
         {
-            sessionStatusBadge = """<span class="session-badge badge-offline">⏹ Sesi Tidak Aktif (Waktu Dijeda)</span>""";
+            sessionStatusBadge = $"""<span class="session-badge badge-offline">{H("session_inactive")}</span>""";
         }
         else if (isSessionLocked)
         {
-            sessionStatusBadge = """<span class="session-badge badge-locked">⏸ Sesi Terkunci (Waktu Dijeda)</span>""";
+            sessionStatusBadge = $"""<span class="session-badge badge-locked">{H("session_locked")}</span>""";
         }
         else
         {
-            sessionStatusBadge = """<span class="session-badge badge-active">▶ Sesi Aktif</span>""";
+            sessionStatusBadge = $"""<span class="session-badge badge-active">{H("session_active")}</span>""";
         }
 
         var adminBanner = "";
@@ -67,14 +76,14 @@ public static class RequestPage
         }
 
         var offlineAlert = isOffline
-            ? """<div class="banner banner-error">⚠️ Komputer sedang offline. Permintaan hanya dapat dikirim saat terhubung ke internet.</div>"""
+            ? $"""<div class="banner banner-error">{H("offline")}</div>"""
             : "";
 
         var statusLabel = latestStatus switch
         {
-            "PENDING" => "Menunggu Persetujuan",
-            "APPROVED" => "Disetujui",
-            "DECLINED" => "Ditolak",
+            "PENDING" => texts["status_pending"],
+            "APPROVED" => texts["status_approved"],
+            "DECLINED" => texts["status_declined"],
             _ => latestStatus ?? ""
         };
         var statusLabelHtml = WebUtility.HtmlEncode(statusLabel);
@@ -84,22 +93,22 @@ public static class RequestPage
 
         if (maxDailyRequests <= 0)
         {
-            requestLimitAlert = """<div class="banner banner-error">⚠️ Permintaan waktu tambahan saat ini dinonaktifkan oleh administrator.</div>""";
+            requestLimitAlert = $"""<div class="banner banner-error">{H("requests_disabled")}</div>""";
             disableForm = true;
         }
         else if (hasPendingRequest)
         {
-            requestLimitAlert = """<div class="banner banner-info">ℹ️ Anda masih memiliki permintaan yang sedang menunggu keputusan administrator (Status: <strong>Menunggu Persetujuan</strong>). Harap tunggu keputusan sebelum mengirim lagi.</div>""";
+            requestLimitAlert = $"""<div class="banner banner-info">{HFill("request_pending", ("status", $"<strong>{H("status_pending")}</strong>"))}</div>""";
             disableForm = true;
         }
         else if (requestsSubmittedToday >= maxDailyRequests)
         {
-            requestLimitAlert = $"""<div class="banner banner-info">ℹ️ Anda telah mencapai batas maksimal ({maxDailyRequests}) permintaan untuk hari ini (Status terakhir: <strong>{statusLabelHtml}</strong>).</div>""";
+            requestLimitAlert = $"""<div class="banner banner-info">{HFill("request_max_reached", ("max", maxDailyRequests), ("status", $"<strong>{statusLabelHtml}</strong>"))}</div>""";
             disableForm = true;
         }
         else if (requestsSubmittedToday > 0)
         {
-            requestLimitAlert = $"""<div class="banner banner-info">ℹ️ Anda telah menggunakan {requestsSubmittedToday} dari {maxDailyRequests} permintaan hari ini (Status terakhir: <strong>{statusLabelHtml}</strong>).</div>""";
+            requestLimitAlert = $"""<div class="banner banner-info">{HFill("request_used", ("count", requestsSubmittedToday), ("max", maxDailyRequests), ("status", $"<strong>{statusLabelHtml}</strong>"))}</div>""";
         }
 
         var declineBanner = "";
@@ -110,7 +119,7 @@ public static class RequestPage
                 <div class="banner-decline">
                     <div class="decline-header">
                         <span class="decline-icon">🚫</span>
-                        <span class="decline-title">Catatan Penolakan dari Orang Tua{timeFormatted}</span>
+                        <span class="decline-title">{HFill("decline_title", ("time", timeFormatted))}</span>
                     </div>
                     <div class="decline-text">"{WebUtility.HtmlEncode(latestDeclineReason)}"</div>
                 </div>
@@ -133,8 +142,8 @@ public static class RequestPage
                 if (d.IsToday) todayIndex = i;
 
                 var dot = d.HasException
-                    ? """<span class="pill-dot dot-exception" title="Pengecualian Khusus">★</span>"""
-                    : (d.IsCustom ? """<span class="pill-dot dot-custom" title="Jadwal Khusus">•</span>""" : "");
+                    ? $"""<span class="pill-dot dot-exception" title="{H("dot_exception")}">★</span>"""
+                    : (d.IsCustom ? $"""<span class="pill-dot dot-custom" title="{H("dot_custom")}">•</span>""" : "");
 
                 var activeCls = d.IsToday ? "active today" : "";
 
@@ -147,14 +156,15 @@ public static class RequestPage
             }
 
             var defTextHtml = WebUtility.HtmlEncode(!string.IsNullOrWhiteSpace(defaultScheduleSummary)
-                ? $"Standar: {defaultScheduleSummary}"
-                : "Standar: 120m (08:00–22:00)");
+                ? defaultScheduleSummary
+                : texts.Format("schedule_default", ("minutes", 120), ("start", "08:00"), ("end", "22:00")));
 
             daysJson = JsonSerializer.Serialize(weeklySchedule.Select(d => new
             {
                 dayName = d.DayName,
                 dayCode = d.DayCode,
                 minutes = d.Minutes,
+                minutesText = RequestPageTexts.MinutesText(texts, sessionTexts, d.Minutes),
                 timeWindow = d.TimeWindow,
                 isCustom = d.IsCustom,
                 isToday = d.IsToday,
@@ -165,7 +175,7 @@ public static class RequestPage
             scheduleSection = $$"""
                 <div class="schedule-panel">
                     <div class="schedule-header">
-                        <span class="schedule-title">📅 Jadwal Main Mingguan</span>
+                        <span class="schedule-title">{{H("schedule_title")}}</span>
                         <span class="schedule-baseline">{{defTextHtml}}</span>
                     </div>
 
@@ -181,15 +191,15 @@ public static class RequestPage
                                 <span class="card-day-title" id="activeDayTitle">--</span>
                                 <span class="card-day-subtitle" id="activeDaySubtitle"></span>
                             </div>
-                            <span class="badge-tag" id="activeDayBadge">Standar</span>
+                            <span class="badge-tag" id="activeDayBadge">{{H("badge_standard")}}</span>
                         </div>
                         <div class="card-day-metrics">
                             <div class="metric-box">
-                                <span class="metric-label">Kuota Waktu Layar</span>
+                                <span class="metric-label">{{H("metric_quota")}}</span>
                                 <span class="metric-val" id="activeDayMinutes">--</span>
                             </div>
                             <div class="metric-box">
-                                <span class="metric-label">Rentang Jam Main</span>
+                                <span class="metric-label">{{H("metric_window")}}</span>
                                 <span class="metric-val" id="activeDayCurfew">--:--</span>
                             </div>
                         </div>
@@ -198,17 +208,53 @@ public static class RequestPage
             """;
         }
 
+        // The extension options and the schedule options, with the word forms of the preset.
+        var extOptions = new System.Text.StringBuilder();
+        foreach (var m in new[] { 15, 30, 60 })
+        {
+            var isChecked = m == 15 ? "checked " : "";
+            extOptions.Append($$"""
+                        <div class="radio-btn">
+                            <input type="radio" id="m{{m}}" name="minutes" value="{{m}}" {{isChecked}}{{disabledAttr}}>
+                            <label for="m{{m}}">+{{WebUtility.HtmlEncode(SessionTexts.Duration(sessionTexts, m))}}</label>
+                        </div>
+            """);
+        }
+        var schedOptions = new System.Text.StringBuilder();
+        foreach (var m in new[] { 60, 90, 120, 150, 180, 240 })
+        {
+            var isSelected = m == 120 ? " selected" : "";
+            schedOptions.Append($$"""<option value="{{m}}"{{isSelected}}>{{WebUtility.HtmlEncode(RequestPageTexts.MinutesText(texts, sessionTexts, m))}}</option>""");
+        }
+
+        // The texts of the JS code. JsonSerializer escapes quotes and <, > and &, so a text cannot end the string or the script.
+        var jsTexts = JsonSerializer.Serialize(new Dictionary<string, string>
+        {
+            ["timerOver"] = texts["timer_over"],
+            ["todaySuffix"] = texts["today_suffix"],
+            ["badgeException"] = texts["badge_exception"],
+            ["badgeCustom"] = texts["badge_custom"],
+            ["badgeStandard"] = texts["badge_standard"],
+            ["extSending"] = texts["ext_sending"],
+            ["extFailed"] = texts["ext_failed"],
+            ["extSubmit"] = texts["ext_submit"],
+            ["schedSending"] = texts["sched_sending"],
+            ["schedFailed"] = texts["sched_failed"],
+            ["schedSubmit"] = texts["sched_submit"],
+            ["connectFailed"] = texts["connect_failed"],
+        });
+
         var tomorrowDate = DateTime.Now.AddDays(1).ToString("yyyy-MM-dd");
         var minDate = DateTime.Now.ToString("yyyy-MM-dd");
         var maxDate = DateTime.Now.AddDays(7).ToString("yyyy-MM-dd");
 
         return $$"""
         <!DOCTYPE html>
-        <html lang="id">
+        <html lang="{{texts.Preset}}">
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Parental Control — Minta Waktu & Jadwal</title>
+            <title>{{H("page_title")}}</title>
             <style>
                 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
                 body {
@@ -629,17 +675,17 @@ public static class RequestPage
         <body>
             <div class="card">
                 <div class="header-row">
-                    <h1>🎮 Waktu Layar</h1>
+                    <h1>{{H("heading")}}</h1>
                     <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
                         {{sessionStatusBadge}}
-                        <div class="user-badge">Akun: <strong>{{usernameHtml}}</strong></div>
+                        <div class="user-badge">{{H("account")}} <strong>{{usernameHtml}}</strong></div>
                     </div>
                 </div>
 
                 <div class="timer-panel">
-                    <div class="timer-label">Sisa Waktu Penggunaan Hari Ini</div>
+                    <div class="timer-label">{{H("timer_label")}}</div>
                     <div class="timer-value" id="countdownTimer">--:--</div>
-                    <div class="timer-curfew">Jadwal Jam Malam: <strong>{{WebUtility.HtmlEncode(curfew)}}</strong></div>
+                    <div class="timer-curfew">{{H("timer_curfew")}} <strong>{{WebUtility.HtmlEncode(curfew)}}</strong></div>
                 </div>
 
                 {{declineBanner}}
@@ -652,83 +698,69 @@ public static class RequestPage
 
                 <!-- Form Tabs -->
                 <div class="tabs">
-                    <button type="button" class="tab-btn active" id="tabBtnExt" onclick="switchTab('ext')">⏱️ Tambah Waktu Hari Ini</button>
-                    <button type="button" class="tab-btn" id="tabBtnSched" onclick="switchTab('sched')">📅 Rencana Jadwal Mendatang</button>
+                    <button type="button" class="tab-btn active" id="tabBtnExt" onclick="switchTab('ext')">{{H("tab_extension")}}</button>
+                    <button type="button" class="tab-btn" id="tabBtnSched" onclick="switchTab('sched')">{{H("tab_schedule")}}</button>
                 </div>
 
                 <!-- Tab 1: Extension Form -->
                 <form id="formExt" onsubmit="submitExtension(event)">
-                    <label class="field-label">Pilih Tambahan Waktu:</label>
+                    <label class="field-label">{{H("ext_choose")}}</label>
                     <div class="radio-group">
-                        <div class="radio-btn">
-                            <input type="radio" id="m15" name="minutes" value="15" checked {{disabledAttr}}>
-                            <label for="m15">+15 Menit</label>
-                        </div>
-                        <div class="radio-btn">
-                            <input type="radio" id="m30" name="minutes" value="30" {{disabledAttr}}>
-                            <label for="m30">+30 Menit</label>
-                        </div>
-                        <div class="radio-btn">
-                            <input type="radio" id="m60" name="minutes" value="60" {{disabledAttr}}>
-                            <label for="m60">+1 Jam</label>
-                        </div>
+                        {{extOptions}}
                     </div>
 
                     <div class="form-group">
-                        <label for="extReason" class="field-label">Alasan meminta tambahan waktu:</label>
-                        <textarea id="extReason" placeholder="Contoh: Sedang menyelesaikan tugas sekolah, bermain game bersama teman..." required {{disabledAttr}}></textarea>
+                        <label for="extReason" class="field-label">{{H("ext_reason_label")}}</label>
+                        <textarea id="extReason" placeholder="{{H("ext_reason_placeholder")}}" required {{disabledAttr}}></textarea>
                     </div>
 
-                    <button type="submit" class="submit-btn" id="btnExt" {{disabledAttr}}>Kirim Permintaan ke Orang Tua</button>
+                    <button type="submit" class="submit-btn" id="btnExt" {{disabledAttr}}>{{H("ext_submit")}}</button>
                 </form>
 
                 <!-- Tab 2: Advance Schedule Change Form -->
                 <form id="formSched" style="display:none" onsubmit="submitScheduleChange(event)">
                     <div class="form-row">
                         <div>
-                            <label for="schedDate" class="field-label">Tanggal Sasaran:</label>
+                            <label for="schedDate" class="field-label">{{H("sched_date")}}</label>
                             <input type="date" id="schedDate" value="{{tomorrowDate}}" min="{{minDate}}" max="{{maxDate}}" required {{disabledAttr}}>
                         </div>
                         <div>
-                            <label for="schedMinutes" class="field-label">Kuota Total Diinginkan:</label>
+                            <label for="schedMinutes" class="field-label">{{H("sched_minutes")}}</label>
                             <select id="schedMinutes" {{disabledAttr}}>
-                                <option value="60">60 Menit (1 Jam)</option>
-                                <option value="90">90 Menit (1.5 Jam)</option>
-                                <option value="120" selected>120 Menit (2 Jam)</option>
-                                <option value="150">150 Menit (2.5 Jam)</option>
-                                <option value="180">180 Menit (3 Jam)</option>
-                                <option value="240">240 Menit (4 Jam)</option>
+                                {{schedOptions}}
                             </select>
                         </div>
                     </div>
 
                     <div class="form-row">
                         <div>
-                            <label for="schedStart" class="field-label">Jam Boleh Mulai:</label>
+                            <label for="schedStart" class="field-label">{{H("sched_start")}}</label>
                             <input type="time" id="schedStart" value="08:00" required {{disabledAttr}}>
                         </div>
                         <div>
-                            <label for="schedEnd" class="field-label">Jam Selesai (Malam):</label>
+                            <label for="schedEnd" class="field-label">{{H("sched_end")}}</label>
                             <input type="time" id="schedEnd" value="21:00" required {{disabledAttr}}>
                         </div>
                     </div>
 
                     <div class="form-group">
-                        <label for="schedReason" class="field-label">Alasan perubahan jadwal mendatang:</label>
-                        <textarea id="schedReason" placeholder="Contoh: Hari libur nasional, rencana belajar kelompok online, dll..." required {{disabledAttr}}></textarea>
+                        <label for="schedReason" class="field-label">{{H("sched_reason_label")}}</label>
+                        <textarea id="schedReason" placeholder="{{H("sched_reason_placeholder")}}" required {{disabledAttr}}></textarea>
                     </div>
 
-                    <button type="submit" class="submit-btn" id="btnSched" {{disabledAttr}}>Ajukan Perubahan Jadwal ke Orang Tua</button>
+                    <button type="submit" class="submit-btn" id="btnSched" {{disabledAttr}}>{{H("sched_submit")}}</button>
                 </form>
             </div>
 
             <script>
+                const T = {{jsTexts}};
+
                 // Countdown logic
                 let totalSecondsRemaining = {{remainingSeconds}};
                 const isSessionTicking = {{(isSessionActive && !isSessionLocked ? "true" : "false")}};
 
                 function formatTime(totalSec) {
-                    if (totalSec <= 0) return "00:00 (Habis)";
+                    if (totalSec <= 0) return "00:00 " + T.timerOver;
                     const hours = Math.floor(totalSec / 3600);
                     const minutes = Math.floor((totalSec % 3600) / 60);
                     const seconds = totalSec % 60;
@@ -766,28 +798,23 @@ public static class RequestPage
                     const minsElem = document.getElementById('activeDayMinutes');
                     const curfewElem = document.getElementById('activeDayCurfew');
 
-                    if (titleElem) titleElem.textContent = d.dayName + (d.isToday ? " (Hari Ini)" : "");
-                    if (subtitleElem) subtitleElem.textContent = d.hasException ? "• " + (d.exceptionNote || "Pengecualian") : "";
+                    if (titleElem) titleElem.textContent = d.dayName + (d.isToday ? " " + T.todaySuffix : "");
+                    if (subtitleElem) subtitleElem.textContent = d.hasException ? "• " + (d.exceptionNote || T.badgeException) : "";
 
                     if (badgeElem) {
                         if (d.hasException) {
-                            badgeElem.textContent = "Pengecualian";
+                            badgeElem.textContent = T.badgeException;
                             badgeElem.className = "badge-tag exception";
                         } else if (d.isCustom) {
-                            badgeElem.textContent = "Jadwal Khusus";
+                            badgeElem.textContent = T.badgeCustom;
                             badgeElem.className = "badge-tag custom";
                         } else {
-                            badgeElem.textContent = "Standar";
+                            badgeElem.textContent = T.badgeStandard;
                             badgeElem.className = "badge-tag";
                         }
                     }
 
-                    if (minsElem) {
-                        const h = Math.floor(d.minutes / 60);
-                        const m = d.minutes % 60;
-                        const hText = h > 0 ? (m > 0 ? `${h}j ${m}m` : `${h} Jam`) : `${m}m`;
-                        minsElem.textContent = `${d.minutes} Menit (${hText})`;
-                    }
+                    if (minsElem) minsElem.textContent = d.minutesText;
 
                     if (curfewElem) curfewElem.textContent = d.timeWindow;
 
@@ -832,7 +859,7 @@ public static class RequestPage
                     const btn = document.getElementById('btnExt');
                     const feedback = document.getElementById('feedback');
                     btn.disabled = true;
-                    btn.innerText = 'Mengirim Permintaan...';
+                    btn.innerText = T.extSending;
 
                     const minutes = document.querySelector('input[name="minutes"]:checked').value;
                     const reason = document.getElementById('extReason').value;
@@ -857,16 +884,16 @@ public static class RequestPage
                             document.getElementById('formSched').style.display = 'none';
                         } else {
                             feedback.className = 'banner banner-error';
-                            feedback.textContent = '❌ ' + (data.error || 'Gagal mengirim permintaan.');
+                            feedback.textContent = '❌ ' + (data.error || T.extFailed);
                             btn.disabled = false;
-                            btn.innerText = 'Kirim Permintaan ke Orang Tua';
+                            btn.innerText = T.extSubmit;
                         }
                     } catch (err) {
                         feedback.style.display = 'block';
                         feedback.className = 'banner banner-error';
-                        feedback.textContent = '❌ Gagal terhubung ke layanan parental control.';
+                        feedback.textContent = '❌ ' + T.connectFailed;
                         btn.disabled = false;
-                        btn.innerText = 'Kirim Permintaan ke Orang Tua';
+                        btn.innerText = T.extSubmit;
                     }
                 }
 
@@ -876,7 +903,7 @@ public static class RequestPage
                     const btn = document.getElementById('btnSched');
                     const feedback = document.getElementById('feedback');
                     btn.disabled = true;
-                    btn.innerText = 'Mengajukan Jadwal...';
+                    btn.innerText = T.schedSending;
 
                     const targetDate = document.getElementById('schedDate').value;
                     const minutes = document.getElementById('schedMinutes').value;
@@ -907,16 +934,16 @@ public static class RequestPage
                             document.getElementById('formSched').style.display = 'none';
                         } else {
                             feedback.className = 'banner banner-error';
-                            feedback.textContent = '❌ ' + (data.error || 'Gagal mengajukan jadwal.');
+                            feedback.textContent = '❌ ' + (data.error || T.schedFailed);
                             btn.disabled = false;
-                            btn.innerText = 'Ajukan Perubahan Jadwal ke Orang Tua';
+                            btn.innerText = T.schedSubmit;
                         }
                     } catch (err) {
                         feedback.style.display = 'block';
                         feedback.className = 'banner banner-error';
-                        feedback.textContent = '❌ Gagal terhubung ke layanan parental control.';
+                        feedback.textContent = '❌ ' + T.connectFailed;
                         btn.disabled = false;
-                        btn.innerText = 'Ajukan Perubahan Jadwal ke Orang Tua';
+                        btn.innerText = T.schedSubmit;
                     }
                 }
             </script>

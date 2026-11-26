@@ -275,20 +275,20 @@ public sealed class WebServerHost : BackgroundService
             var baseLimit = LimitRepository.GetByUserId(targetUser.Id);
             var customSchedules = ScheduleRepository.GetWeeklySchedule(targetUser.Id);
             var upcomingExceptions = ScheduleExceptionRepository.GetUpcomingForUser(targetUser.Id, today);
-            var defaultSummary = baseLimit != null
-                ? $"{baseLimit.DailyMinutes}m ({baseLimit.ScheduleStart:HH:mm}–{baseLimit.ScheduleEnd:HH:mm})"
-                : "120m (08:00–22:00)";
+            // The page shows its texts in the Language Preset. The preset comes only from app_settings.
+            var preset = SettingsRepository.GetLanguagePreset();
+            var pageTexts = RequestPageTexts.For(preset);
+            var sessionTexts = SessionTexts.For(preset);
+            var defaultSummary = pageTexts.Format("schedule_default",
+                ("minutes", baseLimit?.DailyMinutes ?? 120),
+                ("start", (baseLimit?.ScheduleStart ?? new TimeOnly(8, 0)).ToString("HH:mm")),
+                ("end", (baseLimit?.ScheduleEnd ?? new TimeOnly(22, 0)).ToString("HH:mm")));
 
-            var dayNames = new (DayOfWeek Day, string Code, string Name)[]
+            var dayNames = new[]
             {
-                (DayOfWeek.Monday, "Sen", "Senin"),
-                (DayOfWeek.Tuesday, "Sel", "Selasa"),
-                (DayOfWeek.Wednesday, "Rab", "Rabu"),
-                (DayOfWeek.Thursday, "Kam", "Kamis"),
-                (DayOfWeek.Friday, "Jum", "Jumat"),
-                (DayOfWeek.Saturday, "Sab", "Sabtu"),
-                (DayOfWeek.Sunday, "Min", "Minggu")
-            };
+                DayOfWeek.Monday, DayOfWeek.Tuesday, DayOfWeek.Wednesday, DayOfWeek.Thursday,
+                DayOfWeek.Friday, DayOfWeek.Saturday, DayOfWeek.Sunday
+            }.Select(d => (Day: d, Code: RequestPageTexts.DayCode(pageTexts, d), Name: SessionTexts.DayName(sessionTexts, d))).ToArray();
 
             var weeklySchedule = dayNames.Select(dn =>
             {
@@ -308,7 +308,7 @@ public sealed class WebServerHost : BackgroundService
                         mins = todayExc.DailyMinutes;
                         start = todayExc.ScheduleStart;
                         end = todayExc.ScheduleEnd;
-                        excNote = "Pengecualian Hari Ini";
+                        excNote = pageTexts["exception_today"];
                     }
                 }
 
@@ -326,6 +326,8 @@ public sealed class WebServerHost : BackgroundService
             }).ToList();
 
             var html = RequestPage.Render(
+                pageTexts,
+                sessionTexts,
                 targetUser.Username,
                 remaining,
                 remainingSeconds,
@@ -349,6 +351,8 @@ public sealed class WebServerHost : BackgroundService
         // User Grace Request Submission API
         app.MapPost("/api/request", async (HttpContext ctx) =>
         {
+            // The child sees these messages on the request page, so they follow the Language Preset.
+            var texts = RequestPageTexts.For(SettingsRepository.GetLanguagePreset());
             try
             {
                 using var reader = new StreamReader(ctx.Request.Body);
@@ -363,14 +367,14 @@ public sealed class WebServerHost : BackgroundService
                 {
                     if (minutes <= 0 || minutes > 480 || string.IsNullOrWhiteSpace(reason))
                     {
-                        return Results.BadRequest(new { error = "Jumlah menit tidak valid (1–480 menit) atau alasan harus diisi." });
+                        return Results.BadRequest(new { error = texts["api_invalid_schedule"] });
                     }
                 }
                 else
                 {
                     if (minutes <= 0 || minutes > 120 || string.IsNullOrWhiteSpace(reason))
                     {
-                        return Results.BadRequest(new { error = "Jumlah menit tidak valid (1–120 menit) atau alasan harus diisi." });
+                        return Results.BadRequest(new { error = texts["api_invalid_extension"] });
                     }
                 }
 
@@ -398,25 +402,25 @@ public sealed class WebServerHost : BackgroundService
 
                 if (user == null)
                 {
-                    return Results.BadRequest(new { error = "Pengguna terbatas tidak ditemukan." });
+                    return Results.BadRequest(new { error = texts["api_no_user"] });
                 }
 
                 // Check daily request limits and pending requests
                 var maxRequests = SettingsRepository.GetMaxDailyRequests();
                 if (maxRequests <= 0)
                 {
-                    return Results.BadRequest(new { error = "Permintaan tambahan waktu dinonaktifkan oleh administrator." });
+                    return Results.BadRequest(new { error = texts["api_disabled"] });
                 }
 
                 if (GraceRequestRepository.HasPendingRequest(user.Id, today))
                 {
-                    return Results.BadRequest(new { error = "Anda masih memiliki permintaan yang sedang menunggu keputusan administrator." });
+                    return Results.BadRequest(new { error = texts["api_pending"] });
                 }
 
                 var countToday = GraceRequestRepository.GetTodayRequestCount(user.Id, today);
                 if (countToday >= maxRequests)
                 {
-                    return Results.BadRequest(new { error = $"Anda telah mencapai batas maksimal ({maxRequests}) permintaan untuk hari ini." });
+                    return Results.BadRequest(new { error = texts.Format("api_max_reached", ("max", maxRequests)) });
                 }
 
                 // Check internet
@@ -431,7 +435,7 @@ public sealed class WebServerHost : BackgroundService
                     var targetDateStr = doc.RootElement.GetProperty("targetDate").GetString();
                     if (!DateOnly.TryParse(targetDateStr, out var targetDate))
                     {
-                        return Results.BadRequest(new { error = "Tanggal sasaran tidak valid." });
+                        return Results.BadRequest(new { error = texts["api_invalid_date"] });
                     }
 
                     var startStr = doc.RootElement.TryGetProperty("requestedStart", out var sProp) ? sProp.GetString() : null;
@@ -442,20 +446,21 @@ public sealed class WebServerHost : BackgroundService
                     var req = GraceRequestRepository.CreateScheduleChange(user.Id, today, targetDate, minutes, start, end, reason);
                     _ = _telegramBotService.SendGraceRequestAlertAsync(req, user.Username);
 
-                    return Results.Ok(new { success = true, message = $"Pengajuan jadwal baru untuk {targetDate:dd/MM/yyyy} ({minutes}m) berhasil dikirim ke orang tua." });
+                    return Results.Ok(new { success = true, message = texts.Format("api_schedule_sent",
+                        ("date", SessionTexts.FormatDate(SessionTexts.For(texts.Preset), targetDate)), ("minutes", minutes)) });
                 }
                 else
                 {
                     var req = GraceRequestRepository.Create(user.Id, today, minutes, reason);
                     _ = _telegramBotService.SendGraceRequestAlertAsync(req, user.Username);
 
-                    return Results.Ok(new { success = true, message = $"Permintaan tambahan waktu +{minutes} menit berhasil dikirim ke orang tua." });
+                    return Results.Ok(new { success = true, message = texts.Format("api_extension_sent", ("minutes", minutes)) });
                 }
             }
             catch (Exception ex)
             {
                 _logger.Error(ex, "Failed to process grace request submission");
-                return Results.BadRequest(new { error = "Permintaan tidak valid." });
+                return Results.BadRequest(new { error = texts["api_invalid"] });
             }
         });
 
