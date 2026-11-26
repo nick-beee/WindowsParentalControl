@@ -1021,8 +1021,10 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
 {
     var gateLogger = new Serilog.LoggerConfiguration().CreateLogger();
     var gateTelegram = new TelegramBotService(gateLogger);
-    var webHost = new ParentalControl.Service.Web.WebServerHost(
-        new ParentalControl.Service.SessionTracker(gateLogger), gateTelegram, gateLogger, new ForegroundHistory());
+    var gateTracker = new ParentalControl.Service.SessionTracker(gateLogger);
+    var gateHistory = new ForegroundHistory();
+    var webHost = new ParentalControl.Service.Web.WebServerHost(gateTracker, gateTelegram, gateLogger, gateHistory,
+        new ParentalControl.Service.CategoryEnforcer(gateTracker, gateHistory, gateTelegram, gateLogger));
     var webBuilder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder();
     Microsoft.AspNetCore.Hosting.HostingAbstractionsWebHostBuilderExtensions.UseUrls(webBuilder.WebHost, "http://127.0.0.1:0");
     var webApp = webBuilder.Build();
@@ -1195,6 +1197,8 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
     var svcLogger = new Serilog.LoggerConfiguration().CreateLogger();
     var svcTelegram = new TelegramBotService(svcLogger);
     var svcTracker = new ParentalControl.Service.SessionTracker(svcLogger);
+    var svcHistory = new ForegroundHistory();
+    var svcEnforcer = new ParentalControl.Service.CategoryEnforcer(svcTracker, svcHistory, svcTelegram, svcLogger);
     var noEvents = new List<int>();
     var fakePrep = new DataFolderPreparation(tempDir, tempDir, null, null, null, null, null);
 
@@ -1343,7 +1347,7 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
 
     // N-f: the web server starts again when it ends without an error while the service runs.
     {
-        var nfHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, new ForegroundHistory())
+        var nfHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, svcHistory, svcEnforcer)
         {
             RetryDelay = _ => TimeSpan.FromMilliseconds(20),
         };
@@ -1367,7 +1371,7 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
         alertHolder.ExclusiveAddressUse = true;
         alertHolder.Start();
         var alerts = 0;
-        var alertHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, new ForegroundHistory())
+        var alertHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, svcHistory, svcEnforcer)
         {
             Port = ((System.Net.IPEndPoint)alertHolder.LocalEndpoint).Port,
             RetryDelay = _ => TimeSpan.FromMilliseconds(100),
@@ -1399,7 +1403,7 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
     IReadOnlyList<int> lastRealOwners = Array.Empty<int>();
     var portRecords = new List<string?>();
     var squatAlerts = 0;
-    var retryHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, new ForegroundHistory(), squatGate)
+    var retryHost = new ParentalControl.Service.Web.WebServerHost(svcTracker, svcTelegram, svcLogger, svcHistory, svcEnforcer, squatGate)
     {
         Port = busyPort,
         RetryDelay = _ => TimeSpan.FromMilliseconds(200),
