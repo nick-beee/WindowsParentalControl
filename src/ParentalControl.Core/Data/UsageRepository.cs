@@ -35,6 +35,9 @@ public static class UsageRepository
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>Raised after Bonus Minutes are added (web admin, Telegram). The Category enforcer listens.</summary>
+    public static event Action? BonusMinutesAdded;
+
     public static void AddBonusMinutes(int userId, DateOnly date, int minutes)
     {
         using var connection = DatabaseManager.CreateConnection();
@@ -49,6 +52,7 @@ public static class UsageRepository
         cmd.Parameters.AddWithValue("@date", date.ToString("yyyy-MM-dd"));
         cmd.Parameters.AddWithValue("@minutes", minutes);
         cmd.ExecuteNonQuery();
+        BonusMinutesAdded?.Invoke();
     }
 
     public static void SetUsage(int userId, DateOnly date, int minutes)

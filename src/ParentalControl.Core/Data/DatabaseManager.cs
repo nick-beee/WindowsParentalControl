@@ -200,6 +200,43 @@ public static class DatabaseManager
                 answered_at TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS app_categories (
+                category TEXT PRIMARY KEY,
+                weekday_minutes INTEGER NULL,
+                weekend_minutes INTEGER NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS app_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                match_type TEXT NOT NULL CHECK (match_type IN ('file', 'folder')),
+                pattern TEXT NOT NULL,
+                category TEXT NOT NULL,
+                weekday_minutes INTEGER NULL,
+                weekend_minutes INTEGER NULL,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                UNIQUE (match_type, pattern COLLATE NOCASE)
+            );
+
+            CREATE TABLE IF NOT EXISTS category_usage (
+                user_id INTEGER NOT NULL,
+                date TEXT NOT NULL,
+                category TEXT NOT NULL,
+                minutes INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, date, category)
+            );
+
+            CREATE TABLE IF NOT EXISTS suspended_processes (
+                pid INTEGER NOT NULL,
+                start_time_utc TEXT NOT NULL,
+                session_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                category TEXT NOT NULL,
+                exe_path TEXT NOT NULL,
+                suspended_at TEXT NOT NULL,
+                PRIMARY KEY (pid, start_time_utc)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events (timestamp);
             CREATE INDEX IF NOT EXISTS idx_events_user_timestamp ON events (user_sid, timestamp);
             CREATE INDEX IF NOT EXISTS idx_grace_user_date ON grace_requests (user_id, date);
@@ -274,6 +311,9 @@ public static class DatabaseManager
             repairCmd.ExecuteNonQuery();
             repairTrans.Commit();
         }
+
+        // App Categories: default limits for missing categories; default rules one time only.
+        CategoryRepository.SeedIfNeeded(connection, CategoryRepository.LocalDefaultRuleFolders());
     }
 
     public static SqliteConnection CreateConnection()

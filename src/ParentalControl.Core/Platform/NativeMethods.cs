@@ -188,4 +188,27 @@ internal static class NativeMethods
         public int dwProcessId;
         public int dwThreadId;
     }
+
+    // Process access and suspension (App Category limits). A suspended process stays open.
+    internal const uint PROCESS_SUSPEND_RESUME = 0x0800;
+    internal const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern IntPtr OpenProcess(uint dwDesiredAccess, [MarshalAs(UnmanagedType.Bool)] bool bInheritHandle, int dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool QueryFullProcessImageNameW(IntPtr hProcess, int dwFlags, char[] lpExeName, ref int lpdwSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetProcessTimes(IntPtr hProcess, out long lpCreationTime, out long lpExitTime, out long lpKernelTime, out long lpUserTime);
+
+    /// <summary>Raises the suspend count of each thread of the process by one. Returns an NTSTATUS.</summary>
+    [DllImport("ntdll.dll")]
+    internal static extern int NtSuspendProcess(IntPtr processHandle);
+
+    /// <summary>Lowers the suspend count of each thread of the process by one. Returns an NTSTATUS.</summary>
+    [DllImport("ntdll.dll")]
+    internal static extern int NtResumeProcess(IntPtr processHandle);
 }

@@ -5,6 +5,7 @@ using ParentalControl.Core.Models;
 using ParentalControl.Core.Security;
 using ParentalControl.Core;
 using ParentalControl.Core.Services;
+using ParentalControl.Domain.Categories;
 
 Console.WriteLine("=== Running ParentalControl Self-Checks ===");
 
@@ -496,6 +497,140 @@ Debug.Assert(promptEvents.Any(e => e.EventType == EventType.PROMPT_SENT), "PROMP
 Debug.Assert(promptEvents.Any(e => e.EventType == EventType.PROMPT_ANSWERED), "PROMPT_ANSWERED should be in event log");
 Debug.Assert(promptEvents.Any(e => e.EventType == EventType.PROMPT_TIMEOUT), "PROMPT_TIMEOUT should be in event log");
 Console.WriteLine("✅ Interactive Session Prompts Repository & Presets Passed.");
+
+// App Categories: seed, limits, rules, Category Usage, suspension records (add-app-categories, group 4)
+{
+    var catToday = DateOnly.FromDateTime(DateTime.Now);
+
+    // Seed: seven categories, default limits, default rules, seed key.
+    var catLimits = CategoryRepository.GetLimits();
+    Debug.Assert(catLimits.Count == 7, "Seven categories should exist");
+    Debug.Assert(catLimits[AppCategory.Games] == new DailyLimit(120, 180), "Games default should be 120/180");
+    Debug.Assert(catLimits[AppCategory.Unknown] == new DailyLimit(120, 180), "Unknown default should be 120/180");
+    Debug.Assert(catLimits[AppCategory.Study].IsNone, "Study should have no limit");
+    Debug.Assert(catLimits[AppCategory.System].IsNone, "System should have no limit");
+    Debug.Assert(!string.IsNullOrEmpty(SettingsRepository.Get(CategoryRepository.KeyCategoriesSeeded)), "Seed key should be set");
+    using (var countConn = DatabaseManager.CreateConnection())
+    using (var countCmd = countConn.CreateCommand())
+    {
+        countCmd.CommandText = "SELECT COUNT(*) FROM app_categories";
+        Debug.Assert(Convert.ToInt32(countCmd.ExecuteScalar()) == 7, "Each category should exist one time");
+    }
+
+    var seededRules = AppRuleRepository.GetAllRows();
+    Debug.Assert(seededRules.Count > 0 && seededRules.All(r => r.IsDefault), "Default rules should be seeded and marked default");
+    var seededResolver = CategoryConfigCache.Current.Resolver;
+    var pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+    var winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+    Debug.Assert(seededResolver.Resolve(pf86 + @"\Steam\steamapps\common\Portal 2\portal2.exe").Category == AppCategory.Games, "Steam game should be in Games");
+    Debug.Assert(seededResolver.Resolve(@"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE").Category == AppCategory.Study, "Word should be in Study");
+    Debug.Assert(seededResolver.Resolve(winDir + @"\explorer.exe").Category == AppCategory.System, "Explorer should be in System");
+
+    // A changed limit and a deleted default rule survive a second Initialize().
+    CategoryRepository.SetLimit(AppCategory.Games, new DailyLimit(90, 180));
+    var wordRule = seededRules.Single(r => r.Rule.Pattern.Equals("WINWORD.EXE", StringComparison.OrdinalIgnoreCase));
+    Debug.Assert(AppRuleRepository.Delete(wordRule.Rule.Id), "Default Word rule should delete");
+    var rulesBefore = AppRuleRepository.GetAll().Count;
+    DatabaseManager.Initialize();
+    Debug.Assert(CategoryRepository.GetLimits()[AppCategory.Games].WeekdayMinutes == 90, "Changed Games limit should survive Initialize");
+    Debug.Assert(AppRuleRepository.GetAll().Count == rulesBefore, "Initialize should not add rules again");
+    Debug.Assert(AppRuleRepository.GetAll().All(r => !r.Pattern.Equals("WINWORD.EXE", StringComparison.OrdinalIgnoreCase)), "Deleted default rule should stay deleted");
+    Debug.Assert(CategoryConfigCache.Current.Resolver.Resolve(@"C:\Office\WINWORD.EXE").Category == AppCategory.Unknown, "Word should be Unknown without its rule");
+
+    // Limit validation.
+    var systemRefused = false;
+    try { CategoryRepository.SetLimit(AppCategory.System, new DailyLimit(10, 10)); } catch (ArgumentException) { systemRefused = true; }
+    Debug.Assert(systemRefused && CategoryRepository.GetLimits()[AppCategory.System].IsNone, "System limit should be refused");
+    var rangeRefused = false;
+    try { CategoryRepository.SetLimit(AppCategory.Games, new DailyLimit(2000, 180)); } catch (ArgumentException) { rangeRefused = true; }
+    Debug.Assert(rangeRefused && CategoryRepository.GetLimits()[AppCategory.Games].WeekdayMinutes == 90, "2000 minutes should be refused");
+    CategoryRepository.SetLimit(AppCategory.Video, DailyLimit.None);
+    Debug.Assert(CategoryRepository.GetLimits()[AppCategory.Video].IsNone, "No limit should persist as NULL");
+
+    // Rule CRUD with an App Limit.
+    var mcId = AppRuleRepository.Insert(RuleMatchType.File, " Minecraft.Test.exe ", AppCategory.Games, new DailyLimit(180, 240));
+    var mc = AppRuleRepository.GetById(mcId)!;
+    Debug.Assert(mc.Pattern == "Minecraft.Test.exe" && mc.AppLimit == new DailyLimit(180, 240), "Rule should store trimmed pattern and App Limit");
+    Debug.Assert(CategoryConfigCache.Current.Resolver.Resolve(@"C:\x\minecraft.test.exe").Rule?.Id == mcId, "Cache should see the new rule");
+    var duplicateRefused = false;
+    try { AppRuleRepository.Insert(RuleMatchType.File, "MINECRAFT.TEST.EXE", AppCategory.Video, null); } catch (InvalidOperationException) { duplicateRefused = true; }
+    Debug.Assert(duplicateRefused, "Duplicate pattern (other letter case) should be refused");
+    var invalidRefused = false;
+    try { AppRuleRepository.Insert(RuleMatchType.File, "x.exe", AppCategory.System, new DailyLimit(10, null)); } catch (ArgumentException) { invalidRefused = true; }
+    Debug.Assert(invalidRefused, "App Limit on System should be refused");
+    Debug.Assert(AppRuleRepository.Update(mcId, RuleMatchType.File, "Minecraft.Test.exe", AppCategory.Games, null), "Update should succeed");
+    Debug.Assert(AppRuleRepository.GetById(mcId)!.AppLimit is null, "Removed App Limit should be NULL");
+    var folderId = AppRuleRepository.Insert(RuleMatchType.Folder, @"C:\Kid Games", AppCategory.Games, null);
+    Debug.Assert(AppRuleRepository.GetById(folderId)!.Pattern == @"C:\Kid Games\", "Folder pattern should be stored canonical with trailing separator");
+    Debug.Assert(AppRuleRepository.Delete(mcId) && AppRuleRepository.Delete(folderId), "Delete should succeed");
+    Debug.Assert(AppRuleRepository.GetById(mcId) is null, "Deleted rule should be gone");
+
+    // Category Usage: 3 x 20 s = 1 minute, System never counts.
+    CategoryUsageRepository.ResetAccumulators();
+    Debug.Assert(CategoryUsageRepository.AddSeconds(user.Id, catToday, AppCategory.Games, 20) == 0, "20 s should not commit");
+    Debug.Assert(CategoryUsageRepository.AddSeconds(user.Id, catToday, AppCategory.Games, 20) == 0, "40 s should not commit");
+    Debug.Assert(CategoryUsageRepository.AddSeconds(user.Id, catToday, AppCategory.Games, 20) == 1, "60 s should commit 1 minute");
+    for (var i = 0; i < 6; i++) CategoryUsageRepository.AddSeconds(user.Id, catToday, AppCategory.System, 20);
+    var catUsage = CategoryUsageRepository.GetForUserAndDate(user.Id, catToday);
+    Debug.Assert(catUsage.GetValueOrDefault(AppCategory.Games) == 1, "Games usage should be 1 minute");
+    Debug.Assert(!catUsage.ContainsKey(AppCategory.System), "System should not be counted");
+
+    // Retention.
+    CategoryUsageRepository.AddMinutes(user.Id, catToday.AddDays(-40), AppCategory.Games, 5);
+    Debug.Assert(CategoryUsageRepository.DeleteOlderThan(catToday.AddDays(-DatabaseManager.RetentionDays)) == 1, "Old category usage should be deleted");
+    Debug.Assert(CategoryUsageRepository.GetForUserAndDate(user.Id, catToday).GetValueOrDefault(AppCategory.Games) == 1, "Today's usage should stay");
+
+    // Suspension records: the start time keeps full precision.
+    var startUtc = new DateTime(2026, 11, 25, 7, 30, 15, DateTimeKind.Utc).AddTicks(1234567);
+    var rec = new SuspensionRecord(4242, startUtc, 1, user.Id, AppCategory.Games, @"C:\Games\x.exe");
+    SuspensionRepository.Insert(rec);
+    SuspensionRepository.Insert(rec); // the same process again replaces the record
+    var recs = SuspensionRepository.GetAll();
+    Debug.Assert(recs.Count == 1 && recs[0] == rec, "Suspension record should round-trip exactly");
+    Debug.Assert(!SuspensionRepository.Delete(4242, startUtc.AddTicks(1)), "Another start time should not delete the record");
+    Debug.Assert(SuspensionRepository.Delete(4242, startUtc), "Delete by pid and start time should succeed");
+    Debug.Assert(SuspensionRepository.GetAll().Count == 0, "No records should remain");
+
+    CategoryRepository.SetLimit(AppCategory.Games, new DailyLimit(120, 180));
+    CategoryRepository.SetLimit(AppCategory.Video, new DailyLimit(120, 180));
+}
+Console.WriteLine("✅ App Categories, Rules, Category Usage & Suspension Records Passed.");
+
+// Process list, suspend and resume (add-app-categories, task 6.1)
+{
+    using var self = Process.GetCurrentProcess();
+    var ownSession = self.SessionId;
+    var listed = ProcessControl.ListProcesses(new HashSet<int> { ownSession });
+    var me = listed.SingleOrDefault(p => p.Pid == Environment.ProcessId);
+    Debug.Assert(me is not null, "The test process should be in the list of its session");
+    Debug.Assert(string.Equals(WindowsPath.Canonicalize(me!.ExePath), WindowsPath.Canonicalize(Environment.ProcessPath), StringComparison.OrdinalIgnoreCase),
+        $"The listed path should be the test exe path: {me.ExePath} vs {Environment.ProcessPath}");
+    Debug.Assert(me.StartTimeUtc == self.StartTime.ToUniversalTime(), "The listed start time should equal Process.StartTime");
+    Debug.Assert(!me.IsSuspended, "The test process should not be suspended");
+    Debug.Assert(ProcessControl.ListProcesses(new HashSet<int> { ownSession + 1000 }).Count == 0, "Another session should list nothing");
+
+    // A helper process: suspend, check, resume. It stays open the whole time.
+    using var helper = Process.Start(new ProcessStartInfo("ping.exe", "-n 120 127.0.0.1") { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true })!;
+    Thread.Sleep(500);
+    var (_, helperStart) = ProcessControl.QueryPathAndStart(helper.Id);
+    Debug.Assert(helperStart is not null, "Helper start time should be readable");
+    Debug.Assert(ProcessControl.Suspend(helper.Id, helperStart!.Value.AddTicks(1), out _) == ProcessOpResult.NotFound, "Wrong start time should refuse the suspend");
+    Debug.Assert(ProcessControl.Suspend(helper.Id, helperStart.Value, out var suspendDetail) == ProcessOpResult.Ok, "Suspend should succeed: " + suspendDetail);
+    Thread.Sleep(200);
+    var helperRow = ProcessControl.ListProcesses(new HashSet<int> { ownSession }).Single(p => p.Pid == helper.Id);
+    Debug.Assert(helperRow.IsSuspended, "Helper should show all threads suspended");
+    Debug.Assert(!helper.HasExited, "Suspended helper should still exist");
+    // A second suspend (count 2) and one Resume call: Resume repeats until no thread is suspended.
+    Debug.Assert(ProcessControl.Suspend(helper.Id, helperStart.Value, out _) == ProcessOpResult.Ok, "Second suspend should succeed");
+    Debug.Assert(ProcessControl.Resume(helper.Id, helperStart.Value, out var resumeDetail) == ProcessOpResult.Ok, "Resume should succeed: " + resumeDetail);
+    Thread.Sleep(200);
+    helperRow = ProcessControl.ListProcesses(new HashSet<int> { ownSession }).Single(p => p.Pid == helper.Id);
+    Debug.Assert(!helperRow.IsSuspended, "Helper should run again after resume");
+    try { helper.Kill(); } catch { } // the test's own helper, not a program of the child
+    helper.WaitForExit(5000);
+    Debug.Assert(ProcessControl.Resume(helper.Id, helperStart.Value, out _) != ProcessOpResult.Ok, "Resume of an ended process should report that it is gone");
+}
+Console.WriteLine("✅ Process List, Suspend & Resume Passed.");
 
 // Cleanup test user
 UserRepository.DeleteBySid(testSid);
