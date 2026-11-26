@@ -1107,7 +1107,7 @@ public sealed class WebServerHost : BackgroundService
                 {
                     _sessionTracker.EnsureAgentRunning(activeSession.SessionId);
 
-                    if (!SessionManager.IsProcessRunningInSession("ParentalControl.Agent", activeSession.SessionId))
+                    if (!_sessionTracker.IsAgentRunning(activeSession.SessionId))
                     {
                         var popupTitle = urgency == "URGENT" ? "🚨 Parental Control — Mendesak" : "Parental Control — Pesan";
                         NotificationManager.SendMessage(activeSession.SessionId, popupTitle, message, urgency == "URGENT", timeoutSeconds: 30);

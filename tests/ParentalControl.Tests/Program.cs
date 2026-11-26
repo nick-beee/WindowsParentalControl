@@ -161,8 +161,14 @@ Console.WriteLine("✅ 20-Second Telemetry Accumulation & Legacy Inflation Repai
 // 10. Test Session Enumeration & Curfew Countdown Clamping Logic
 var loggedOnSessions = SessionManager.GetLoggedOnSessions();
 Debug.Assert(loggedOnSessions != null, "GetLoggedOnSessions should return a non-null list");
-var runningCheck = SessionManager.IsProcessRunningInSession("NonExistentProcessName123", 0);
-Debug.Assert(!runningCheck, "Nonexistent process should not be reported as running");
+var runningCheck = SessionManager.FindProcessesByExeName(@"C:\Missing\NonExistentProcessName123.exe", 0);
+Debug.Assert(runningCheck.Count == 0, "Nonexistent process should not be reported as running");
+foreach (var (sid0, _, _, _) in loggedOnSessions)
+{
+    // The lock flag query must not throw. The value depends on the machine, so the test only prints it.
+    var (lockFlag, rawLockFlags) = SessionManager.QueryLockFlag(sid0);
+    Console.WriteLine($"Session {sid0}: lock flag {lockFlag} (SessionFlags {rawLockFlags?.ToString() ?? "n/a"})");
+}
 
 // Verify curfew clamping formula:
 // Case A: Curfew is earlier than daily quota
