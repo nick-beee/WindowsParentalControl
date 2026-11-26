@@ -230,15 +230,11 @@ public static class ProcessControl
     {
         try
         {
-            var threads = process.Threads;
-            if (threads.Count == 0)
-                return false;
-            foreach (ProcessThread thread in threads)
-            {
-                if (thread.ThreadState != System.Diagnostics.ThreadState.Wait || thread.WaitReason != ThreadWaitReason.Suspended)
-                    return false;
-            }
-            return true;
+            // WaitReason throws for a thread that does not wait, so read it only for a waiting thread.
+            var states = process.Threads.Cast<ProcessThread>()
+                .Select(t => (t.ThreadState, t.ThreadState == System.Diagnostics.ThreadState.Wait ? t.WaitReason : (ThreadWaitReason?)null))
+                .ToList();
+            return ThreadSuspension.AllSuspended(states);
         }
         catch (Exception)
         {
