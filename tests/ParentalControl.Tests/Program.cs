@@ -665,6 +665,7 @@ Console.WriteLine("✅ App Categories, Rules, Category Usage & Suspension Record
     Debug.Assert(ProcessControl.Resume(helper.Id, helperStart.Value, out _) != ProcessOpResult.Ok, "Resume of an ended process should report that it is gone");
 }
 Console.WriteLine("✅ Process List, Suspend & Resume Passed.");
+BlockedProgramChecks.RunProcess();
 
 // Admin sign-in storage and start check (require-admin-sign-in, tasks 3.1 and 3.3)
 {

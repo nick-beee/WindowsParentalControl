@@ -16,9 +16,10 @@ public enum ProcessOpResult
 }
 
 /// <summary>
-/// Lists the processes of sessions and suspends or resumes a process.
-/// It never closes or kills a process. The pid and the start time identify a process,
-/// because Windows reuses pids.
+/// Lists the processes of sessions and suspends or resumes a process. The pid and the start time identify
+/// a process, because Windows reuses pids.
+/// It closes a process only in <see cref="Terminate"/>, and only the block enforcer calls that method,
+/// for a Blocked Start. A limit, a break or a schedule end never closes a program.
 /// </summary>
 public static class ProcessControl
 {
@@ -75,7 +76,7 @@ public static class ProcessControl
 
     /// <summary>Suspends the process if it still has the expected start time.</summary>
     public static ProcessOpResult Suspend(int pid, DateTime expectedStartUtc, out string detail) =>
-        WithVerifiedHandle(pid, expectedStartUtc, out detail, handle =>
+        WithVerifiedHandle(pid, expectedStartUtc, NativeMethods.PROCESS_SUSPEND_RESUME, out detail, handle =>
         {
             var status = NativeMethods.NtSuspendProcess(handle);
             return status >= 0 ? (ProcessOpResult.Ok, "")
@@ -89,7 +90,7 @@ public static class ProcessControl
     /// (at most 10 calls).
     /// </summary>
     public static ProcessOpResult Resume(int pid, DateTime expectedStartUtc, out string detail) =>
-        WithVerifiedHandle(pid, expectedStartUtc, out detail, handle =>
+        WithVerifiedHandle(pid, expectedStartUtc, NativeMethods.PROCESS_SUSPEND_RESUME, out detail, handle =>
         {
             for (var i = 0; i < MaxResumeCalls; i++)
             {
@@ -102,11 +103,88 @@ public static class ProcessControl
             return (ProcessOpResult.Ok, "");
         });
 
-    private static ProcessOpResult WithVerifiedHandle(int pid, DateTime expectedStartUtc, out string detail,
+    /// <summary>
+    /// Closes the process if it still has the expected start time. This is the only close of a program of the child:
+    /// the block enforcer calls it for a Blocked Start, and no other code calls it.
+    /// </summary>
+    public static ProcessOpResult Terminate(int pid, DateTime expectedStartUtc, out string detail) =>
+        WithVerifiedHandle(pid, expectedStartUtc, NativeMethods.PROCESS_TERMINATE, out detail, handle =>
+        {
+            if (NativeMethods.TerminateProcess(handle, 1))
+                return (ProcessOpResult.Ok, "");
+            var error = Marshal.GetLastWin32Error();
+            return (error == ErrorAccessDenied ? ProcessOpResult.AccessDenied : ProcessOpResult.Failed,
+                $"TerminateProcess: {new Win32Exception(error).Message} ({error})");
+        });
+
+    /// <summary>The command line of a process, or null. The text is untrusted.</summary>
+    public static string? QueryCommandLine(int pid)
+    {
+        var handle = NativeMethods.OpenProcess(NativeMethods.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (handle == IntPtr.Zero)
+            return null;
+        try
+        {
+            var size = 1024;
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                var buffer = Marshal.AllocHGlobal(size);
+                try
+                {
+                    var status = NativeMethods.NtQueryInformationProcess(handle, NativeMethods.ProcessCommandLineInformation, buffer, size, out var needed);
+                    if (status is NativeMethods.StatusInfoLengthMismatch or NativeMethods.StatusBufferTooSmall or NativeMethods.StatusBufferOverflow)
+                    {
+                        size = Math.Max(needed, size * 2);
+                        continue;
+                    }
+                    if (status < 0)
+                        return null;
+                    var text = Marshal.PtrToStructure<NativeMethods.UNICODE_STRING>(buffer);
+                    return text.Buffer == IntPtr.Zero ? "" : Marshal.PtrToStringUni(text.Buffer, text.Length / 2);
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(buffer);
+                }
+            }
+            return null;
+        }
+        finally
+        {
+            NativeMethods.CloseHandle(handle);
+        }
+    }
+
+    /// <summary>
+    /// The pid of the process that created this process, or null. The parent can have ended, and Windows can
+    /// reuse its pid: compare the start time of the parent with the start time of the process.
+    /// </summary>
+    public static int? QueryParentPid(int pid)
+    {
+        var handle = NativeMethods.OpenProcess(NativeMethods.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (handle == IntPtr.Zero)
+            return null;
+        var size = Marshal.SizeOf<NativeMethods.PROCESS_BASIC_INFORMATION>();
+        var buffer = Marshal.AllocHGlobal(size);
+        try
+        {
+            var status = NativeMethods.NtQueryInformationProcess(handle, NativeMethods.ProcessBasicInformation, buffer, size, out _);
+            if (status < 0)
+                return null;
+            var info = Marshal.PtrToStructure<NativeMethods.PROCESS_BASIC_INFORMATION>(buffer);
+            return (int)info.InheritedFromUniqueProcessId.ToInt64();
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+            NativeMethods.CloseHandle(handle);
+        }
+    }
+
+    private static ProcessOpResult WithVerifiedHandle(int pid, DateTime expectedStartUtc, uint access, out string detail,
         Func<IntPtr, (ProcessOpResult, string)> action)
     {
-        var handle = NativeMethods.OpenProcess(
-            NativeMethods.PROCESS_SUSPEND_RESUME | NativeMethods.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        var handle = NativeMethods.OpenProcess(access | NativeMethods.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
         if (handle == IntPtr.Zero)
         {
             var error = Marshal.GetLastWin32Error();

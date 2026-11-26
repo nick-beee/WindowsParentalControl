@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Microsoft.Data.Sqlite;
 using ParentalControl.Core.Data;
 using ParentalControl.Core.Models;
+using ParentalControl.Core.Platform;
 using ParentalControl.Domain.Categories;
 
 /// <summary>Self-checks of change add-blocked-programs. Program.cs calls them; a failed Debug.Assert stops the run.</summary>
@@ -81,6 +82,31 @@ internal static class BlockedProgramChecks
         // 5.1 and 5.4: a database of stage 1 gets both columns, keeps its rows, and gets the browser seed one time.
         CheckStageOneMigration();
         Console.WriteLine("✅ Blocked Programs: Data Passed.");
+    }
+
+    /// <summary>Tasks 6.2 and 6.3: the close with the pid and start time check, the command line and the parent pid.</summary>
+    public static void RunProcess()
+    {
+        using var helper = Process.Start(new ProcessStartInfo("ping.exe", "-n 30 127.0.0.1")
+            { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true })!;
+        Thread.Sleep(500);
+        var (_, helperStart) = ProcessControl.QueryPathAndStart(helper.Id);
+        Debug.Assert(helperStart is not null, "Helper start time should be readable");
+
+        var commandLine = ProcessControl.QueryCommandLine(helper.Id);
+        Debug.Assert(commandLine is not null && commandLine.Contains("-n 30"), $"Command line should contain -n 30: {commandLine}");
+        Debug.Assert(ProcessControl.QueryParentPid(helper.Id) == Environment.ProcessId, "The parent pid of the helper should be the test process");
+        Debug.Assert(SilentStartClassifier.Classify(commandLine) == default, "A ping command line should not be silent");
+
+        Debug.Assert(ProcessControl.Terminate(helper.Id, helperStart!.Value.AddTicks(1), out _) == ProcessOpResult.NotFound,
+            "Terminate with a wrong start time should report NotFound");
+        Thread.Sleep(200);
+        Debug.Assert(!helper.HasExited, "The helper should still run after a refused Terminate");
+        Debug.Assert(ProcessControl.Terminate(helper.Id, helperStart.Value, out var detail) == ProcessOpResult.Ok, "Terminate should succeed: " + detail);
+        Debug.Assert(helper.WaitForExit(5000), "The helper should end after Terminate");
+        Debug.Assert(ProcessControl.Terminate(helper.Id, helperStart.Value, out _) != ProcessOpResult.Ok, "Terminate of an ended process should not report Ok");
+        Debug.Assert(ProcessControl.QueryCommandLine(helper.Id) is null || helper.HasExited, "An ended process has no readable command line");
+        Console.WriteLine("✅ Blocked Programs: Terminate, Command Line & Parent Pid Passed.");
     }
 
     private static void CheckStageOneMigration()

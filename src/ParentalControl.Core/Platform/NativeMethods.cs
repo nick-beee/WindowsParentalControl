@@ -190,6 +190,8 @@ internal static class NativeMethods
     }
 
     // Process access and suspension (App Category limits). A suspended process stays open.
+    // PROCESS_TERMINATE is for the close of a Blocked Start only (ProcessControl.Terminate).
+    internal const uint PROCESS_TERMINATE = 0x0001;
     internal const uint PROCESS_SUSPEND_RESUME = 0x0800;
     internal const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 
@@ -211,4 +213,42 @@ internal static class NativeMethods
     /// <summary>Lowers the suspend count of each thread of the process by one. Returns an NTSTATUS.</summary>
     [DllImport("ntdll.dll")]
     internal static extern int NtResumeProcess(IntPtr processHandle);
+
+    /// <summary>
+    /// Ends a process. Only ProcessControl.Terminate calls it, and only for a Blocked Start (add-blocked-programs).
+    /// A limit, a break or a schedule end never closes a program.
+    /// </summary>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
+
+    internal const int ProcessBasicInformation = 0;
+    internal const int ProcessCommandLineInformation = 60;
+    internal const int StatusInfoLengthMismatch = unchecked((int)0xC0000004);
+    internal const int StatusBufferTooSmall = unchecked((int)0xC0000023);
+    internal const int StatusBufferOverflow = unchecked((int)0x80000005);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct PROCESS_BASIC_INFORMATION
+    {
+        public IntPtr ExitStatus;
+        public IntPtr PebBaseAddress;
+        public IntPtr AffinityMask;
+        public IntPtr BasePriority;
+        public IntPtr UniqueProcessId;
+        public IntPtr InheritedFromUniqueProcessId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct UNICODE_STRING
+    {
+        public ushort Length;
+        public ushort MaximumLength;
+        public IntPtr Buffer;
+    }
+
+    /// <summary>Reads process information. Returns an NTSTATUS.</summary>
+    [DllImport("ntdll.dll")]
+    internal static extern int NtQueryInformationProcess(IntPtr processHandle, int processInformationClass,
+        IntPtr processInformation, int processInformationLength, out int returnLength);
 }
