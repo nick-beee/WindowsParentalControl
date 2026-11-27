@@ -30,6 +30,26 @@ public static class LaunchEnvironment
         return result;
     }
 
+    /// <summary>
+    /// The entries for the Session Probe: the environment block of its SYSTEM token, or, if
+    /// <c>CreateEnvironmentBlock</c> failed (<paramref name="tokenEntries"/> is null), the environment of the service
+    /// itself, which is also SYSTEM. Both go through <see cref="Build"/>, so the probe never gets a removed variable.
+    /// The Session Agent has no such fallback: the environment of the service is not that of the user.
+    /// </summary>
+    /// <param name="serviceVariables">The variables of the service (<c>Environment.GetEnvironmentVariables()</c>).</param>
+    public static IReadOnlyList<string> BuildForProbe(IReadOnlyList<string>? tokenEntries, System.Collections.IDictionary serviceVariables) =>
+        Build(tokenEntries ?? FromVariables(serviceVariables), forProbe: true);
+
+    /// <summary>The entries <c>NAME=value</c> of a variable table, sorted by name without letter case, as Windows
+    /// keeps an environment block.</summary>
+    public static IReadOnlyList<string> FromVariables(System.Collections.IDictionary variables) =>
+        variables.Keys.Cast<object>()
+            .Select(key => key?.ToString() ?? "")
+            .Where(name => name.Length > 0)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .Select(name => $"{name}={variables[name]}")
+            .ToList();
+
     /// <summary>The Unicode environment block for <c>CreateProcessAsUserW</c>: each entry ends with a NUL, and one
     /// more NUL ends the block.</summary>
     public static string ToBlock(IReadOnlyList<string> entries) =>

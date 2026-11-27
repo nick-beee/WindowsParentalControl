@@ -66,6 +66,21 @@ internal static class ProcessLauncher
         }
     }
 
+    /// <summary>The environment entries of a token, or null with the error if <c>CreateEnvironmentBlock</c> fails.</summary>
+    internal static List<string>? TryEnvironmentOf(IntPtr token, out string? error)
+    {
+        error = null;
+        try
+        {
+            return EnvironmentOf(token);
+        }
+        catch (Win32Exception ex)
+        {
+            error = $"{ex.Message} ({ex.NativeErrorCode})";
+            return null;
+        }
+    }
+
     /// <summary>The string SID of the user of a token.</summary>
     internal static string TokenUserSid(IntPtr token)
     {
@@ -88,7 +103,8 @@ internal static class ProcessLauncher
     }
 
     /// <summary>
-    /// Starts <paramref name="exePath"/> with the token. Throws <see cref="Win32Exception"/> on a failure.
+    /// Starts <paramref name="exePath"/> with the token. Throws <see cref="Win32Exception"/> on a failure. If the start
+    /// time of the new process cannot be read, it ends the process and throws.
     /// </summary>
     /// <param name="arguments">The arguments; <see cref="HandlePlaceholder"/> becomes the value of the inherited handle.</param>
     /// <param name="inheritHandle">The one handle that the process inherits, or <see cref="IntPtr.Zero"/> for none.</param>
@@ -161,10 +177,16 @@ internal static class ProcessLauncher
 
                     NativeMethods.CloseHandle(info.hThread);
                     var handle = new SafeProcessHandle(info.hProcess, ownsHandle: true);
-                    var start = NativeMethods.GetProcessTimes(info.hProcess, out var creation, out _, out _, out _)
-                        ? DateTime.FromFileTimeUtc(creation)
-                        : DateTime.UtcNow;
-                    return new LaunchedProcess(handle, info.dwProcessId, start, userSid);
+                    // The start time is half of the identity of the process. Without it the launch fails: the
+                    // process ends, so no process runs without its launch record (no UtcNow fallback).
+                    if (!NativeMethods.GetProcessTimes(info.hProcess, out var creation, out _, out _, out _))
+                    {
+                        var error = Marshal.GetLastWin32Error();
+                        NativeMethods.TerminateProcess(info.hProcess, 1);
+                        handle.Dispose();
+                        throw new Win32Exception(error, "GetProcessTimes");
+                    }
+                    return new LaunchedProcess(handle, info.dwProcessId, DateTime.FromFileTimeUtc(creation), userSid);
                 }
                 finally
                 {

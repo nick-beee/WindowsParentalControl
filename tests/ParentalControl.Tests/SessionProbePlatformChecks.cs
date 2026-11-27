@@ -69,7 +69,7 @@ internal static class SessionProbePlatformChecks
         var skipped = lines.Any(l => l.StartsWith("SKIP", StringComparison.Ordinal));
         var onCi = Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true";
         Debug.Assert(!skipped || onCi, "The SessionSystemProcess checks need a console session outside CI");
-        Debug.Assert(passed == (skipped ? 12 : 24), $"The probe self-checks should give {(skipped ? 12 : 24)} passes, gave {passed}");
+        Debug.Assert(passed == (skipped ? 14 : 26), $"The probe self-checks should give {(skipped ? 14 : 26)} passes, gave {passed}");
         Console.WriteLine("✅ Session Probe platform (SeDebugPrivilege, ReadSampleEntry, WebView2 creator, SessionSystemProcess) Passed.");
     }
 
@@ -111,6 +111,7 @@ internal static class SessionProbePlatformChecks
         {
             Check(WindowsIdentity.GetCurrent().User?.Value == SessionSystemProcess.SystemSid, "host runs as SYSTEM", WindowsIdentity.GetCurrent().User?.Value ?? "");
             ReadSampleEntryChecks();
+            DebugPrivilegeMonitorCheck();
             CreatorChecks();
             SystemProcessChecks();
         }
@@ -185,6 +186,49 @@ internal static class SessionProbePlatformChecks
         Thread.Sleep(300);
         var ended = ProcessControl.ReadSampleEntry(endedPid, endedTid, 0);
         Check(ended.Outcome == EntryOutcome.Ended, "an ended process gives Ended", $"{ended.Outcome} {ended.Detail}");
+
+        // Review S2: the process exited, but this host keeps a handle to its process and to its thread, so both
+        // objects stay. The entry must still give Ended, not Unreadable.
+        using (var held = StartHidden(System32("PING.EXE"), "-n 2 127.0.0.1"))
+        {
+            Thread.Sleep(300);
+            held.Refresh();
+            var heldPid = held.Id;
+            var heldTid = held.Threads[0].Id;
+            var heldSession = held.SessionId;
+            var threadHandle = TestProbeNative.OpenThread(0x0800 /* THREAD_QUERY_LIMITED_INFORMATION */, false, heldTid);
+            var processHandle = TestProbeNative.OpenProcess(0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, false, heldPid);
+            try
+            {
+                held.WaitForExit();
+                Thread.Sleep(300);
+                var exited = ProcessControl.ReadSampleEntry(heldPid, heldTid, heldSession);
+                Check(threadHandle != IntPtr.Zero && processHandle != IntPtr.Zero && exited.Outcome == EntryOutcome.Ended,
+                    "an exited process with its handles still open elsewhere gives Ended",
+                    $"{exited.Outcome} {exited.Detail} thread handle {threadHandle != IntPtr.Zero} process handle {processHandle != IntPtr.Zero}");
+            }
+            finally
+            {
+                if (threadHandle != IntPtr.Zero) TestProbeNative.CloseHandle(threadHandle);
+                if (processHandle != IntPtr.Zero) TestProbeNative.CloseHandle(processHandle);
+            }
+        }
+    }
+
+    // Review S6: the service enables SeDebugPrivilege before the next hosted service starts, not later in ExecuteAsync.
+    private static void DebugPrivilegeMonitorCheck()
+    {
+        TestProbeNative.SetDebugPrivilege(false);
+        var before = TestProbeNative.DebugPrivilegeEnabled();
+        var logger = new Serilog.LoggerConfiguration().CreateLogger();
+        var outbox = new ParentalControl.Service.ParentAlertOutbox((_, _) => Task.FromResult(true), () => null, logger);
+        using var monitor = new ParentalControl.Service.DebugPrivilegeMonitor(logger, outbox);
+        var start = monitor.StartAsync(CancellationToken.None);
+        var after = TestProbeNative.DebugPrivilegeEnabled();
+        Check(!before && after, "DebugPrivilegeMonitor enables SeDebugPrivilege before StartAsync returns", $"before {before}, after {after}");
+        start.Wait(TimeSpan.FromSeconds(5));
+        monitor.StopAsync(CancellationToken.None).Wait(TimeSpan.FromSeconds(5));
+        if (!TestProbeNative.DebugPrivilegeEnabled()) TestProbeNative.SetDebugPrivilege(true);
     }
 
     // Task 3.1: the creator of a trusted WebView2 (a test child stands for msedgewebview2.exe).
@@ -376,6 +420,9 @@ internal static class TestProbeNative
     public static extern IntPtr OpenThread(uint access, bool inherit, int threadId);
 
     [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr OpenProcess(uint access, bool inherit, int processId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool CloseHandle(IntPtr handle);
 
     [DllImport("kernel32.dll")]
@@ -422,6 +469,38 @@ internal static class TestProbeNative
             if (!LookupPrivilegeValueW(null, "SeDebugPrivilege", out var luid)) throw new Win32Exception();
             var state = new TokenPrivilege { Count = 1, Luid = luid, Attributes = enable ? 0x2u : 0u };
             if (!AdjustTokenPrivileges(token, false, ref state, 0, IntPtr.Zero, IntPtr.Zero)) throw new Win32Exception();
+        }
+        finally
+        {
+            CloseHandle(token);
+        }
+    }
+
+    /// <summary>True if SeDebugPrivilege is in the token of this process and enabled.</summary>
+    public static bool DebugPrivilegeEnabled()
+    {
+        if (!OpenProcessToken(GetCurrentProcess(), 0x0008, out var token)) return false;
+        try
+        {
+            if (!LookupPrivilegeValueW(null, "SeDebugPrivilege", out var debug)) return false;
+            GetTokenInformation(token, 3 /* TokenPrivileges */, IntPtr.Zero, 0, out var size);
+            var buffer = Marshal.AllocHGlobal(size);
+            try
+            {
+                if (!GetTokenInformation(token, 3, buffer, size, out _)) return false;
+                var count = Marshal.ReadInt32(buffer);
+                for (var i = 0; i < count; i++)
+                {
+                    // LUID_AND_ATTRIBUTES: an 8-byte LUID and 4 bytes of attributes; SE_PRIVILEGE_ENABLED is 0x2.
+                    if (Marshal.ReadInt64(buffer, 4 + i * 12) == debug)
+                        return (Marshal.ReadInt32(buffer, 4 + i * 12 + 8) & 0x2) != 0;
+                }
+                return false;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
         }
         finally
         {

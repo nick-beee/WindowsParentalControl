@@ -9,6 +9,11 @@ namespace ParentalControl.Service;
 /// D3b). With it the service reads, lists and suspends a process of the child also if the child removed SYSTEM from
 /// its DACL. If the enable fails, the service logs an error and alerts the parent at most once per day of the Control
 /// Time Zone, and tries again every hour.
+/// <para>
+/// The first enable runs synchronously in <see cref="StartAsync"/>. The host starts the hosted services in the order
+/// of registration, and <see cref="BackgroundService.ExecuteAsync"/> can run fully asynchronously, so an enable in it
+/// can come after <c>StartupWorker</c> and the first reads of the processes of the child (review S6).
+/// </para>
 /// </summary>
 public sealed class DebugPrivilegeMonitor : BackgroundService
 {
@@ -17,6 +22,7 @@ public sealed class DebugPrivilegeMonitor : BackgroundService
     private readonly Serilog.ILogger _logger;
     private readonly ParentAlertOutbox _alerts;
     private readonly OncePerDay _dailyAlert = new();
+    private bool _enabledAtStart;
 
     public DebugPrivilegeMonitor(Serilog.ILogger logger, ParentAlertOutbox alerts)
     {
@@ -24,14 +30,22 @@ public sealed class DebugPrivilegeMonitor : BackgroundService
         _alerts = alerts;
     }
 
+    /// <summary>Enables the privilege before the next hosted service starts; then starts the hourly retry if needed.</summary>
+    public override Task StartAsync(CancellationToken cancellationToken)
+    {
+        _enabledAtStart = TryEnable();
+        return base.StartAsync(cancellationToken);
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (_enabledAtStart) return;
         try
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                if (TryEnable()) return;
                 await Task.Delay(RetryInterval, stoppingToken);
+                if (TryEnable()) return;
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

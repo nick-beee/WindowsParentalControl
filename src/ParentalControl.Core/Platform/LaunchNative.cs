@@ -151,6 +151,17 @@ internal static class LaunchNative
     [DllImport("kernel32.dll", SetLastError = true)]
     internal static extern int GetProcessIdOfThread(IntPtr thread);
 
+    /// <summary>The exit code of a thread or a process that still runs.</summary>
+    internal const uint STILL_ACTIVE = 259;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetExitCodeThread(IntPtr thread, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool ProcessIdToSessionId(int processId, out int sessionId);

@@ -10,6 +10,11 @@ public sealed record AgentLaunchRecord(int SessionId, ProcessIdentity Process, s
 /// One launch record per session (design D9). The service starts an agent if the session has no record or if the
 /// process of its record ended, and never while it runs. A process of the child with the agent name or the agent exe
 /// has no record, so it never counts as the agent. The registry is thread-safe.
+/// <para>
+/// Each call is thread-safe, but the sequence <see cref="ShouldStart"/>, the launch, then <see cref="Record"/> is not
+/// atomic. The caller must serialize this sequence per session (task group 5 does that). Else two threads can both
+/// get true from <see cref="ShouldStart"/> and start two agents, and the record keeps only the second one.
+/// </para>
 /// </summary>
 public sealed class AgentLaunchRegistry
 {

@@ -16,17 +16,17 @@ public enum ProcessOpResult
     Failed,
 }
 
+/// <summary>The read of one entry of a Session Probe sample (session-probe-and-agent-channel, design D3b).</summary>
+/// <param name="StartAfterSample">The start time is more than 1 s after the converted sample time: only a sign of a
+/// clock step for one log line, never a change of the outcome (S14).</param>
+public sealed record SampleEntryRead(EntryOutcome Outcome, ProcessIdentity Process, string? ExePath, string Detail, bool StartAfterSample = false);
+
 /// <summary>
 /// Lists the processes of sessions and suspends or resumes a process. The pid and the start time identify
 /// a process, because Windows reuses pids.
 /// It closes a process only in <see cref="Terminate"/>, and only the block enforcer calls that method,
 /// for a Blocked Start. A limit, a break or a schedule end never closes a program.
 /// </summary>
-/// <summary>The read of one entry of a Session Probe sample (session-probe-and-agent-channel, design D3b).</summary>
-/// <param name="StartAfterSample">The start time is more than 1 s after the converted sample time: only a sign of a
-/// clock step for one log line, never a change of the outcome (S14).</param>
-public sealed record SampleEntryRead(EntryOutcome Outcome, ProcessIdentity Process, string? ExePath, string Detail, bool StartAfterSample = false);
-
 public static class ProcessControl
 {
     /// <summary>The most parent steps from a trusted WebView2 process to its creator (design D5, S16).</summary>
@@ -73,8 +73,9 @@ public static class ProcessControl
     /// <paramref name="pid"/>, and the process must run in <paramref name="sessionId"/>.
     /// <list type="bullet">
     /// <item>Read: the exe path and the start time.</item>
-    /// <item>Ended: the thread or the process does not exist (<c>ERROR_INVALID_PARAMETER</c>), or the thread belongs
-    /// to another process.</item>
+    /// <item>Ended: the thread or the process does not exist (<c>ERROR_INVALID_PARAMETER</c>), it exited but another
+    /// handle keeps its object (the exit code is not <c>STILL_ACTIVE</c>), or the thread belongs to another
+    /// process.</item>
     /// <item>Unreadable: access denied, a process of another session, or no path or start time.</item>
     /// </list>
     /// No start-time test decides the outcome.
@@ -89,8 +90,15 @@ public static class ProcessControl
             return new SampleEntryRead(error == ErrorInvalidParameter ? EntryOutcome.Ended : EntryOutcome.Unreadable, default, null, $"OpenThread {error}");
         }
         int owner;
-        try { owner = LaunchNative.GetProcessIdOfThread(thread); }
+        bool threadExited;
+        try
+        {
+            threadExited = HasExited(LaunchNative.GetExitCodeThread(thread, out var threadCode), threadCode);
+            owner = LaunchNative.GetProcessIdOfThread(thread);
+        }
         finally { NativeMethods.CloseHandle(thread); }
+        if (threadExited)
+            return new SampleEntryRead(EntryOutcome.Ended, default, null, $"thread {tid} exited");
         if (owner != pid)
             return new SampleEntryRead(EntryOutcome.Ended, default, null, $"thread {tid} belongs to process {owner}");
 
@@ -102,6 +110,9 @@ public static class ProcessControl
         }
         try
         {
+            // An exited process whose object another handle keeps: Ended, not Unreadable (review S2).
+            if (HasExited(LaunchNative.GetExitCodeProcess(handle, out var processCode), processCode))
+                return new SampleEntryRead(EntryOutcome.Ended, default, null, $"process {pid} exited");
             if (!LaunchNative.ProcessIdToSessionId(pid, out var processSession))
                 return new SampleEntryRead(EntryOutcome.Unreadable, default, null, $"ProcessIdToSessionId {Marshal.GetLastWin32Error()}");
             if (processSession != sessionId)
@@ -150,6 +161,9 @@ public static class ProcessControl
         }
         return WebView2Creator.NotAttributed;
     }
+
+    // True only if the exit-code call worked and gave another code than STILL_ACTIVE. A failed call decides nothing.
+    private static bool HasExited(bool queried, uint exitCode) => queried && exitCode != LaunchNative.STILL_ACTIVE;
 
     private const int ErrorAccessDenied = 5;
     private const int ErrorInvalidParameter = 87;

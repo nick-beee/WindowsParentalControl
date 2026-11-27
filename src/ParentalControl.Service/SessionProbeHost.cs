@@ -346,7 +346,12 @@ public sealed class SessionProbeHost : BackgroundService
             using (pipeWrite)
             {
                 var args = "--pipe " + ProcessLauncherPlaceholder + (_testArgs.Length > 0 ? " " + _testArgs : "");
-                launched = SessionSystemProcess.Start(sessionId, exe, args, pipeWrite.DangerousGetHandle());
+                launched = SessionSystemProcess.Start(sessionId, exe, args, pipeWrite.DangerousGetHandle(), envError =>
+                {
+                    if (_daily.Take("probe-environment", ControlTime.Current.Today))
+                        _logger.Warning("Session Probe: {Error}; the probe of session {SessionId} gets the environment of the service",
+                            envError, sessionId);
+                });
             }
             // The service copy of the write end is closed now: the read breaks when the probe ends.
 

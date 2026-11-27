@@ -27,6 +27,7 @@ public sealed class SessionTracker
     private readonly ConcurrentDictionary<int, DateTime> _lastUnlockRejectNotification = new();
     private volatile bool _isAwake = true;
     private readonly Serilog.ILogger _logger;
+    private readonly WarningLimit _launchWarnings = new();
     private readonly TelegramBotService? _telegramBotService;
     private readonly BreakEnforcer? _breakEnforcer;
     private readonly UsageLedger _ledger = UsageLedger.Shared;
@@ -620,9 +621,12 @@ public sealed class SessionTracker
             {
                 _logger.Information("Successfully launched Agent in session {SessionId} ({Path}, pid {Pid})", sessionId, agentPath, launched.Pid);
             }
-            else
+            else if (_launchWarnings.Take($"{sessionId}:{error}", TimeSpan.FromMilliseconds(Environment.TickCount64), out var suppressed))
             {
-                _logger.Warning("Failed to launch Agent in session {SessionId}: {Error}", sessionId, error);
+                // The start stays failed (for example if CreateEnvironmentBlock fails), but the same warning of a
+                // session logs at most once in 10 minutes.
+                _logger.Warning("Failed to launch Agent in session {SessionId}: {Error} ({Suppressed} same warnings left out)",
+                    sessionId, error, suppressed);
             }
         }
         catch (Exception ex)

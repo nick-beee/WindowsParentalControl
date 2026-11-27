@@ -13,7 +13,8 @@ namespace ParentalControl.Core.Platform;
 /// proved that the probe still samples and writes its pipe with it).</item>
 /// <item><c>TokenSessionId</c> of the session (needs <c>SeTcbPrivilege</c> in the service) and a SYSTEM-only
 /// <c>TokenDefaultDacl</c>, so each object of the process is closed to the child.</item>
-/// <item>The environment of SYSTEM, never that of the child, without runtime variables and with
+/// <item>The environment of SYSTEM (the block of the token, else the environment of the service), never that of the
+/// child, without runtime variables and with
 /// <c>DOTNET_EnableDiagnostics=0</c> and <c>DOTNET_DISABLE_GUI_ERRORS=1</c>.</item>
 /// <item>A SYSTEM-only DACL on the process and its first thread; <c>DETACHED_PROCESS</c> (no console and no console
 /// host, S13); <c>HIGH_PRIORITY_CLASS</c>; no Job Object (N17); the folder of the exe as the working folder.</item>
@@ -30,12 +31,17 @@ public static class SessionSystemProcess
     /// <param name="arguments">The arguments; <c>{handle}</c> becomes the value of the inherited handle.</param>
     /// <param name="inheritHandle">The one handle that the process inherits (the write end of its pipe), or
     /// <see cref="IntPtr.Zero"/>.</param>
-    public static LaunchedProcess Start(int sessionId, string exePath, string? arguments, IntPtr inheritHandle)
+    /// <param name="environmentWarning">Gets the error if <c>CreateEnvironmentBlock</c> fails; the start then uses the
+    /// environment of the service itself (also SYSTEM), through <see cref="LaunchEnvironment.BuildForProbe"/>.</param>
+    public static LaunchedProcess Start(int sessionId, string exePath, string? arguments, IntPtr inheritHandle,
+        Action<string>? environmentWarning = null)
     {
         var token = CreateToken(sessionId);
         try
         {
-            var environment = LaunchEnvironment.Build(ProcessLauncher.EnvironmentOf(token), forProbe: true);
+            var entries = ProcessLauncher.TryEnvironmentOf(token, out var envError);
+            if (entries is null) environmentWarning?.Invoke(envError ?? "CreateEnvironmentBlock failed");
+            var environment = LaunchEnvironment.BuildForProbe(entries, Environment.GetEnvironmentVariables());
             var folder = Path.GetDirectoryName(exePath) ?? throw new ArgumentException("The exe path has no folder.", nameof(exePath));
             return ProcessLauncher.Launch(token, exePath, arguments, inheritHandle,
                 LaunchNative.DETACHED_PROCESS | LaunchNative.HIGH_PRIORITY_CLASS, environment, systemOnlyObjects: true, folder);
