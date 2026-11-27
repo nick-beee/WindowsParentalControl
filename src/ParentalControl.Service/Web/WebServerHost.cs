@@ -36,8 +36,9 @@ public sealed class WebServerHost : BackgroundService
     private readonly AdminAccessService _adminAccess;
     // The Session Probe host writes the live activity (session-probe-and-agent-channel D5); no agent route does.
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string ProcessName, string WindowTitle, DateTime LastSeen)> _liveActivities = LiveActivities.Shared;
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CaptureCommandState> _captureStates = new(StringComparer.OrdinalIgnoreCase);
-    public static event Action<ScreenCaptureRecord>? OnCaptureReceived;
+    // The capture commands of the parent; the status answer of the Agent Channel reads them (AgentRequests).
+    private readonly AgentRequests _agentRequests;
+    private System.Collections.Concurrent.ConcurrentDictionary<string, CaptureCommandState> _captureStates => _agentRequests.CaptureStates;
     private readonly Dictionary<int, (int Files, long Bytes)> _captureReservations = new();
     private readonly CaptureRefusalLog _captureRefusals = new();
 
@@ -92,9 +93,10 @@ public sealed class WebServerHost : BackgroundService
     /// <param name="sessionLocker">The shared locker of the service (dependency injection), or null in a test.</param>
     public WebServerHost(SessionTracker sessionTracker, TelegramBotService telegramBotService, Serilog.ILogger logger,
         ForegroundHistory foregroundHistory, CategoryEnforcer categoryEnforcer, BreakEnforcer breakEnforcer,
-        ServiceStartup? startup = null, SessionLocker? sessionLocker = null)
+        ServiceStartup? startup = null, SessionLocker? sessionLocker = null, AgentRequests? agentRequests = null)
     {
         _sessionLocker = sessionLocker ?? new SessionLocker(logger);
+        _agentRequests = agentRequests ?? new AgentRequests(sessionTracker, categoryEnforcer, _sessionLocker, telegramBotService, logger);
         _startup = startup;
         _sessionTracker = sessionTracker;
         _telegramBotService = telegramBotService;
@@ -1069,7 +1071,7 @@ public sealed class WebServerHost : BackgroundService
                 _logger.Information("Screen capture recorded for {Username} ({Width}x{Height}, {Bytes} bytes, Trigger: {Trigger})",
                     user.Username, record.Width, record.Height, record.FileSizeBytes, record.TriggerType);
 
-                OnCaptureReceived?.Invoke(record);
+                AgentRequests.RaiseCaptureReceived(record);
 
                 return Results.Ok(new { id = record.Id, path = record.FilePath });
             }
@@ -2345,7 +2347,7 @@ public sealed class WebServerHost : BackgroundService
             }
         }
 
-        OnCaptureReceived += Handler;
+        AgentRequests.CaptureReceived += Handler;
         try
         {
             var state = _captureStates.GetOrAdd(user.Username, _ => new CaptureCommandState());
@@ -2363,15 +2365,7 @@ public sealed class WebServerHost : BackgroundService
         }
         finally
         {
-            OnCaptureReceived -= Handler;
+            AgentRequests.CaptureReceived -= Handler;
         }
     }
-
-public sealed class CaptureCommandState
-{
-    public bool CaptureRequested { get; set; }
-    public bool WatchMode { get; set; }
-    public DateTime WatchExpiresAt { get; set; }
-    public string Trigger { get; set; } = "MANUAL";
-}
 }

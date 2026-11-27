@@ -27,7 +27,7 @@ public sealed class SessionTracker
     private readonly ConcurrentDictionary<int, DateTime> _lastUnlockRejectNotification = new();
     private volatile bool _isAwake = true;
     private readonly Serilog.ILogger _logger;
-    private readonly WarningLimit _launchWarnings = new();
+    private IAgentStarter? _agentStarter;
     private readonly TelegramBotService? _telegramBotService;
     private readonly BreakEnforcer? _breakEnforcer;
     private readonly UsageLedger _ledger = UsageLedger.Shared;
@@ -567,72 +567,25 @@ public sealed class SessionTracker
         }
     }
 
+    /// <summary>Connects the starter of the Session Agent (<see cref="AgentChannelHost"/>), after the host is built.</summary>
+    public void AttachAgentStarter(IAgentStarter starter) => _agentStarter = starter;
+
     /// <summary>
-    /// True if the Session Agent runs in the session: a process in that session from the agent exe of this installation.
-    /// A process with the same name from another path is not the agent.
+    /// True if the Session Agent that the service started in the session still runs (its launch record, design D9).
+    /// A process of the child with the agent name or the agent exe is not the agent.
     /// </summary>
-    public bool IsAgentRunning(int sessionId)
-    {
-        var agentPath = GetAgentExecutablePath();
-        return agentPath != null && FindAgent(sessionId, agentPath).AgentPids.Count > 0;
-    }
+    public bool IsAgentRunning(int sessionId) => _agentStarter?.IsRunning(sessionId) ?? false;
 
-    private static (List<int> AgentPids, List<(int Pid, string? ImagePath)> Others) FindAgent(int sessionId, string agentPath)
-    {
-        var agents = new List<int>();
-        var others = new List<(int, string?)>();
-        foreach (var (pid, imagePath) in SessionManager.FindProcessesByExeName(agentPath, sessionId))
-        {
-            if (SessionAgentMatch.IsSessionAgent(sessionId, imagePath, sessionId, agentPath))
-                agents.Add(pid);
-            else
-                others.Add((pid, imagePath));
-        }
-        return (agents, others);
-    }
-
+    /// <summary>
+    /// Starts the Session Agent with an Agent Channel if the session has no running agent of the service (design D7,
+    /// D9). Never throws.
+    /// </summary>
     public void EnsureAgentRunning(int sessionId)
     {
-        try
-        {
-            var agentPath = GetAgentExecutablePath();
-            if (agentPath == null)
-            {
-                _logger.Warning("Agent executable not found; cannot launch in session {SessionId}", sessionId);
-                return;
-            }
-
-            var (agentPids, others) = FindAgent(sessionId, agentPath);
-            if (agentPids.Count > 0)
-            {
-                return;
-            }
-
-            foreach (var (pid, imagePath) in others)
-            {
-                // The agent takes a mutex per user name, so a process with the agent name can stop the real agent.
-                _logger.Warning("Process {Pid} in session {SessionId} has the agent name but is not the agent exe ({ImagePath})",
-                    pid, sessionId, imagePath ?? "path not readable");
-            }
-
-            // The handle is not kept yet: the Agent Channel (task 5.1) keeps it in the launch record.
-            using var launched = SessionManager.LaunchProcessInSession(sessionId, agentPath, null, IntPtr.Zero, out var error);
-            if (launched is not null)
-            {
-                _logger.Information("Successfully launched Agent in session {SessionId} ({Path}, pid {Pid})", sessionId, agentPath, launched.Pid);
-            }
-            else if (_launchWarnings.Take($"{sessionId}:{error}", TimeSpan.FromMilliseconds(Environment.TickCount64), out var suppressed))
-            {
-                // The start stays failed (for example if CreateEnvironmentBlock fails), but the same warning of a
-                // session logs at most once in 10 minutes.
-                _logger.Warning("Failed to launch Agent in session {SessionId}: {Error} ({Suppressed} same warnings left out)",
-                    sessionId, error, suppressed);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.Error(ex, "Error launching Agent in session {SessionId}", sessionId);
-        }
+        if (_agentStarter is { } starter)
+            starter.EnsureRunning(sessionId);
+        else
+            _logger.Debug("No agent starter attached; the agent of session {SessionId} does not start", sessionId);
     }
 
     internal static string? GetAgentExecutablePath()

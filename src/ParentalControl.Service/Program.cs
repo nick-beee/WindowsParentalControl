@@ -36,6 +36,10 @@ builder.Services.AddHostedService<UsageMonitorWorker>();
 // session, power and shutdown events to it.
 builder.Services.AddSingleton<SessionProbeHost>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SessionProbeHost>());
+// session-probe-and-agent-channel D7, D9: the Session Agent of each session and its private Agent Channel.
+builder.Services.AddSingleton<AgentRequests>();
+builder.Services.AddSingleton<AgentChannelHost>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AgentChannelHost>());
 builder.Services.AddHostedService<TelegramWorker>();
 builder.Services.AddHostedService<WebServerHost>();
 builder.Services.AddHostedService<WebView2RuntimeMonitor>();
@@ -61,6 +65,10 @@ using var host = builder.Build();
 
 // Only connects the Telegram callbacks. TelegramWorker waits for the start gate before it reads a command.
 host.Services.GetRequiredService<BreakEnforcer>().AttachTelegram();
+
+// The session tracker starts the Session Agent through the Agent Channel host. A late attach avoids a cycle of the
+// dependencies; StartupWorker reads the sessions only after the start gate.
+host.Services.GetRequiredService<AgentChannelHost>().Attach();
 
 // control-clock D1: the Control Time Zone before any worker reads a day key. It needs the registry only, not the database.
 host.Services.GetRequiredService<ControlTimeService>().Refresh();
