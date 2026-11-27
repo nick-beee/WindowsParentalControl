@@ -2045,7 +2045,7 @@ public sealed class WebServerHost : BackgroundService
             var dateText = ctx.Request.Query["date"].ToString();
             DateOnly date;
             if (string.IsNullOrWhiteSpace(dateText))
-                date = DateOnly.FromDateTime(DateTime.Now);
+                date = ControlTime.Current.Today;
             else if (!DateOnly.TryParseExact(dateText, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture,
                          System.Globalization.DateTimeStyles.None, out date))
                 return Results.BadRequest(new { error = "date must be yyyy-MM-dd." });
