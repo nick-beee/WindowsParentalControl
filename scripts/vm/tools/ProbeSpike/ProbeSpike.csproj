@@ -8,6 +8,11 @@
     <StartupHookSupport>false</StartupHookSupport>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
+  <!-- The test switches (probeArgs, channel=on, the crash and hang switches of the probe) exist only in a build for
+       VM 102: dotnet publish -p:VmTest=true. The build for the child's PC (task 9.1) has none of them. -->
+  <PropertyGroup Condition="'$(VmTest)' == 'true'">
+    <DefineConstants>$(DefineConstants);VM_TEST</DefineConstants>
+  </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.1" />
   </ItemGroup>

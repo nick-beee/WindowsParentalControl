@@ -8,7 +8,7 @@ using static Native;
 // of the child, writes one JSON line per sample to the inherited pipe handle, and exits when the pipe breaks.
 // Spike-only fields (not in the design): u (unbiased ms), cls (class of fg), vis (windows visited), dur (ms of the
 // sample), cms (ms of WindowFromPoint), steps/chainProcs of the cursor chain, deskErr (error codes).
-// Test switches: hang=<s> blocks the sampler after s seconds; failfast=<s>; throw=<s>; fixed=<ms> fixed interval.
+// Test switches (only in a build with VM_TEST, -p:VmTest=true): hang=<s> blocks the sampler after s seconds; failfast=<s>; throw=<s>; fixed=<ms> fixed interval.
 internal static class Probe
 {
     private static IntPtr _pipe;
@@ -20,10 +20,15 @@ internal static class Probe
         SetErrorMode(0x0001 | 0x0002 | 0x8000); // SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX
         var dllOk = SetDefaultDllDirectories(0x00000800 | 0x00000200); // SYSTEM32 | APPLICATION_DIR
         _pipe = (IntPtr)long.Parse(Program.Arg(args, "--pipe"));
+#if VM_TEST
         var hang = int.TryParse(Program.Kv(args, "hang"), out var h) ? h : -1;
         var failfast = int.TryParse(Program.Kv(args, "failfast"), out var f) ? f : -1;
         var throwAt = int.TryParse(Program.Kv(args, "throw"), out var th) ? th : -1;
         var fixedMs = int.TryParse(Program.Kv(args, "fixed"), out var fx) ? fx : -1;
+#else
+        // A build without VM_TEST (the child's PC, task 9.1) has no test switch.
+        const int hang = -1, fixedMs = -1;
+#endif
         var started = Environment.TickCount64;
 
         Write(new Dictionary<string, object?>
@@ -32,8 +37,10 @@ internal static class Probe
                       $"diag={Environment.GetEnvironmentVariable("DOTNET_EnableDiagnostics") ?? "-"} prio={System.Diagnostics.Process.GetCurrentProcess().PriorityClass}"
         });
 
+#if VM_TEST
         if (failfast >= 0) new Thread(() => { Thread.Sleep(failfast * 1000); Environment.FailFast("spike failfast"); }) { IsBackground = true }.Start();
         if (throwAt >= 0) new Thread(() => { Thread.Sleep(throwAt * 1000); throw new InvalidOperationException("spike throw"); }) { IsBackground = true }.Start();
+#endif
 
         var sampler = new Thread(() => SampleLoop(started, hang, fixedMs)) { IsBackground = false };
         sampler.SetApartmentState(ApartmentState.MTA);

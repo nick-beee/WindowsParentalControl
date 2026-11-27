@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.ServiceProcess;
 using System.Text;
 using System.Text.Json;
@@ -9,13 +11,34 @@ using static Native;
 
 // The spike service. It runs as LocalSystem, starts the probe in each session of the user in the config, reads the
 // lines, reads each entry as design D3b states, and logs it. Config: C:\ProgramData\probespike\host.conf, key=value:
-//   user=Kid  probeArgs=<args>  debugPriv=on|off  writeRestricted=on|off  create=detached|nowindow
-//   channel=on|off (task 1.1: start a client as the user and one as SYSTEM, each with a private named pipe)
+//   user=Kid  debugPriv=on|off  writeRestricted=on|off  create=detached|nowindow
 //   restart=on|off (restart after an end with 1, 2, 5 s; watchdog 30 s without a line)
+//   Only in a build with VM_TEST (dotnet publish -p:VmTest=true, VM 102 only):
+//   probeArgs=<args> (test switches of the probe)  channel=on|off (task 1.1: a client as the user and one as SYSTEM)
 // Log: C:\ProgramData\probespike\host.log.
+//
+// Safety (task 9.1, the child's PC): before it reads or writes anything, the service creates its folder with an ACL
+// for SYSTEM and Administrators only (owner SYSTEM, protected, no inheritance). It refuses to start if the folder
+// exists with another owner, an inherited ACL or an entry for another account, or if its own install folder or exe
+// can be changed by an account that is not SYSTEM, Administrators or TrustedInstaller. It starts the probe only from
+// its own install folder. So a standard user cannot make this SYSTEM service run an exe of its choice. A folder that
+// an older spike build left behind fails the check: delete it as an administrator, and the service creates it again.
 internal sealed class Host : ServiceBase
 {
     private const string Dir = @"C:\ProgramData\probespike";
+    private const string ExeName = "ProbeSpike.exe";
+
+    private static readonly SecurityIdentifier SystemSid = new(WellKnownSidType.LocalSystemSid, null);
+    private static readonly SecurityIdentifier AdminsSid = new(WellKnownSidType.BuiltinAdministratorsSid, null);
+    private static readonly SecurityIdentifier CreatorOwnerSid = new(WellKnownSidType.CreatorOwnerSid, null);
+    private static readonly SecurityIdentifier TrustedInstallerSid = new("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
+
+    // Rights that let an account change a file or folder (GENERIC_WRITE and GENERIC_ALL for inherit-only entries).
+    private const FileSystemRights WriteRights = FileSystemRights.WriteData | FileSystemRights.AppendData |
+        FileSystemRights.WriteExtendedAttributes | FileSystemRights.WriteAttributes | FileSystemRights.Delete |
+        FileSystemRights.DeleteSubdirectoriesAndFiles | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership |
+        (FileSystemRights)0x40000000 | (FileSystemRights)0x10000000;
+
     private static StreamWriter? _log;
     private Dictionary<string, string> _conf = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<int, ProbeRun> _runs = new();
@@ -41,18 +64,115 @@ internal sealed class Host : ServiceBase
 
     protected override void OnStart(string[] args)
     {
-        Directory.CreateDirectory(Dir);
-        _log = new StreamWriter(new FileStream(Path.Combine(Dir, "host.log"), FileMode.Append, FileAccess.Write, FileShare.ReadWrite)) { AutoFlush = true };
+        // Throw before any read or write. ServiceBase writes the message to the Application event log.
+        var installProblem = InstallProblem();
+        if (installProblem != null) throw new InvalidOperationException($"ProbeSpike refuses to start: {installProblem}");
+        SecureDataFolder();
+        _log =new StreamWriter(new FileStream(Path.Combine(Dir, "host.log"), FileMode.Append, FileAccess.Write, FileShare.ReadWrite)) { AutoFlush = true };
         var conf = Path.Combine(Dir, "host.conf");
         if (File.Exists(conf))
             foreach (var l in File.ReadAllLines(conf))
                 if (l.Contains('=')) _conf[l[..l.IndexOf('=')].Trim()] = l[(l.IndexOf('=') + 1)..].Trim();
-        Log($"service start conf=[{string.Join("; ", _conf.Select(kv => kv.Key + "=" + kv.Value))}]");
+        Log($"service start conf=[{string.Join("; ", _conf.Select(kv => kv.Key + "=" + kv.Value))}] vmTest={VmTest}");
+        if (!VmTest && (_conf.ContainsKey("probeArgs") || _conf.ContainsKey("channel")))
+            Log("probeArgs and channel are ignored: this build has no VM_TEST");
         if (C("debugPriv", "on") == "on") Log($"SeDebugPrivilege: {EnablePrivilege("SeDebugPrivilege")}");
         if (C("debugPriv", "on") == "disable") Log($"SeDebugPrivilege disable: {EnablePrivilege("SeDebugPrivilege", 0)}");
         foreach (var s in Sessions()) if (s.user.Equals(C("user", "Kid"), StringComparison.OrdinalIgnoreCase)) StartProbe(s.id, "service start");
         _timer = new Timer(_ => Tick(), null, 60_000, 60_000);
         _watchdog = new Timer(_ => Watchdog(), null, 5_000, 5_000);
+    }
+
+#if VM_TEST
+    private const bool VmTest = true;
+#else
+    private const bool VmTest = false;
+#endif
+
+    // ---------- folder safety (task 9.1) ----------
+
+    // Creates Dir with owner SYSTEM and a protected DACL for SYSTEM and Administrators only, or checks the Dir that exists.
+    private static void SecureDataFolder()
+    {
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW("O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", 1, out var sd, out _))
+            throw new Win32Exception();
+        var sa = new SECURITY_ATTRIBUTES { nLength = Marshal.SizeOf<SECURITY_ATTRIBUTES>(), lpSecurityDescriptor = sd };
+        var created = CreateDirectoryW(Dir, ref sa);
+        var err = created ? 0 : Marshal.GetLastWin32Error();
+        LocalFree(sd);
+        if (!created && err != 183 /* ERROR_ALREADY_EXISTS */) throw new Win32Exception(err, $"ProbeSpike cannot create {Dir}");
+        var problem = DataFolderProblem();
+        if (problem != null)
+            throw new InvalidOperationException($"ProbeSpike refuses to start: {Dir} {problem}. Delete it as an administrator; the service creates it again.");
+    }
+
+    // The folder and each file in it: no link, owner SYSTEM or Administrators, allow entries only for these two.
+    // The folder itself must also have a protected DACL without inherited entries.
+    private static string? DataFolderProblem()
+    {
+        try
+        {
+            var dir = new DirectoryInfo(Dir);
+            var problem = AclProblem(dir, dir.GetAccessControl(AccessControlSections.Owner | AccessControlSections.Access), folder: true);
+            if (problem != null) return problem;
+            foreach (var entry in dir.EnumerateFileSystemInfos())
+            {
+                FileSystemSecurity sec = entry is DirectoryInfo d
+                    ? d.GetAccessControl(AccessControlSections.Owner | AccessControlSections.Access)
+                    : ((FileInfo)entry).GetAccessControl(AccessControlSections.Owner | AccessControlSections.Access);
+                problem = AclProblem(entry, sec, folder: false);
+                if (problem != null) return $"has {entry.Name}, which {problem}";
+            }
+            return null;
+        }
+        catch (Exception ex) { return $"cannot be checked ({ex.GetType().Name}: {ex.Message})"; }
+    }
+
+    private static string? AclProblem(FileSystemInfo item, FileSystemSecurity sec, bool folder)
+    {
+        if ((item.Attributes & FileAttributes.ReparsePoint) != 0) return "is a link";
+        var owner = sec.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        if (owner == null || (owner != SystemSid && owner != AdminsSid)) return $"has the owner {owner}";
+        if (folder && !sec.AreAccessRulesProtected) return "inherits its ACL";
+        foreach (FileSystemAccessRule r in sec.GetAccessRules(true, true, typeof(SecurityIdentifier)))
+        {
+            if (r.AccessControlType != AccessControlType.Allow) continue;
+            if (folder && r.IsInherited) return "has an inherited entry";
+            var sid = (SecurityIdentifier)r.IdentityReference;
+            if (sid != SystemSid && sid != AdminsSid) return $"gives access to {sid}";
+        }
+        return null;
+    }
+
+    // The install folder and the exe: owner SYSTEM, Administrators or TrustedInstaller, and no other account (except
+    // CREATOR OWNER, which applies only to items that an account creates there) has a right to change them.
+    private static string? InstallProblem()
+    {
+        try
+        {
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            var exe = new FileInfo(Path.Combine(dir.FullName, ExeName));
+            var problem = InstallAclProblem(dir, dir.GetAccessControl(AccessControlSections.Owner | AccessControlSections.Access));
+            if (problem != null) return $"the install folder {dir.FullName} {problem}";
+            problem = InstallAclProblem(exe, exe.GetAccessControl(AccessControlSections.Owner | AccessControlSections.Access));
+            return problem == null ? null : $"{exe.FullName} {problem}";
+        }
+        catch (Exception ex) { return $"the install folder cannot be checked ({ex.GetType().Name}: {ex.Message})"; }
+    }
+
+    private static string? InstallAclProblem(FileSystemInfo item, FileSystemSecurity sec)
+    {
+        if ((item.Attributes & FileAttributes.ReparsePoint) != 0) return "is a link";
+        var owner = sec.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        if (owner == null || (owner != SystemSid && owner != AdminsSid && owner != TrustedInstallerSid)) return $"has the owner {owner}";
+        foreach (FileSystemAccessRule r in sec.GetAccessRules(true, true, typeof(SecurityIdentifier)))
+        {
+            if (r.AccessControlType != AccessControlType.Allow || (r.FileSystemRights & WriteRights) == 0) continue;
+            var sid = (SecurityIdentifier)r.IdentityReference;
+            if (sid != SystemSid && sid != AdminsSid && sid != TrustedInstallerSid && sid != CreatorOwnerSid)
+                return $"can be changed by {sid}";
+        }
+        return null;
     }
 
     private Timer? _watchdog;
@@ -162,7 +282,9 @@ internal sealed class Host : ServiceBase
             if (_stopping || _runs.ContainsKey(session)) return;
             try
             {
+#if VM_TEST
                 if (C("channel", "off") == "on") ChannelTest(session);
+#endif
                 var run = LaunchProbe(session);
                 _runs[session] = run;
                 Log($"probe started ({why}) session={session} pid={run.Pid} handle={run.ChildHandle}");
@@ -203,9 +325,15 @@ internal sealed class Host : ServiceBase
         var token = SystemTokenForSession(session, C("writeRestricted", "off") == "on");
         Log($"probe token privileges={TokenPrivilegeCount(token)} user={TokenUserSid(token)}");
         var env = EnvBlock(token, null);
-        var exe = Path.Combine(C("probeDir", AppContext.BaseDirectory), "ProbeSpike.exe");
+        // Only the exe of the install folder that InstallProblem checked at the start.
+        var exe = Path.Combine(AppContext.BaseDirectory, ExeName);
         var flags = C("create", "detached") == "nowindow" ? CREATE_NO_WINDOW : DETACHED_PROCESS;
-        var pi = Launch(token, write, exe, "probe --pipe {0} " + C("probeArgs", ""), env, flags | HIGH_PRIORITY_CLASS, systemOnlyObjects: true, out var childHandle);
+#if VM_TEST
+        var probeArgs = "probe --pipe {0} " + C("probeArgs", "").Replace("{", "").Replace("}", "");
+#else
+        const string probeArgs = "probe --pipe {0}";
+#endif
+        var pi = Launch(token, write, exe, probeArgs, env, flags | HIGH_PRIORITY_CLASS, systemOnlyObjects: true, out var childHandle);
         CloseHandle(write);
         Log($"probe process DACL={Sddl(pi.hProcess)} thread DACL={Sddl(pi.hThread)}");
         CloseHandle(pi.hThread);

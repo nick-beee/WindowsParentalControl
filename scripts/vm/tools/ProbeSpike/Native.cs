@@ -4,6 +4,8 @@ using System.Runtime.InteropServices;
 internal static class Native
 {
     // ---------- kernel32 ----------
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern bool CreateDirectoryW(string path, ref SECURITY_ATTRIBUTES sa);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool CloseHandle(IntPtr h);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern bool CreatePipe(out IntPtr read, out IntPtr write, ref SECURITY_ATTRIBUTES sa, int size);
     [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr GetCurrentProcess();
