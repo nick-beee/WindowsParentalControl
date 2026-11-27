@@ -337,7 +337,7 @@ Before the system suspends a process, it SHALL make the process a Pending Suspen
 - **AND** the system suspends Chrome 10 seconds after the start of the Pending Suspension and does not close it
 
 ### Requirement: Session End Guard
-When the system refuses a session-end request of a Restricted User, it SHALL start a Session End Guard (60 seconds) for that session. During the guard it SHALL NOT suspend again a recorded process of the session that it suspended itself and that another party resumed since then, for example the Session Agent at the end-session query. The guard SHALL end when the session ends or when its time is over. A guard SHALL NOT resume a process and SHALL NOT stop a new suspension.
+When the system refuses a session-end request of a Restricted User, it SHALL start a Session End Guard (60 seconds) for that session if it covers a process. A guard covers each eligible process of the session: a recorded process that the system suspended, or saw suspended while no guard covered it, and did not resume itself since. During the guard it SHALL NOT suspend a covered process again. The guard SHALL end when the session ends or its time is over. A guard SHALL NOT resume a process.
 
 #### Scenario: Second sign-out within 15 minutes
 - **WHEN** a sign-out of the child did not complete, Notepad is suspended because of a block, and the child signs out again 7 minutes later
@@ -358,7 +358,7 @@ When the system refuses a session-end request of a Restricted User, it SHALL sta
 - **THEN** the system suspends the game within 70 seconds, as without the guard
 
 ### Requirement: Limit the Session End Guard
-A Session End Guard SHALL NOT cover a process that the system resumed itself since its last suspension, and SHALL NOT cover a process again until the system suspends it again or sees it suspended outside a guard. A request during an active guard of the session SHALL NOT extend it. A guard SHALL NOT count against the limit of Session End Holds and SHALL NOT alert the parent. The system SHALL log the start of each guard.
+A Session End Guard SHALL cover only an eligible process. A covered process SHALL NOT be eligible until the system suspends it again, or sees it suspended while no guard covers it. A request without an eligible process SHALL NOT start a guard. A request during an active guard of the session SHALL NOT extend it. A guard SHALL NOT stop a new suspension and SHALL NOT count against the limit of Session End Holds. The system SHALL log the start of each guard.
 
 #### Scenario: Fake request without a resume
 - **WHEN** Games is exhausted, the game is suspended, a hold was refused, and the child sends the session-end request with `curl`
@@ -371,5 +371,21 @@ A Session End Guard SHALL NOT cover a process that the system resumed itself sin
 
 #### Scenario: Fake request after a guard
 - **WHEN** a guard covered the game, the guard ended, and the child sends the session-end request again during the Pending Suspension of the game
-- **THEN** the new guard does not cover the game
+- **THEN** no new guard starts
 - **AND** the system suspends the game at the end of the Pending Suspension
+
+#### Scenario: Request without an eligible process
+- **WHEN** a hold was refused and no process was eligible, Games then runs out and the system suspends a game, and the child signs out 30 seconds after the request
+- **THEN** the system starts a guard that covers the game
+
+### Requirement: Report a repeated Session End Guard
+A guard that ends by its time while its session still exists is unconfirmed. When a guard starts after an unconfirmed guard of the same Restricted User in the last 15 minutes, the system SHALL write an event to the event log and SHALL send the parent a Telegram alert, at most one alert per Restricted User per day. A repeated guard SHALL cover the same processes as another guard. A guard SHALL NOT lock the session.
+
+#### Scenario: Sign-out and Cancel again and again
+- **WHEN** the child cancelled a sign-out under a guard, the game is suspended again, and the child signs out and cancels again within 15 minutes
+- **THEN** the system starts a guard that covers the game, writes an event and alerts the parent
+- **AND** the system suspends the game again within 20 seconds after the end of the guard
+
+#### Scenario: Completed sign-out does not count
+- **WHEN** an earlier guard of the child ended with the end of its session
+- **THEN** the next guard of the child does not alert the parent

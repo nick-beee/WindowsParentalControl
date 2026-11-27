@@ -35,3 +35,20 @@ Run on 2026-11-27 with the build of this change (`deploy.ps1`). The times are lo
   Result: the agent resumed each of the 8 recorded pids with "Ok" (10:25:01.231 to .244), the guard covered them, and every `chrome.exe` process stopped between 10:25:01 and 10:25:03 while Notepad still blocked the sign-out. No Chrome process was suspended again. The sandboxed Chrome processes that the service could not close in #33 did not stop the local resume here.
 - [x] 4.5 Fake request as Kid (`Invoke-RestMethod`, the same request as `curl`) after a refused hold, while Notepad is suspended. Expected: a refusal; Notepad stays suspended.
   Result: passed. `10:26:33.087 hold refused`, `10:26:33.092 guard started … covers pids [9628]`, and Notepad had 6 of 6 threads suspended 25 s later. The guard covered the eligible pid, but nobody resumed it, so the request gained nothing. A fake request before it, at 10:23:41, was granted (the first of the 15 minutes) and the service suspended all processes again at 10:24:52 (71 s).
+
+## 5. Review of PR #49 (2026-11-27)
+
+- [x] 5.1 Finding 1: `SessionEndGuards.Start` records no guard without an eligible process (`GuardStartOutcome.NothingToCover`). xUnit: `Request_without_an_eligible_process_starts_no_guard`, `Empty_request_does_not_block_a_real_guard_soon_after`.
+- [x] 5.2 Finding 2: document the two gaps (a sign-out during a running guard, a sign-out in the re-suspension window) in design.md "Risks" and pin them with xUnit tests (`Gap_*`).
+- [x] 5.3 Finding 3: a repeated guard alerts the parent (design D6, spec "Report a repeated Session End Guard"). `Expire(nowUtc, sessionExists)` counts unconfirmed guards per user; `StartedGuard.Repeated`; the enforcer writes a `SECURITY_ALERT` event and sends one alert per user and day. xUnit: the repeated-flag tests and `Sign_out_and_cancel_cycle_gives_at_most_about_70_seconds_per_cycle_and_is_reported`. A first version locked the session at the start of a repeated guard; the VM run 5.7 rejected it.
+- [x] 5.4 Finding 4: move the observe step to `SessionEndGuards.Observe`; the chain tests use it instead of a copy. Add the third sign-out after a re-suspension (`Third_sign_out_after_the_re_suspension_is_covered_again_and_repeated`).
+- [x] 5.5 Nits: D3 says "without a tool"; Risks says to measure the margin on the child's PC; the two guard requirements define an eligible process in the same words.
+- [x] 5.6 Build, Domain tests on the Mac, `scripts/vm-test.sh`. Result: build 0 errors, 0 warnings; 872 Domain tests passed on the Mac; `ALL ASSERTIONS PASSED` and 872 Domain tests on VM 102.
+- [x] 5.7 VM 102 (console): hold, guard and repeated guard with the suspended Pad Notepad (unsaved text) and a manual Cancel each time; the text is still there at the end.
+  Result (build of commit 2daf512, a watcher logged the suspended threads of Notepad each second):
+  - Hold: `11:54:58.005 Session end hold started`, Cancel, `11:55:58.518 … ended without the end of the session`, `11:56:09.018 Suspended … again`.
+  - First guard: `11:56:33.412 hold refused`, `11:56:33.417 Session end guard started … covers pids [4216]`. Notepad 0 of 3 threads suspended until `11:57:33.906 … ended by its time without the end of the session`; suspended again at 11:57:44.408 (71 s after the query).
+  - Repeated guard: `11:58:08.657 Session end guard started … covers pids [4216], repeated`, and the alert line at 11:58:08.658 (no Telegram chat on the VM). Notepad 0 of 3 suspended until 11:59:09.156; suspended again at 11:59:19.658 (71 s).
+  - A manual Cancel (`esc` on the blocking screen) does not lock the session: the watcher showed `Active` through all three cycles.
+  - After the three cycles the service resumed Notepad (rule unblocked, service restart), and the screenshot showed the text `kid homework unsaved`.
+  - The first version (a lock at the start of a repeated guard) lost the text: `11:46:55.895 … guard started … locked`, the disconnect at 11:46:55.97, Notepad 0 of 4 threads suspended and no save dialog, `11:47:06.992 User logged off: Kid`, and Notepad was gone. See design D6.

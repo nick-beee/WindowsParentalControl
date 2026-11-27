@@ -127,8 +127,9 @@ public sealed class CategoryEnforcer : IDisposable
 
             foreach (var hold in _holds.Expire(nowUtc, today, id => _sessionTracker.ActiveSessions.ContainsKey(id)))
                 OnHoldExpired(hold);
-            foreach (var guard in _guards.Expire(nowUtc))
-                _logger.Information("Session end guard of session {SessionId} ended by its time", guard.SessionId);
+            foreach (var expired in _guards.Expire(nowUtc, id => _sessionTracker.ActiveSessions.ContainsKey(id)))
+                _logger.Information("Session end guard of session {SessionId} ended by its time{Unconfirmed}", expired.Guard.SessionId,
+                    expired.Confirmed ? "" : " without the end of the session: the next guard of the user in 15 min is repeated");
 
             // The sessions of Restricted Users, locked or not.
             var restrictedSessions = new Dictionary<int, int>();
@@ -160,8 +161,9 @@ public sealed class CategoryEnforcer : IDisposable
 
             var sessionIds = restrictedSessions.Keys.Concat(records.Select(r => r.SessionId)).ToHashSet();
             var processes = ProcessControl.ListProcesses(sessionIds);
+            _guards.Observe(records.Select(r => (r.Pid, r.StartTimeUtc)),
+                processes.Where(p => p.IsSuspended).Select(p => (p.Pid, p.StartTimeUtc)).ToHashSet(), nowUtc);
             var guarded = _guards.Covered(nowUtc);
-            ObserveSuspendedRecords(records, processes, guarded);
 
             SendWarnings(users, dayLimits, RunningExes(processes, restrictedSessions, config.Resolver));
 
@@ -272,35 +274,36 @@ public sealed class CategoryEnforcer : IDisposable
 
     /// <summary>
     /// The hold was refused, but the Session Agent resumed the Suspended Apps already. Starts a Session End Guard that
-    /// covers each record of the session that the service suspended and did not resume since. Call it with the lock.
+    /// covers each eligible record of the session. A repeated guard (an earlier guard of the user in 15 min ended
+    /// without the end of the session) writes an event and alerts the parent once per day. The guard never locks the
+    /// session: a lock in the first second of a sign-out makes Windows end a program with unsaved data. Call it with the lock.
     /// </summary>
     private void StartGuard(int sessionId, User user)
     {
         var keys = SuspensionRepository.GetAll().Where(r => r.SessionId == sessionId).Select(r => (r.Pid, r.StartTimeUtc));
-        var guard = _guards.Start(sessionId, keys, DateTime.UtcNow);
-        if (guard is null)
+        var start = _guards.Start(sessionId, user.Id, keys, DateTime.UtcNow);
+        switch (start.Outcome)
         {
-            _logger.Information("Session end guard of {Username} (session {SessionId}) runs already: not extended", user.Username, sessionId);
-            return;
+            case GuardStartOutcome.AlreadyRunning:
+                _logger.Information("Session end guard of {Username} (session {SessionId}) runs already: not extended", user.Username, sessionId);
+                return;
+            case GuardStartOutcome.NothingToCover:
+                _logger.Information("No session end guard for {Username} (session {SessionId}): no process to cover", user.Username, sessionId);
+                return;
         }
-        _logger.Information("Session end guard started for {Username} (session {SessionId}) for {Seconds} s, covers pids [{Pids}]",
-            user.Username, sessionId, SessionEndGuards.Duration.TotalSeconds, string.Join(", ", guard.Covered.Select(c => c.Pid)));
-    }
 
-    /// <summary>
-    /// A recorded process that the service sees suspended outside a guard can be covered by a later guard, for example
-    /// one that a guard covered while the agent could not resume it, or one that the service suspended before a restart.
-    /// </summary>
-    private void ObserveSuspendedRecords(IReadOnlyList<SuspensionRecord> records, IReadOnlyList<SessionProcess> processes,
-        IReadOnlySet<(int Pid, DateTime StartTimeUtc)> guarded)
-    {
-        var suspended = processes.Where(p => p.IsSuspended).Select(p => (p.Pid, p.StartTimeUtc)).ToHashSet();
-        foreach (var record in records)
-        {
-            var key = (record.Pid, record.StartTimeUtc);
-            if (suspended.Contains(key) && !guarded.Contains(key))
-                _guards.MarkSuspended(record.Pid, record.StartTimeUtc);
-        }
+        var guard = start.Guard!;
+        _logger.Information("Session end guard started for {Username} (session {SessionId}) for {Seconds} s, covers pids [{Pids}]{Repeated}",
+            user.Username, sessionId, SessionEndGuards.Duration.TotalSeconds, string.Join(", ", guard.Covered.Select(c => c.Pid)),
+            guard.Repeated ? ", repeated: an earlier guard in the last 15 min ended without the end of the session" : "");
+        if (!guard.Repeated)
+            return;
+
+        EventRepository.LogEvent(user.Sid, EventType.SECURITY_ALERT,
+            "Repeated sign-out that did not complete: the paused programs ran for about one minute again");
+        if (_sentToday.Add($"guard:{user.Id}"))
+            SendParentAlert($"Parental Control: {user.Username} on {Environment.MachineName} started a sign-out again and again " +
+                            "without completing it. Each time the paused programs run for about one minute, and then they are paused again.");
     }
 
     private void OnSessionEnded(int sessionId)
