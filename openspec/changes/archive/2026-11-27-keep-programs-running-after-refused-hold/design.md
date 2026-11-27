@@ -84,9 +84,13 @@ No new table, column, route or WinAPI call. The guard state is in memory: a serv
 
 - [A process becomes due for its first suspension during the sign-out.] → The guard does not stop a new suspension, so it is suspended after its Pending Suspension. Only in a refused case and only for an exe whose time runs out in these seconds. Accepted.
 - [The Session Agent does not run or did not poll yet.] → No local resume and no request, as before this change.
-- [The agent cannot open a process (for example, a sandboxed Chromium process).] → It stays suspended at a refused sign-out. The guard covers only processes that run. Task 4.4 checks Chrome on the VM.
+- [The agent cannot open a process (for example, a sandboxed Chromium process).] → It stays suspended at a refused sign-out. The guard covers only processes that run. On VM 102 the agent resumed all 8 recorded Chrome processes with "Ok" (task 4.4), so this did not occur for Chrome.
 - [The blocking screen of Windows stays longer than about 70 s on another computer.] → The covered process is suspended again before the screen ends, as after a hold. Both durations are constants.
 - [A thread that a process creates after its suspension makes the process run again.] → The planner suspends such a process "again" one time (seen in #33). If a guard runs at this moment and the record is eligible, the guard covers it once. The child cannot cause this.
+
+## VM results (2026-11-27)
+
+The details and log lines are in tasks.md, group 4. In short: at a second sign-out within 15 minutes, the guard covered Notepad and Chrome and the service did not suspend them for 60 s (on `main` it suspended Notepad after 11 s). Chrome closed itself, and a sign-out with only a suspended TestGame completed in 5.4 s under a guard. A fake request while Notepad was suspended left it suspended. The granted single sign-out did not change. Windows gives each program that it ends after `WM_ENDSESSION` the exit status 0x40010004 (also the Session Agent), so the exit status cannot tell a frozen program from one that answered; the time to the end of the session and the blocking screen can.
 
 ## Migration Plan
 
