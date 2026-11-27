@@ -22,9 +22,10 @@ public class ForegroundSampleCounterTests
             double? duration = null, double? receiptSeconds = null)
         {
             var t = (long)(seconds * 1000);
-            var receipt = (long)((receiptSeconds ?? seconds) * 1000) + 100_000;
+            // t and the receipt tick are both GetTickCount64; the unbiased time has another base and no sleep.
+            var receipt = (long)((receiptSeconds ?? seconds) * 1000);
             return Counter.Accept(session, t, TimeSpan.FromSeconds(duration ?? 0), receipt,
-                TimeSpan.FromMilliseconds(receipt) - _sleep, blind, counted);
+                TimeSpan.FromMilliseconds(receipt + 100_000) - _sleep, blind, counted);
         }
     }
 
@@ -220,6 +221,57 @@ public class ForegroundSampleCounterTests
         Assert.Equal(0, S(c));
         Assert.False(c.GapItem);
         Assert.Equal(5, S(d.At(710, [Game])));
+    }
+
+    // Review S4: the probe wrote a line before the sleep, and the service read it after the sleep.
+    [Fact]
+    public void Queued_line_from_before_a_sleep_does_not_charge_the_sleep_on_the_next_line()
+    {
+        var d = new Driver();
+        d.At(100, [Game]);
+        d.Sleep(TimeSpan.FromMinutes(10));
+        Assert.Equal(0, S(d.At(105, [Game], receiptSeconds: 705)));
+        var next = d.At(710, [Game]);
+        Assert.Equal(5, S(next));
+        Assert.False(next.GapItem);
+        Assert.False(next.LongGap);
+    }
+
+    [Fact]
+    public void Two_queued_lines_from_before_a_sleep_do_not_charge_the_sleep()
+    {
+        var d = new Driver();
+        d.At(100, [Game]);
+        d.Sleep(TimeSpan.FromMinutes(10));
+        Assert.Equal(0, S(d.At(105, [Game], receiptSeconds: 705)));
+        Assert.Equal(0, S(d.At(108, [Game], receiptSeconds: 705.01)));
+        var next = d.At(710, [Game]);
+        Assert.Equal(5, S(next));
+        Assert.False(next.LongGap);
+    }
+
+    [Fact]
+    public void Queued_line_after_the_resume_event_does_not_charge_the_sleep()
+    {
+        // The power event came, and the backstop does not see the sleep (the clocks of the driver stay in step).
+        var d = new Driver();
+        d.At(100, [Game]);
+        d.Counter.Resumed();
+        Assert.Equal(0, S(d.At(105, [Game], receiptSeconds: 705)));
+        Assert.Equal(0, S(d.At(108, [Game], receiptSeconds: 705.01)));
+        var next = d.At(710, [Game]);
+        Assert.Equal(5, S(next));
+        Assert.False(next.LongGap);
+        Assert.Equal(5, S(d.At(715, [Game])));
+    }
+
+    [Fact]
+    public void Planned_start_keeps_the_probe_time_of_its_first_line()
+    {
+        var d = new Driver();
+        d.Counter.PlannedStart(1);
+        d.At(100, [Game], receiptSeconds: 101);
+        Assert.Equal(5, S(d.At(105, [Game])));
     }
 
     [Fact]

@@ -32,7 +32,14 @@ public readonly record struct SampleCredit(TimeSpan Time, bool GapItem, bool Lon
 /// time (without sleep). Both clocks move together while the PC runs, so their difference changes only by the time of a
 /// sleep or a hibernation. If the difference grew by more than 1 second since the last accepted line, the system slept,
 /// and the line counts as the first sample after a resume. Both values are read at the receipt, so a burst of queued
-/// lines does not look like a sleep. Thread-safe: each probe has its own reader thread.
+/// lines does not look like a sleep.
+/// </para>
+/// <para>
+/// A line that the backstop marks, and the first line after <see cref="Resumed"/>, can be a line that the probe wrote
+/// before the sleep and the service read after it. So such a line sets the last-sample time to the later of its
+/// <c>t</c> and the receipt tick (review S4): the next line then does not charge the sleep. The last-sample time never
+/// goes back, so a second queued line from before the sleep adds zero and keeps it. Thread-safe: each probe has its
+/// own reader thread.
 /// </para>
 /// </summary>
 public sealed class ForegroundSampleCounter
@@ -50,6 +57,7 @@ public sealed class ForegroundSampleCounter
         public long LastOffsetMs;
         public bool HasOffset;
         public bool SkipNext = true;
+        public bool ResumePending;
         public bool SpansUnexpectedEnd;
     }
 
@@ -62,11 +70,16 @@ public sealed class ForegroundSampleCounter
         lock (_gate) State(sessionId).SkipNext = true;
     }
 
-    /// <summary>A resume from sleep or hibernation: the next sample of each session adds zero.</summary>
+    /// <summary>A resume from sleep or hibernation: the next sample of each session adds zero, and it moves the
+    /// last-sample time to at least its receipt tick.</summary>
     public void Resumed()
     {
         lock (_gate)
-            foreach (var state in _sessions.Values) state.SkipNext = true;
+            foreach (var state in _sessions.Values)
+            {
+                state.SkipNext = true;
+                state.ResumePending = true;
+            }
     }
 
     /// <summary>An end of the probe that the service did not ask for (also a watchdog kill): the last-sample time
@@ -87,8 +100,11 @@ public sealed class ForegroundSampleCounter
     /// </summary>
     /// <param name="t">The <c>t</c> of the sample, in milliseconds.</param>
     /// <param name="duration">The <c>dur</c> of the sample (0 if it is missing).</param>
-    /// <param name="receiptTickMs">The <c>Environment.TickCount64</c> of the service at the read.</param>
-    /// <param name="receiptUnbiased">The unbiased interrupt time of the service at the read.</param>
+    /// <param name="receiptTickMs">The <c>Environment.TickCount64</c> of the service at the read. The caller reads it
+    /// first and <paramref name="receiptUnbiased"/> second: a delay between the two reads then makes the difference of
+    /// the clocks smaller, never larger, so it never looks like a sleep.</param>
+    /// <param name="receiptUnbiased">The unbiased interrupt time of the service at the read, read after
+    /// <paramref name="receiptTickMs"/>.</param>
     /// <param name="blind">The sample is a blind sample.</param>
     /// <param name="counted">The counted processes of the sample.</param>
     public SampleCredit Accept(int sessionId, long t, TimeSpan duration, long receiptTickMs, TimeSpan receiptUnbiased, bool blind,
@@ -107,12 +123,16 @@ public sealed class ForegroundSampleCounter
         state.HasOffset = true;
 
         var signature = Signature(counted);
-        var first = !state.HasLast || state.SkipNext || slept || t <= state.LastT;
+        var resumeLine = slept || state.ResumePending;
+        var first = !state.HasLast || state.SkipNext || resumeLine || t <= state.LastT;
         var gap = first ? TimeSpan.Zero : TimeSpan.FromMilliseconds(t - state.LastT);
         var spansEnd = state.SpansUnexpectedEnd;
         var same = !blind && !state.LastBlind && signature.SetEquals(state.LastSignature);
 
-        state.LastT = t;
+        // A line from before a sleep that arrives after it must not let the next line charge the sleep (S4).
+        var last = resumeLine ? Math.Max(t, receiptTickMs) : t;
+        state.LastT = state.HasLast ? Math.Max(state.LastT, last) : last;
+        state.ResumePending = false;
         state.HasLast = true;
         state.LastBlind = blind;
         state.LastSignature = signature;
