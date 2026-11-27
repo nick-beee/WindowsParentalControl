@@ -139,7 +139,7 @@ If the WebView2 Runtime is missing, the setup of the web view fails, the first n
 - **THEN** the window title is "Mehr Zeit wünschen"
 
 ### Requirement: The installer provides the WebView2 Runtime
-The installer SHALL check for the machine-wide Evergreen WebView2 Runtime. If it is missing, the installer SHALL install it for all users, and SHALL start the service before that install. If that install fails, for example because the PC is offline, the installer SHALL complete and SHALL write the result to its log. The service SHALL write a warning event at its start if the runtime is missing.
+The installer SHALL check for the machine-wide Evergreen WebView2 Runtime. If it is missing, the installer SHALL install it for all users, and SHALL start the service before that install. If that install fails, for example because the PC is offline, the installer SHALL complete and SHALL write the result to its log. If the runtime is missing 15 minutes after the start of the service, the service SHALL write a warning event, at most one each day.
 
 #### Scenario: Runtime missing and PC online
 - **WHEN** the PC has no WebView2 Runtime and the parent runs the installer with a network connection
@@ -172,16 +172,16 @@ The Session Agent SHALL offer the request button and the request item of the tra
 In a sample of the Session Probe, the system SHALL exempt the Session Agent as a counted process, also as the creator of a trusted WebView2 process, for at most 5 minutes in any 60 minutes of unlocked time. Exempt time SHALL add no Category Usage for the Session Agent and SHALL NOT count toward the lock of a program that is never suspended. The system SHALL NOT start, extend or end the budget because of data that the Session Agent sends.
 
 #### Scenario: Request while Unknown is exhausted
-- **WHEN** the Session Agent counts in Unknown, Unknown is exhausted, and the child types a request in the Request Window for 3 minutes
+- **WHEN** the probe locks are on, the Session Probe counts the Session Agent in Unknown, Unknown is exhausted, and the child types a request in the Request Window for 3 minutes
 - **THEN** the session is not locked
 - **AND** Category Usage for Unknown does not increase
 
 #### Scenario: Budget used up
-- **WHEN** the Session Agent counts in Unknown, Unknown is exhausted, and the Session Agent is the counted process for 7 minutes within 60 minutes of unlocked time
+- **WHEN** the probe locks are on, the Session Probe counts the Session Agent in Unknown, Unknown is exhausted, and the Session Agent is the counted process for 7 minutes within 60 minutes of unlocked time
 - **THEN** the last 2 minutes count under the rules of `category-limits`
 
 #### Scenario: Sliding window
-- **WHEN** the Session Agent was exempt for 5 minutes from 10:00 and the session stays unlocked
+- **WHEN** the probe locks are on, the Session Agent was exempt for 5 minutes from 10:00, and the session stays unlocked
 - **THEN** the Session Agent is not exempt again before 11:00
 - **AND** from 11:05 at the latest the budget has 5 minutes again
 
@@ -189,9 +189,9 @@ In a sample of the Session Probe, the system SHALL exempt the Session Agent as a
 The Agent Window Budget SHALL exempt only the time that the Session Agent itself adds. If another counted process of the same sample is in the same App Category, that category SHALL still get the interval of the sample. The budget SHALL NOT change the Allowance Time, Continuous Use, a Break or the Schedule Window.
 
 #### Scenario: Game moved into the agent window
-- **WHEN** the Session Agent and a game in Unknown are both counted processes of the same samples for 3 minutes
+- **WHEN** the probe locks are on and the Session Agent and a game in Unknown are both counted processes of the same Session Probe samples for 3 minutes
 - **THEN** Category Usage for Unknown increases by 3 minutes
 
 #### Scenario: Allowance Time
-- **WHEN** the child types a request in the Request Window for 3 minutes and the session is unlocked
-- **THEN** the Allowance Time of the child decreases by 3 minutes
+- **WHEN** the probe locks are on and the child types a request in the Request Window for 3 minutes while the Agent Window Budget exempts the Session Agent
+- **THEN** the 3 minutes count against the Allowance Time of the child
