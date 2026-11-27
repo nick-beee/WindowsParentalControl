@@ -143,7 +143,7 @@ The installer SHALL check for the machine-wide Evergreen WebView2 Runtime. If it
 
 #### Scenario: Runtime missing and PC online
 - **WHEN** the PC has no WebView2 Runtime and the parent runs the installer with a network connection
-- **THEN** after the install the runtime is below `%ProgramFiles(x86)%\Microsoft\EdgeWebView\Application`
+- **THEN** after the install the runtime is below `C:\Program Files (x86)\Microsoft\EdgeWebView\Application` (the Program Files (x86) known folder)
 
 #### Scenario: Runtime missing and PC offline
 - **WHEN** the PC has no WebView2 Runtime and no network connection and the parent runs the installer
