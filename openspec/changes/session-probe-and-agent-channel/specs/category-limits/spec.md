@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Count Category Usage from the Foreground Window
-The system SHALL count Category Usage per Restricted User, App Category and day from the samples of the Session Probe, never from data of the Session Agent. For each sample it SHALL add the time since the previous sample of the session, measured with the time of the probe and at most 12 seconds, to the category of each counted process, at most once per category, and store whole minutes. It SHALL NOT count System, a locked session, or an exe that it suspended for this user.
+The system SHALL count Category Usage per Restricted User, App Category and day from the samples of the Session Probe, never from data of the Session Agent. For each sample it SHALL add the time since the previous sample of the session, measured with the time of the probe and limited by the gap rule, to the category of each counted process, at most once per category, and store whole minutes. It SHALL NOT count System, a locked session, or an exe that it suspended for this user.
 
 #### Scenario: Three samples of a game
 - **WHEN** the Session Probe reports a Games exe as Foreground Window in three samples, each 5 seconds after the previous sample of the unlocked session
@@ -34,8 +34,9 @@ The system SHALL count Category Usage per Restricted User, App Category and day 
 - **THEN** Category Usage for Games increases by 3 minutes, with a tolerance of 1 minute
 
 #### Scenario: Gap between samples
-- **WHEN** the Session Probe gives no sample for 2 minutes and then sends a Games sample
+- **WHEN** a Study program is the Foreground Window, the Session Probe gives no sample for 2 minutes, and then sends a Games sample
 - **THEN** Category Usage for Games increases by at most 12 seconds for that sample
+- **AND** the gap is one budget item
 
 ### Requirement: Suspend the programs of an exhausted category
 When the Category Usage of a category reaches the limit of the day of an exe (its App Limit or else its Category Limit), the system SHALL suspend, within 70 seconds, each process of that exe in the session of that Restricted User, if the exe was a Foreground Window of that user today. The 70 seconds include the 10 seconds of the Pending Suspension. The requirement "Session End Hold" adds an exception. The session SHALL stay unlocked. The system SHALL NOT close or kill any of these processes.
@@ -105,6 +106,23 @@ A Session End Guard SHALL cover only an eligible process. A covered process SHAL
 - **THEN** the system starts a guard that covers the game
 
 ## ADDED Requirements
+
+### Requirement: The gap rule
+A gap of 12 seconds or less between two samples SHALL count in full. A longer gap SHALL count in full, at most 60 seconds, if neither sample is a blind sample and both have the same counted processes (same process, same category). Else the system SHALL count at most 12 seconds and the gap SHALL be one budget item, never a reason for the lock at each blind sample. A gap over 60 seconds SHALL also be one budget item. The first sample after a sign-in, an unlock or a resume SHALL add nothing.
+
+#### Scenario: Long gap with the same game
+- **WHEN** a game is the Foreground Window and the next sample, 34 seconds later, shows the same game process
+- **THEN** Category Usage for Games increases by 34 seconds for that sample
+- **AND** no budget item results
+
+#### Scenario: Long gap with another program
+- **WHEN** a game is the Foreground Window and the next sample, 34 seconds later, shows a Study program
+- **THEN** Category Usage for Study increases by at most 12 seconds for that sample
+- **AND** the gap is one budget item
+
+#### Scenario: Gap over a probe restart
+- **WHEN** the Session Probe crashes while a game is the Foreground Window, and the first sample of the new probe shows the same game process
+- **THEN** Category Usage for Games increases by the whole time since the last sample of the old probe, at most 60 seconds
 
 ### Requirement: The counted processes of a sample
 The counted processes of a sample SHALL be the Foreground Window process, the focus process, each process with a visible child window below the Foreground Window, and each process under the cursor if the top-level window there has `WS_EX_NOACTIVATE`, except each one in System. The system SHALL record the exe of each process of a sample, also each other process under the cursor, as a Foreground Window exe of that user today.
