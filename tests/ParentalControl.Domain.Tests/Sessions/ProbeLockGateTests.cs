@@ -44,9 +44,24 @@ public class ProbeLockGateTests
         var gate = new ProbeLockGate(false);
         Assert.True(gate.WouldLock(1, Day, ProbeLockKind.Budget, null, S(0)).Alert);
         Assert.False(gate.WouldLock(1, Day, ProbeLockKind.Budget, null, S(100)).Alert);
-        Assert.True(gate.WouldLock(1, Day, ProbeLockKind.Strike, null, S(200)).Alert);
         Assert.True(gate.WouldLock(1, Day, ProbeLockKind.FullSet, null, S(300)).Alert);
         Assert.True(gate.WouldLock(1, Day.AddDays(1), ProbeLockKind.Budget, null, S(400)).Alert);
+        Assert.True(gate.WouldLock(2, Day, ProbeLockKind.Budget, null, S(500)).Alert);
+    }
+
+    [Fact]
+    public void The_budget_lock_and_the_strike_are_one_reason_for_the_alert()
+    {
+        // Spec scenario "First release on the child's PC": one alert on that day for a hostile desktop, which gives the
+        // budget lock and then the strike.
+        var gate = new ProbeLockGate(false);
+        Assert.True(gate.WouldLock(1, Day, ProbeLockKind.Budget, null, S(0)).Alert);
+        Assert.False(gate.WouldLock(1, Day, ProbeLockKind.Strike, null, S(3)).Alert);
+        Assert.False(gate.WouldLock(1, Day, ProbeLockKind.Strike, null, S(200)).Alert);
+
+        var strikeFirst = new ProbeLockGate(false);
+        Assert.True(strikeFirst.WouldLock(1, Day, ProbeLockKind.Strike, null, S(0)).Alert);
+        Assert.False(strikeFirst.WouldLock(1, Day, ProbeLockKind.Budget, null, S(70)).Alert);
     }
 
     [Fact]

@@ -28,7 +28,8 @@ public readonly record struct WouldLockReport(bool WriteEvent, int Decisions, bo
 /// and limits the reports of all four reasons:
 /// <list type="bullet">
 /// <item>at most one <c>PROBE_WOULD_LOCK</c> event per Restricted User and minute, with the number of decisions;</item>
-/// <item>one alert per Restricted User, day and reason;</item>
+/// <item>one alert per Restricted User, day and reason; the budget lock and the strike are one reason (blind
+/// samples);</item>
 /// <item>for a program that is never suspended, one alert per exe and day that names the exe path.</item>
 /// </list>
 /// The day is the day of the Control Time Zone; the minute is monotonic. Not thread-safe: the caller holds one lock.
@@ -83,9 +84,12 @@ public sealed class ProbeLockGate
         }
         if (writeEvent) _events[userId] = (monotonicNow, 0);
 
-        var alertKey = kind == ProbeLockKind.NeverSuspended
-            ? (userId, today, kind, (exePath ?? "").ToUpperInvariant())
-            : (userId, today, kind, "");
+        // D12 names three reasons: blind samples (the budget lock and the strike are one reason), a program that is
+        // never suspended (one alert per exe), and a full set.
+        var reason = kind == ProbeLockKind.Strike ? ProbeLockKind.Budget : kind;
+        var alertKey = reason == ProbeLockKind.NeverSuspended
+            ? (userId, today, reason, (exePath ?? "").ToUpperInvariant())
+            : (userId, today, reason, "");
         var alert = _alerts.Add(alertKey);
         return new WouldLockReport(writeEvent, decisions, alert);
     }
