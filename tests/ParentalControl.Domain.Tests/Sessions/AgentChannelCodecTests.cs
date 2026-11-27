@@ -23,6 +23,27 @@ public class AgentChannelCodecTests
         return messages;
     }
 
+    // Review B1: a hostile frame never throws. The raw literals hold the six characters \ud800 (a JSON escape of a
+    // lone surrogate), not the char itself.
+    [Theory]
+    [InlineData("""{"type":"status","id":"x"}""")]
+    [InlineData("""{"type":"status","id":true}""")]
+    [InlineData("""{"type":"status","id":[1]}""")]
+    [InlineData("""{"type":"\ud800","id":1}""")]
+    [InlineData("""{"type":"promptAnswer","id":2,"promptId":7,"response":"YES","reason":"\ud800"}""")]
+    [InlineData("""{"type":"promptAnswer","id":2,"promptId":7,"response":"\udc00"}""")]
+    [InlineData("""{"type":"capture","id":3,"trigger":"\ud800"}""")]
+    [InlineData("""{"type":"sessionEnding","id":4,"reason":"\ud800"}""")]
+    public void Hostile_frame_fails_without_an_exception(string json)
+    {
+        var codec = new AgentChannelCodec();
+        var messages = new List<AgentMessage>();
+        Assert.False(codec.Feed(Json(json), messages));
+        Assert.NotNull(codec.Error);
+        Assert.Empty(messages);
+        Assert.False(codec.Feed(Json("""{"type":"status","id":1}"""), messages));
+    }
+
     [Fact]
     public void Valid_frame_of_each_type()
     {

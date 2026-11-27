@@ -8,13 +8,14 @@ public sealed record ProbeLogLine(string Text);
 
 /// <summary>
 /// Reads the lines of one Session Probe run (session-probe-and-agent-channel, design D3, S7, S9). The service feeds the
-/// bytes of the pipe; the reader keeps a fixed buffer of <see cref="MaxLineBytes"/> per line. A longer line is dropped
-/// up to its line end, without a larger buffer.
+/// bytes of the pipe; the reader keeps a fixed buffer of <see cref="MaxLineBytes"/> per line, plus one byte for a
+/// <c>\r</c> before the <c>\n</c>. A longer line is dropped up to its line end, without a larger buffer.
 /// <para>
 /// Each sample line needs a valid <c>t</c> that is larger than the <c>t</c> of the previous accepted sample line of
 /// this run and not larger than the current tick of the service; else the line is dropped. A window sample needs a
 /// valid <c>fg</c>. A missing or wrong <c>dur</c> counts as 0. Any other field with a wrong type, and a <c>cursor</c> or <c>children</c> list with more than 8
-/// entries, drops only that field. Content never ends the probe: the reader only counts the problems, and the service
+/// entries, drops only that field. A text field with a lone surrogate escape (for example <c>"\ud800"</c>) drops only
+/// that field; any other read error of a line drops only that line. No input throws. Content never ends the probe: the reader only counts the problems, and the service
 /// logs the first one once per run. Not thread-safe: one reader per probe run.
 /// </para>
 /// </summary>
@@ -27,7 +28,7 @@ public sealed class ProbeLineReader
     public const int MaxLogChars = 256;
     private const int MaxDepth = 8;
 
-    private readonly byte[] _line = new byte[MaxLineBytes];
+    private readonly byte[] _line = new byte[MaxLineBytes + 1];
     private int _fill;
     private bool _discarding;
     private long? _lastT;
@@ -72,7 +73,8 @@ public sealed class ProbeLineReader
                 continue;
             }
             if (_discarding) continue;
-            if (_fill == MaxLineBytes)
+            // The one byte over MaxLineBytes may only be the \r of a \r\n line end.
+            if (_fill > MaxLineBytes || (_fill == MaxLineBytes && b != (byte)'\r'))
             {
                 _discarding = true;
                 _fill = 0;
@@ -83,6 +85,19 @@ public sealed class ProbeLineReader
     }
 
     private void Parse(ReadOnlySpan<byte> line, long serviceTickNow, List<object> output)
+    {
+        try
+        {
+            ParseLine(line, serviceTickNow, output);
+        }
+        catch (InvalidOperationException)
+        {
+            // GetString of a string with a lone surrogate escape throws this exception (review S1).
+            DropLine("line has a string that is not valid UTF-16");
+        }
+    }
+
+    private void ParseLine(ReadOnlySpan<byte> line, long serviceTickNow, List<object> output)
     {
         JsonDocument doc;
         try
@@ -231,7 +246,16 @@ public sealed class ProbeLineReader
             DropField(name);
             return null;
         }
-        return Clean(element.GetString(), maxChars);
+        try
+        {
+            return Clean(element.GetString(), maxChars);
+        }
+        catch (InvalidOperationException)
+        {
+            // A lone surrogate escape: drop the text, keep the sample.
+            DropField(name);
+            return null;
+        }
     }
 
     private static IReadOnlyList<ProbeWindow>? TryList(JsonElement element)

@@ -104,6 +104,68 @@ public class ProbeLineReaderTests
         One(line);
     }
 
+    // Review nit: the 4 KB limit is for the line without its line end.
+    [Theory]
+    [InlineData("\r\n")]
+    [InlineData("\n")]
+    public void Line_of_exactly_4_KB_with_either_line_end_is_read(string end)
+    {
+        var head = """{"t":5,"window":false,"desktop":" """;
+        var line = head + new string('d', ProbeLineReader.MaxLineBytes - head.Length - 2) + "\"}";
+        var reader = new ProbeLineReader();
+        var output = new List<object>();
+        reader.Feed(Encoding.UTF8.GetBytes(line + end), Now, output);
+        Assert.Single(output);
+        Assert.Equal(0, reader.DroppedLines);
+    }
+
+    [Theory]
+    [InlineData(" ", "\n")]
+    [InlineData(" ", "\r\n")]
+    [InlineData("\r", "\n")]
+    [InlineData("\r\r", "\n")]
+    public void Line_over_4_KB_is_dropped_and_the_next_line_is_read(string extra, string end)
+    {
+        var head = """{"t":5,"window":false,"desktop":" """;
+        var line = head + new string('d', ProbeLineReader.MaxLineBytes - head.Length - 2) + "\"}" + extra;
+        var reader = new ProbeLineReader();
+        var output = new List<object>();
+        reader.Feed(Encoding.UTF8.GetBytes(line + end + "{\"t\":6,\"window\":false}\n"), Now, output);
+        if (extra == "\r")
+        {
+            // 4096 bytes and one \r before the \n: the \r is part of the line end.
+            Assert.Equal(2, output.Count);
+            return;
+        }
+        Assert.Equal(6, Assert.IsType<ProbeSample>(Assert.Single(output)).T);
+        Assert.Equal(1, reader.DroppedLines);
+    }
+
+    // Review S1: a lone surrogate escape never throws.
+    [Fact]
+    public void Lone_surrogate_in_the_title_drops_only_the_title()
+    {
+        var reader = new ProbeLineReader();
+        var output = Read(reader, """{"t":5,"fg":{"hwnd":1,"tid":2,"pid":3},"title":"a\ud800b","desktop":"\udc00"}""");
+        var sample = Assert.IsType<ProbeSample>(Assert.Single(output));
+        Assert.Equal(new ProbeWindow(1, 2, 3), sample.Foreground);
+        Assert.Null(sample.Title);
+        Assert.Null(sample.Desktop);
+        Assert.Equal(2, reader.DroppedFields);
+        Assert.Equal(5, reader.LastT);
+    }
+
+    [Theory]
+    [InlineData("""{"log":"\ud800"}""")]
+    [InlineData("""{"t":5,"blind":"\ud800"}""")]
+    public void Lone_surrogate_in_a_line_drops_only_that_line(string line)
+    {
+        var reader = new ProbeLineReader();
+        var output = Read(reader, line, """{"t":6,"window":false}""");
+        Assert.Equal(6, Assert.IsType<ProbeSample>(Assert.Single(output)).T);
+        Assert.Equal(1, reader.DroppedLines);
+    }
+
     [Fact]
     public void Wrong_type_drops_only_that_field()
     {

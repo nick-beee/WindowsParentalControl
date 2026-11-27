@@ -123,7 +123,8 @@ public sealed class AgentChannelCodec
             if (root.ValueKind != JsonValueKind.Object) return Fail("frame is not a JSON object");
             if (!root.TryGetProperty("type", out var typeElement) || typeElement.ValueKind != JsonValueKind.String)
                 return Fail("frame has no type");
-            if (!root.TryGetProperty("id", out var idElement) || !idElement.TryGetInt64(out var id) || id < 0)
+            if (!root.TryGetProperty("id", out var idElement) || idElement.ValueKind != JsonValueKind.Number
+                || !idElement.TryGetInt64(out var id) || id < 0)
                 return Fail("frame has no id");
 
             switch (typeElement.GetString())
@@ -157,6 +158,11 @@ public sealed class AgentChannelCodec
         catch (JsonException)
         {
             return Fail("frame is not valid JSON");
+        }
+        catch (InvalidOperationException)
+        {
+            // GetString of a string with a lone surrogate (for example "\ud800") throws this exception.
+            return Fail("frame has a string that is not valid UTF-16");
         }
     }
 
