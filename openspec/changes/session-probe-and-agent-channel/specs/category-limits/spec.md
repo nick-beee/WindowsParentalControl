@@ -116,20 +116,25 @@ The counted processes of a sample SHALL be the Foreground Window process, the fo
 - **AND** the game is suspended when Games is exhausted
 
 ### Requirement: WebView2 counts with the program that started it
-A `msedgewebview2.exe` below `Microsoft\EdgeWebView\Application` in a Program Files folder SHALL count, in each role, as the first process in its chain of parent processes that is not such a file, and that process SHALL be recorded as a Foreground Window exe. If a parent ended, the entry SHALL count no time. If the chain cannot be checked, it SHALL count nothing. Each other `msedgewebview2.exe` SHALL count by its App Rule, like any other exe.
+A `msedgewebview2.exe` below `Microsoft\EdgeWebView\Application` in a Program Files folder SHALL count, in each role, as the first process in its chain of parent processes that is not such a file, and that process SHALL be recorded as a Foreground Window exe. If a parent ended or the chain cannot be checked, the entry SHALL count nothing and SHALL be no blind sample and no budget item. Each other `msedgewebview2.exe` SHALL count by its App Rule, like any other exe.
 
 #### Scenario: WebView2 in a Study app
 - **WHEN** a Study app is the Foreground Window and its `msedgewebview2.exe` control from the WebView2 Runtime has the focus
 - **THEN** the time counts in Study only
 
 #### Scenario: WebView2 in the shell
-- **WHEN** Unknown is exhausted and the child reads "News and interests" of `explorer.exe` for 5 minutes
+- **WHEN** the probe locks are on and Unknown is exhausted and the child reads "News and interests" of `explorer.exe` for 5 minutes
 - **THEN** no Category Usage increases
 - **AND** the session is not locked
 
 #### Scenario: WebView2 popup of a Study app
-- **WHEN** Unknown is exhausted and a Study app opens a WebView2 popup window that stays in front for 3 minutes
+- **WHEN** the probe locks are on and Unknown is exhausted and a Study app opens a WebView2 popup window that stays in front for 3 minutes
 - **THEN** the time counts in Study only
+- **AND** the session is not locked
+
+#### Scenario: Second instance of a WebView2 app
+- **WHEN** the probe locks are on, Unknown is exhausted, a Study app with a WebView2 control runs twice, the child closes the first instance, and the WebView2 control of the second instance has the focus for 3 minutes
+- **THEN** the time counts in Study
 - **AND** the session is not locked
 
 #### Scenario: WebView2 control moved into Notepad
@@ -138,7 +143,7 @@ A `msedgewebview2.exe` below `Microsoft\EdgeWebView\Application` in a Program Fi
 - **AND** the Games app is suspended when Games is exhausted
 
 #### Scenario: Game renamed as WebView2
-- **WHEN** Unknown is exhausted, no App Rule covers the Downloads folder, and the child copies a game as `msedgewebview2.exe` into its Downloads folder, puts it into a Study app and plays it
+- **WHEN** the probe locks are on and Unknown is exhausted, no App Rule covers the Downloads folder, and the child copies a game as `msedgewebview2.exe` into its Downloads folder, puts it into a Study app and plays it
 - **THEN** the time counts in Unknown
 - **AND** the session is locked within 2 minutes
 
@@ -146,23 +151,37 @@ A `msedgewebview2.exe` below `Microsoft\EdgeWebView\Application` in a Program Fi
 The system SHALL count the Session Agent in Unknown as the Foreground Window, focus or child window process, whatever the App Rules say, but not while the parent has an active prompt for that user. If the category of a counted exe that the system never suspends and that is not in System is exhausted, and that exe counts for more than 60 seconds within 10 minutes of unlocked time, the system SHALL apply the fallback when a process cannot be suspended, as a probe lock.
 
 #### Scenario: Game drawn in the agent window
-- **WHEN** Unknown is exhausted and the child plays a game that its code draws in the window of the Session Agent
+- **WHEN** the probe locks are on and Unknown is exhausted and the child plays a game that its code draws in the window of the Session Agent
 - **THEN** the session is locked within 2 minutes
 - **AND** the parent gets an alert
 - **AND** the Session Agent still runs
 
 #### Scenario: Agent window moved into Notepad
-- **WHEN** Unknown is exhausted and a script of the child puts the window of the Session Agent, with a game drawn in it, into a window of `notepad.exe`
+- **WHEN** the probe locks are on and Unknown is exhausted and a script of the child puts the window of the Session Agent, with a game drawn in it, into a window of `notepad.exe`
 - **THEN** the session is locked within 2 minutes
 
 #### Scenario: Child reads a prompt
-- **WHEN** Unknown is exhausted and the prompt of the parent stays in front for 3 minutes before the child answers it
+- **WHEN** the probe locks are on and Unknown is exhausted and the prompt of the parent stays in front for 3 minutes before the child answers it
 - **THEN** the session is not locked
 - **AND** Category Usage for Unknown does not increase
 
 #### Scenario: Cursor on the widget
-- **WHEN** Unknown is exhausted and the cursor rests on the widget of the Session Agent for 5 minutes
+- **WHEN** the probe locks are on and Unknown is exhausted and the cursor rests on the widget of the Session Agent for 5 minutes
 - **THEN** the session is not locked
+
+### Requirement: The widget of the Session Agent does not take the activation
+A click or a drag on the widget of the Session Agent SHALL NOT make the Session Agent the Foreground Window, and the widget SHALL take no keyboard focus. The buttons of the widget and its move SHALL still work.
+
+#### Scenario: Child clicks the widget
+- **WHEN** the probe locks are on, Unknown is exhausted, a video player of a category with time left is the Foreground Window, and the child drags the widget aside, clicks its collapse button, and then watches the video for 3 minutes without a click
+- **THEN** the session is not locked
+- **AND** Category Usage for Unknown does not increase
+- **AND** the video player is still the Foreground Window
+
+#### Scenario: Widget buttons
+- **WHEN** the child clicks the expand button of the collapsed widget
+- **THEN** the widget expands
+- **AND** the Session Agent does not become the Foreground Window
 
 ### Requirement: The set of Foreground Window exes fails closed
 The system SHALL keep at least 60,000 exes per Restricted User and day in the set of Foreground Window exes. If the set is full, the system SHALL apply the Enforced Workstation Lock as a probe lock and notify the parent, because a new exe would not be a suspend candidate.

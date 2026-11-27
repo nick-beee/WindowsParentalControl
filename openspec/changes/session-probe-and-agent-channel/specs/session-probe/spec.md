@@ -109,11 +109,11 @@ The service SHALL read the exe path, the session and the start time of each proc
 - **THEN** the time counts in Games
 
 #### Scenario: Game window on a new thread before each read
-- **WHEN** the child makes the service slow with a CPU load and again and again re-creates its game window on a new thread and ends the old thread, so that the service finds the thread of the Foreground Window ended
+- **WHEN** the probe locks are on and the child makes the service slow with a CPU load and again and again re-creates its game window on a new thread and ends the old thread, so that the service finds the thread of the Foreground Window ended
 - **THEN** the session is locked within 2 minutes
 
 #### Scenario: Embedded game window on a new thread before each read
-- **WHEN** the child does the same with a game window inside a window of `notepad.exe`, so that the service finds the thread of the child window ended
+- **WHEN** the probe locks are on and the child does the same with a game window inside a window of `notepad.exe`, so that the service finds the thread of the child window ended
 - **THEN** the session is locked within 2 minutes
 
 #### Scenario: Clock step
@@ -125,7 +125,7 @@ The service SHALL read the exe path, the session and the start time of each proc
 A blind sample SHALL be a sample whose input desktop is not readable, whose Foreground Window gives no thread, with more than 8 other processes or 4096 windows below the Foreground Window, or with an entry that is denied or in another session. A budget item SHALL be a sample with an ended entry that would count time, or an unexpected end of the probe from the 3rd within 10 minutes. The service SHALL query the session state at each one and ignore it unless the session is active and unlocked.
 
 #### Scenario: Honest window close
-- **WHEN** the child closes a program window just as the Session Probe samples it
+- **WHEN** the probe locks are on and the child closes a program window just as the Session Probe samples it
 - **THEN** that sample is a budget item, not a blind sample
 - **AND** the session is not locked at once, also after an earlier lock of that day
 
@@ -133,17 +133,17 @@ A blind sample SHALL be a sample whose input desktop is not readable, whose Fore
 At the 6th blind sample or budget item within 10 minutes of unlocked, connected time of a Restricted User, the system SHALL apply the Enforced Workstation Lock and notify the parent through the Alert Channel at most once per day. After that lock, each blind sample of that day SHALL lock; a budget item SHALL NOT. These locks SHALL follow the requirement "Shadow mode for the probe locks". The system SHALL NOT close a program.
 
 #### Scenario: Desktop that denies the probe
-- **WHEN** the child creates a desktop whose security gives access only to the child, switches to it and starts a game there
+- **WHEN** the probe locks are on and the child creates a desktop whose security gives access only to the child, switches to it and starts a game there
 - **THEN** the session is locked within 60 seconds
 - **AND** the parent gets an alert that names the child
 - **AND** the game process still exists
 
 #### Scenario: Short returns to the default desktop
-- **WHEN** the child plays on a desktop that denies the probe for 25 seconds and then returns to the default desktop for 5 seconds, again and again
+- **WHEN** the probe locks are on and the child plays on a desktop that denies the probe for 25 seconds and then returns to the default desktop for 5 seconds, again and again
 - **THEN** the session is locked within 2 minutes
 
 #### Scenario: Unlock and the same desktop again
-- **WHEN** the session was locked for this reason and the child unlocks it and switches to that desktop again on the same day
+- **WHEN** the probe locks are on and the session was locked for this reason and the child unlocks it and switches to that desktop again on the same day
 - **THEN** the session is locked again within 15 seconds
 
 #### Scenario: Fast user switch
@@ -151,11 +151,11 @@ At the 6th blind sample or budget item within 10 minutes of unlocked, connected 
 - **THEN** samples of the disconnected session of the child count as no blind sample
 
 #### Scenario: Windows secure desktops
-- **WHEN** the child sees a UAC prompt, presses Ctrl+Alt+Del, or the secure screen saver starts
+- **WHEN** the probe locks are on and the child sees a UAC prompt, presses Ctrl+Alt+Del, or the secure screen saver starts
 - **THEN** no blind sample results and the session is not locked for this reason
 
 ### Requirement: No category time without Session Probe samples
-If the service gets no sample from the Session Probe of an unlocked, connected session for more than 12 seconds (the probe does not run or does not answer), it SHALL add no Category Usage for that time. It SHALL start a new probe within 60 seconds if the probe ended. After 5 minutes without samples it SHALL write an event and alert the parent, at most once per Restricted User and hour. It SHALL NOT use data of the Session Agent instead.
+If the service gets no sample from the Session Probe of an unlocked, connected session for more than 12 seconds (the probe does not run or does not answer), it SHALL add no Category Usage for that time. It SHALL start a new probe within 10 seconds after an unexpected end, and within 60 seconds otherwise. After 5 minutes without samples it SHALL write an event and alert the parent, at most once per Restricted User and hour. It SHALL NOT use data of the Session Agent instead.
 
 #### Scenario: Probe cannot start
 - **WHEN** the Session Probe of the child cannot start for 5 minutes in an unlocked session
@@ -188,14 +188,29 @@ If the service accepts no line from a running Session Probe of an unlocked, conn
 - **AND** the parent gets one alert within one hour
 - **AND** while the probe locks are on, the session is locked within 10 minutes
 
+### Requirement: Sleep and resume are not a probe fault
+Time in sleep or hibernation SHALL NOT count toward the 30 seconds of the watchdog, the 5 minutes of an outage, a gap between samples, or a window of 10 minutes of unlocked time. The first sample of a session after a resume SHALL add no time. An end of a Session Probe within 15 seconds after a resume SHALL count as an expected end.
+
+#### Scenario: Sleep and resume without a sign-in
+- **WHEN** the probe locks are on, the child signs in without a password, and the PC sleeps three times within 10 minutes for 5 minutes each and resumes without a sign-in screen
+- **THEN** the service does not end the Session Probe for silence
+- **AND** no `PROBE_RESTART` event, no `PROBE_OUTAGE` event and no budget item results
+- **AND** no Category Usage counts for the sleep time
+- **AND** the session is not locked
+
 ### Requirement: Shadow mode for the probe locks
-The probe locks are the locks after blind samples, for a program that is never suspended, and for a full set of Foreground Window exes. The system SHALL apply them only while the setting `probe_locks_enforced` is on. It SHALL be off until the parent stores it in the web admin; an update SHALL keep it. While it is off, the system SHALL log each probe lock as "would lock", alert the parent at most once per day, and still count and suspend.
+The probe locks are the locks after blind samples, for a program that is never suspended, and for a full set of Foreground Window exes. The system SHALL apply them only while the setting `probe_locks_enforced` is on. It SHALL be off until the parent stores it in the web admin; an update SHALL keep it. While it is off, the system SHALL log each probe lock as "would lock", alert the parent once per day for each reason and for each exe that is never suspended, and still count and suspend.
 
 #### Scenario: First release on the child's PC
 - **WHEN** the setting is off and the child switches to a desktop that denies the probe for 2 minutes
 - **THEN** the session is not locked
 - **AND** the system writes a "would lock" event that names the child and the reason
 - **AND** the parent gets one alert on that day
+
+#### Scenario: Programs that are never suspended in shadow mode
+- **WHEN** the setting is off, the parent deleted the default System rule, Unknown is exhausted, and the child uses `C:\Windows\notepad.exe` and then `C:\Windows\System32\mspaint.exe` in front for 2 minutes each
+- **THEN** the session is not locked
+- **AND** the parent gets one alert that names `C:\Windows\notepad.exe` and one alert that names `C:\Windows\System32\mspaint.exe` on that day
 
 #### Scenario: Counting in shadow mode
 - **WHEN** the setting is off and the child plays a game in front until Games is exhausted
