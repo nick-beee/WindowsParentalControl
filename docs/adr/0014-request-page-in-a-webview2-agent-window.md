@@ -1,7 +1,7 @@
 # 14. The Child Request Page in a WebView2 Window of the Session Agent
 
 ## Status
-Proposed (change `show-request-page-in-agent-window`, issue #52). Decided by the orchestrator under the user's delegation (2026-11-27). Revised for "Review 1" on PR #54 the same day.
+Accepted (change `show-request-page-in-agent-window`, issue #52, approved on PR #54 at d3569e9). Decided by the orchestrator under the user's delegation (2026-11-27). Revised for "Review 1" on PR #54 the same day.
 
 ## Context
 The Session Agent opened the child request page (`/request`) in the default browser. Since stage 2 (`blocked-programs`), each default browser is a Blocked Program, and the service closes it at its start. So the child cannot send a Grace Request on a new install.

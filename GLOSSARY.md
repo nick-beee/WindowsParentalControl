@@ -98,3 +98,9 @@ Counted minutes of Allowance Time or Category Usage that the database did not st
 
 ## Storage Lockdown
 The state of the service after 3 ticks in a row with a failed database write. The service applies the Enforced Workstation Lock to each active session of a user who is not an administrator, at least every 2 seconds, and alerts the parent. It ends after a successful write when the volume has at least 100 MB free. It never closes or kills a program.
+
+## Request Window
+A window of the Session Agent that shows the child request page of the local service (`http://127.0.0.1:5050/request`) in an embedded WebView2. It loads no other page, opens no other window, file or program, and has no browser tools. It uses only the machine-wide Evergreen WebView2 Runtime and a new, empty data folder for each open. If it cannot show the page, it shows a text of the Language Preset. The Session Agent never starts a browser for a Grace Request.
+
+## Agent Window Budget
+At most 5 minutes in any 60 minutes of unlocked time in which the Session Agent, as a counted process of a Session Probe sample, adds no Category Usage and does not count toward the lock of a program that is never suspended. Only the agent's own time is exempt; another process in the same sample still counts. It does not change the Allowance Time, Continuous Use, a Break or the Schedule Window. It reads only probe samples, never data of the Session Agent.
