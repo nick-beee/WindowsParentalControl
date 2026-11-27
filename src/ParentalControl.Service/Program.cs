@@ -32,6 +32,10 @@ builder.Services.AddSingleton<CategoryEnforcer>();
 builder.Services.AddHostedService<DebugPrivilegeMonitor>();
 builder.Services.AddHostedService<StartupWorker>();
 builder.Services.AddHostedService<UsageMonitorWorker>();
+// session-probe-and-agent-channel: the Session Probe in each session of a Restricted User. The lifetime forwards the
+// session, power and shutdown events to it.
+builder.Services.AddSingleton<SessionProbeHost>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<SessionProbeHost>());
 builder.Services.AddHostedService<TelegramWorker>();
 builder.Services.AddHostedService<WebServerHost>();
 builder.Services.AddHostedService<WebView2RuntimeMonitor>();
@@ -48,7 +52,8 @@ if (WindowsServiceHelpers.IsWindowsService())
         var serilogLogger = sp.GetRequiredService<Serilog.ILogger>();
 
         return new ParentalControlServiceLifetime(
-            env, appLifetime, loggerFactory, hostOptions, serviceOptions, sessionTracker, serilogLogger, startup);
+            env, appLifetime, loggerFactory, hostOptions, serviceOptions, sessionTracker, serilogLogger, startup,
+            sp.GetRequiredService<SessionProbeHost>());
     });
 }
 

@@ -34,7 +34,8 @@ public sealed class WebServerHost : BackgroundService
     private readonly BreakEnforcer _breakEnforcer;
     private readonly SessionLocker _sessionLocker;
     private readonly AdminAccessService _adminAccess;
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string ProcessName, string WindowTitle, DateTime LastSeen)> _liveActivities = new(StringComparer.OrdinalIgnoreCase);
+    // The Session Probe host writes the live activity (session-probe-and-agent-channel D5); no agent route does.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string ProcessName, string WindowTitle, DateTime LastSeen)> _liveActivities = LiveActivities.Shared;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CaptureCommandState> _captureStates = new(StringComparer.OrdinalIgnoreCase);
     public static event Action<ScreenCaptureRecord>? OnCaptureReceived;
     private readonly Dictionary<int, (int Files, long Bytes)> _captureReservations = new();
@@ -919,70 +920,24 @@ public sealed class WebServerHost : BackgroundService
             }
         });
 
-        // Agent Activity Reporting API (posted by ParentalControl.Agent to record foreground window)
+        // The old activity route of the Session Agent (session-probe-and-agent-channel, D10): it counts nothing. Category
+        // Usage, ForegroundHistory, App Usage and the live activity come only from the Session Probe (SessionProbeHost).
+        // Until task 6.2 the agent still takes the pids to mute from this answer; task 5.2 removes the route.
         app.MapPost("/api/agent/activity", async (HttpContext ctx) =>
         {
             try
             {
                 using var reader = new StreamReader(ctx.Request.Body);
-                var body = await reader.ReadToEndAsync();
-                var doc = JsonDocument.Parse(body);
+                var doc = JsonDocument.Parse(await reader.ReadToEndAsync());
                 var username = doc.RootElement.GetProperty("username").GetString();
-                var processName = doc.RootElement.GetProperty("processName").GetString();
-                var windowTitle = doc.RootElement.TryGetProperty("windowTitle", out var wt) ? wt.GetString() ?? "" : "";
-                // Full exe path from a new agent. An old agent sends only the process name. Untrusted text.
-                var exePath = doc.RootElement.TryGetProperty("exePath", out var ep) && ep.ValueKind == JsonValueKind.String
-                    ? ep.GetString() ?? ""
-                    : "";
-                var durationSeconds = 20;
-                if (doc.RootElement.TryGetProperty("durationSeconds", out var dsProp) && dsProp.TryGetInt32(out var dsVal) && dsVal > 0)
-                {
-                    durationSeconds = Math.Clamp(dsVal, 1, 300);
-                }
-
-                if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(processName))
-                {
+                if (string.IsNullOrWhiteSpace(username))
                     return Results.BadRequest();
-                }
 
                 var user = UserRepository.GetByUsername(username);
                 if (user != null && user.IsRestricted)
                 {
-                    var isSessionLocked = _sessionTracker.ActiveSessions.Values
-                        .Any(s => string.Equals(s.Username, username, StringComparison.OrdinalIgnoreCase) && s.IsLocked);
-
-                    if (isSessionLocked)
-                    {
-                        return Results.Ok(new { success = true, skipped = "session_locked" });
-                    }
-
-                    _liveActivities[user.Username] = (processName, windowTitle, DateTime.Now);
-                    var today = ControlTime.Current.Today;
-                    // A failed write of App Usage (the Activity Timeline) is lost; it has no effect on a limit (storage-failure D6).
-                    StorageHealth.Shared.TryWrite(() => AppUsageRepository.AddSeconds(user.Id, today, processName, windowTitle, durationSeconds),
-                        "app usage", _logger);
-
-                    // Category Usage. The repository never counts System.
-                    var resolver = CategoryConfigCache.Current.Resolver;
-                    var resolution = string.IsNullOrWhiteSpace(exePath)
-                        ? resolver.ResolveFileName(processName)
-                        : resolver.Resolve(exePath);
-                    _foregroundHistory.Record(user.Id, today, resolution.CanonicalPath);
-
-                    // A Suspended App in front is not use: its frozen window must not take time from the category.
-                    var suspended = SuspensionRepository.GetForUser(user.Id);
-                    var isSuspendedExe = resolution.CanonicalPath is not null && suspended.Any(r =>
-                        string.Equals(WindowsPath.Canonicalize(r.ExePath), resolution.CanonicalPath, StringComparison.OrdinalIgnoreCase));
-                    if (!isSuspendedExe)
-                    {
-                        // The whole minutes go through the ledger: a failed write keeps them in the Pending Usage.
-                        var categoryMinutes = CategoryUsageRepository.CollectMinutes(user.Id, today, resolution.Category, durationSeconds);
-                        if (categoryMinutes > 0)
-                            UsageLedger.Shared.AddCategory(user.Id, today, resolution.Category, categoryMinutes);
-                    }
-
                     // The agent mutes the audio of these processes.
-                    var suspendedPids = suspended.Select(r => r.Pid).Distinct().ToArray();
+                    var suspendedPids = SuspensionRepository.GetForUser(user.Id).Select(r => r.Pid).Distinct().ToArray();
                     return Results.Ok(new { success = true, suspendedPids });
                 }
 
