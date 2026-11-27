@@ -29,7 +29,7 @@ public readonly record struct SampleCredit(TimeSpan Time, bool GapItem, bool Lon
 /// time (without sleep). Both clocks move together while the PC runs, so their difference changes only by the time of a
 /// sleep or a hibernation. If the difference grew by more than 1 second since the last accepted line, the system slept,
 /// and the line counts as the first sample after a resume. Both values are read at the receipt, so a burst of queued
-/// lines does not look like a sleep. Not thread-safe: one caller per session.
+/// lines does not look like a sleep. Thread-safe: each probe has its own reader thread.
 /// </para>
 /// </summary>
 public sealed class ForegroundSampleCounter
@@ -50,22 +50,33 @@ public sealed class ForegroundSampleCounter
         public bool SpansUnexpectedEnd;
     }
 
+    private readonly Lock _gate = new();
     private readonly Dictionary<int, SessionState> _sessions = new();
 
     /// <summary>A planned start of the probe (sign-in, unlock, connect, service start): the next sample adds zero.</summary>
-    public void PlannedStart(int sessionId) => State(sessionId).SkipNext = true;
+    public void PlannedStart(int sessionId)
+    {
+        lock (_gate) State(sessionId).SkipNext = true;
+    }
 
     /// <summary>A resume from sleep or hibernation: the next sample of each session adds zero.</summary>
     public void Resumed()
     {
-        foreach (var state in _sessions.Values) state.SkipNext = true;
+        lock (_gate)
+            foreach (var state in _sessions.Values) state.SkipNext = true;
     }
 
     /// <summary>An unexpected end of the probe: the last-sample time stays, and the next gap gives no gap item.</summary>
-    public void UnexpectedEnd(int sessionId) => State(sessionId).SpansUnexpectedEnd = true;
+    public void UnexpectedEnd(int sessionId)
+    {
+        lock (_gate) State(sessionId).SpansUnexpectedEnd = true;
+    }
 
     /// <summary>The end of the session: the state goes.</summary>
-    public void SessionEnded(int sessionId) => _sessions.Remove(sessionId);
+    public void SessionEnded(int sessionId)
+    {
+        lock (_gate) _sessions.Remove(sessionId);
+    }
 
     /// <summary>
     /// Accepts one sample line (a window in front, <c>window: false</c>, or a blind sample) and gives its time.
@@ -77,6 +88,12 @@ public sealed class ForegroundSampleCounter
     /// <param name="blind">The sample is a blind sample.</param>
     /// <param name="counted">The counted processes of the sample.</param>
     public SampleCredit Accept(int sessionId, long t, TimeSpan? duration, long receiptTickMs, TimeSpan receiptUnbiased, bool blind,
+        IReadOnlyCollection<CountedProcess> counted)
+    {
+        lock (_gate) return AcceptLocked(sessionId, t, duration, receiptTickMs, receiptUnbiased, blind, counted);
+    }
+
+    private SampleCredit AcceptLocked(int sessionId, long t, TimeSpan? duration, long receiptTickMs, TimeSpan receiptUnbiased, bool blind,
         IReadOnlyCollection<CountedProcess> counted)
     {
         var state = State(sessionId);

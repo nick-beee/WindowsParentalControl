@@ -114,8 +114,11 @@ internal static class ProcessLauncher
             };
             var threadAttributes = attributes;
 
+            // cb is the size of STARTUPINFOEX only with EXTENDED_STARTUPINFO_PRESENT (a start with a handle list).
             var startup = new LaunchNative.STARTUPINFOEX();
-            startup.StartupInfo.cb = Marshal.SizeOf<LaunchNative.STARTUPINFOEX>();
+            startup.StartupInfo.cb = inheritHandle != IntPtr.Zero
+                ? Marshal.SizeOf<LaunchNative.STARTUPINFOEX>()
+                : Marshal.SizeOf<NativeMethods.STARTUPINFO>();
             startup.StartupInfo.lpDesktop = @"winsta0\default";
 
             lock (ProcessLaunchLock.Gate)

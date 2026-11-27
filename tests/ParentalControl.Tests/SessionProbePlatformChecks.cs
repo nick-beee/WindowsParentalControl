@@ -18,6 +18,7 @@ internal static class SessionProbePlatformChecks
 {
     private const string HostMode = "--probe-system-host";
     private const string ChildMode = "--probe-system-child";
+    private const string ExitMode = "--probe-system-exit";
     private const string TaskName = "ParentalControlProbeSelfCheck";
     private static readonly string ResultFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "pc-probe-selfcheck");
     private static readonly string ResultFile = Path.Combine(ResultFolder, "result.txt");
@@ -30,6 +31,8 @@ internal static class SessionProbePlatformChecks
             RunHost(args[1]);
             return true;
         }
+        if (args.Length >= 1 && args[0] == ExitMode)
+            return true;
         if (args.Length >= 2 && args[0] == ChildMode)
         {
             RunChild(args[1]);
@@ -63,7 +66,10 @@ internal static class SessionProbePlatformChecks
         var failed = lines.Where(l => l.StartsWith("FAIL", StringComparison.Ordinal)).ToList();
         Debug.Assert(failed.Count == 0, "Probe self-checks failed: " + string.Join(" | ", failed));
         var passed = lines.Count(l => l.StartsWith("PASS", StringComparison.Ordinal));
-        Debug.Assert(passed == 23, $"The probe self-checks should give 23 passes, gave {passed}");
+        var skipped = lines.Any(l => l.StartsWith("SKIP", StringComparison.Ordinal));
+        var onCi = Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true";
+        Debug.Assert(!skipped || onCi, "The SessionSystemProcess checks need a console session outside CI");
+        Debug.Assert(passed == (skipped ? 12 : 24), $"The probe self-checks should give {(skipped ? 12 : 24)} passes, gave {passed}");
         Console.WriteLine("✅ Session Probe platform (SeDebugPrivilege, ReadSampleEntry, WebView2 creator, SessionSystemProcess) Passed.");
     }
 
@@ -229,6 +235,13 @@ internal static class SessionProbePlatformChecks
     private static void SystemProcessChecks()
     {
         var session = (int)TestProbeNative.WTSGetActiveConsoleSessionId();
+        if (session <= 0)
+        {
+            // A CI runner can have no console session. The VM run must not take this path (Run asserts it).
+            _out!.WriteLine($"SKIP no console session ({session}): the SessionSystemProcess checks did not run");
+            _out.Flush();
+            return;
+        }
         Check(session > 0, "the console session exists", session.ToString());
         Environment.SetEnvironmentVariable("DOTNET_STARTUP_HOOKS", @"C:\Users\Kid\hook.dll");
 
@@ -273,6 +286,12 @@ internal static class SessionProbePlatformChecks
         Check(diagnostics == "0", "the child has DOTNET_EnableDiagnostics=0", diagnostics ?? "");
         Check(childPriority == "High", "the child reads its own class as High", childPriority ?? "");
         TestProbeNative.WaitForSingleObject(child.Handle.DangerousGetHandle(), 10_000);
+
+        // A start without an inherited handle (no attribute list) runs and exits with 0.
+        using var plain = SessionSystemProcess.Start(session, Path.Combine(AppContext.BaseDirectory, "ParentalControl.Tests.exe"), ExitMode, IntPtr.Zero);
+        var waited = TestProbeNative.WaitForSingleObject(plain.Handle.DangerousGetHandle(), 30_000);
+        TestProbeNative.GetExitCodeProcess(plain.Handle.DangerousGetHandle(), out var exitCode);
+        Check(waited == 0 && exitCode == 0, "a start without an inherited handle runs and exits with 0", $"wait {waited} exit {exitCode}");
     }
 
     private static int? WaitForChild(int parentPid, string processName)
@@ -349,6 +368,9 @@ internal static class TestProbeNative
 
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern IntPtr OpenThread(uint access, bool inherit, int threadId);
