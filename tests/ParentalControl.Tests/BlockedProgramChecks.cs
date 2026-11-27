@@ -16,7 +16,9 @@ internal static class BlockedProgramChecks
         SettingsRepository.Set(SettingsRepository.KeyNotifyBlockedTelegram, "0");
         Debug.Assert(!SettingsRepository.IsNotifyBlockedTelegramEnabled(), "The notice setting 0 should be off");
         SettingsRepository.Set(SettingsRepository.KeyNotifyBlockedTelegram, "1");
-        Debug.Assert(Enum.GetValues<EventType>()[^1] == EventType.PROGRAM_BLOCKED, "PROGRAM_BLOCKED should be the last event type");
+        // Event rows store the name of the type, so the position in the enum does not matter (harden-clock-and-disk adds types after it).
+        Debug.Assert(Enum.TryParse<EventType>(nameof(EventType.PROGRAM_BLOCKED), out var blockedType) && blockedType == EventType.PROGRAM_BLOCKED,
+            "PROGRAM_BLOCKED should parse from its stored name");
 
         // 5.4: a new database has the 15 blocked browsers.
         var rules = AppRuleRepository.GetAll();
