@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Quota for screen captures of the Session Agent
-The service SHALL accept at most 200 screen captures and 50 MB per user on one day (since local midnight), and at most 5 MB per capture, on the capture upload of the Agent Channel. The user SHALL be the user of that channel. The service SHALL refuse more without a file and without a row, and it SHALL write the refusal to the log one time per user and day.
+The service SHALL accept at most 200 screen captures and 50 MB per user on one day (since midnight of the Control Time Zone), and at most 5 MB per capture, on the capture upload of the Agent Channel. The user SHALL be the user of that channel. The service SHALL refuse more without a file and without a row, and it SHALL write the refusal to the log one time per user and day.
 
 #### Scenario: Flood of captures
 - **WHEN** the Session Agent sends a 201st capture for its user on one day
@@ -10,6 +10,10 @@ The service SHALL accept at most 200 screen captures and 50 MB per user on one d
 #### Scenario: Capture too large
 - **WHEN** the Session Agent sends a capture with more than 5 MB
 - **THEN** the service refuses it and keeps no file
+
+#### Scenario: Time zone change does not reset the quota
+- **WHEN** the Session Agent sent 200 captures for its user today, and the child changes the system time zone so that the local date is the next day
+- **THEN** the service refuses the next capture
 
 #### Scenario: Capture on the old route
 - **WHEN** a process sends `POST /api/agent/capture`

@@ -63,7 +63,7 @@ When the Category Usage of a category reaches the limit of the day of an exe (it
 - **THEN** the system suspends the game within 70 seconds after the Session Probe sees it in front
 
 ### Requirement: Limit the Session End Hold from the agent
-The child controls its Session Agent, so a session-end request through the Agent Channel is a claim of the child. The system SHALL grant at most one Session End Hold per Restricted User in 15 minutes that does not end with the end of the session. For a request outside this limit, no hold starts and the requirement "Keep a suspended process suspended" applies without the hold exception. The system SHALL log each request and each refusal.
+The child controls its Session Agent, so a session-end request through the Agent Channel is a claim of the child. The system SHALL grant at most one Session End Hold per Restricted User in 15 minutes that does not end with the end of the session. For a request outside this limit, no hold starts, the system resumes no process, and the requirement "Session End Guard" applies. The system SHALL log each request and each refusal.
 
 #### Scenario: Fake request from the child
 - **WHEN** Games is exhausted and the child makes its Session Agent send the session-end request, but does not sign out
@@ -77,7 +77,7 @@ The child controls its Session Agent, so a session-end request through the Agent
 
 #### Scenario: Fake end-session message to the agent
 - **WHEN** a hold was refused and the child makes the Session Agent resume the game without a sign-out
-- **THEN** the system suspends the game again within 70 seconds
+- **THEN** the system suspends the game again within 20 seconds after the end of the guard, so the game runs for at most 80 seconds
 
 #### Scenario: Sign-out, sign-in and sign-out again
 - **WHEN** the child signs out with a suspended game, signs in again, and signs out again 5 minutes later with a suspended game
