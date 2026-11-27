@@ -242,7 +242,7 @@ public class ProbeOutageMonitorTests
             Assert.True(m.MayStart(Session, logon));
             Assert.Equal(1, End(m, logoff - 6, logon: logon).Delay.TotalSeconds);
             Assert.Equal(2, End(m, logoff - 0.3, logon: logon).Delay.TotalSeconds);
-            m.SignedOut(Session, logon);
+            m.SignedOut(User, Session, logon, S(logoff));
             Assert.False(m.MayStart(Session, logon));
             Assert.False(End(m, logoff + 1, logon: logon).Restart);
             Assert.Empty(Classify(m, logoff + 200));
@@ -256,7 +256,7 @@ public class ProbeOutageMonitorTests
         var m = New();
         Assert.True(End(m, 10).Restart);
         Assert.Empty(Classify(m, 89));
-        m.SignedOut(Session, Logon);
+        m.SignedOut(User, Session, Logon, S(90));
         Assert.Empty(Classify(m, 200));
     }
 
@@ -264,7 +264,7 @@ public class ProbeOutageMonitorTests
     public void New_logon_with_the_same_session_ID_after_a_sign_out_may_start()
     {
         var m = New();
-        m.SignedOut(Session, 1);
+        m.SignedOut(User, Session, 1, S(5));
         Assert.False(m.MayStart(Session, 1));
         m.SignedIn(Session, 2);
         Assert.True(m.MayStart(Session, 2));
@@ -292,7 +292,7 @@ public class ProbeOutageMonitorTests
     {
         var m = New();
         End(m, 10);
-        m.SessionGone(Session);
+        m.SessionGone(User, Session, S(11));
         Assert.True(m.MayStart(Session, Logon));
     }
 
@@ -320,7 +320,7 @@ public class ProbeOutageMonitorTests
         var outcome = End(m, 10, ProbeEndCause.Watchdog);
         Assert.True(outcome.Restart);
         Assert.Equal(1, m.PendingEnds);
-        m.SignedOut(Session, Logon);
+        m.SignedOut(User, Session, Logon, S(30));
         Assert.Empty(Classify(m, 200));
     }
 
@@ -442,5 +442,66 @@ public class ProbeOutageMonitorTests
         Assert.Empty(m.CheckOutages(S(t + 60)));
         Assert.Empty(Classify(m, t + 500));
         Assert.False(m.IsLockDue(User, S(t + 60), Today));
+    }
+
+    // ---------- review S5: a sign-out and a gone session stop the unlocked clock ----------
+
+    [Fact]
+    public void No_PROBE_OUTAGE_after_a_sign_out()
+    {
+        var m = New();
+        Readable(m, 10);
+        m.SignedOut(User, Session, Logon, S(20));
+        Assert.Empty(m.CheckOutages(S(20 + 3600)));
+    }
+
+    [Fact]
+    public void Unlocked_clock_does_not_move_during_a_sign_out()
+    {
+        var m = New();
+        Readable(m, 10);
+        m.SignedOut(User, Session, Logon, S(20));
+        Assert.Equal(S(20), m.UnlockedTime(User, S(20 + 3600)));
+        m.SignedIn(Session, Logon + 1);
+        m.Observe(User, S(4000), true);
+        Assert.Equal(S(20), m.UnlockedTime(User, S(4000)));
+        Assert.Equal(S(30), m.UnlockedTime(User, S(4010)));
+    }
+
+    [Fact]
+    public void Gone_session_stops_the_unlocked_clock_and_gives_no_PROBE_OUTAGE()
+    {
+        var m = New();
+        Readable(m, 10);
+        m.SessionGone(User, Session, S(20));
+        Assert.Equal(S(20), m.UnlockedTime(User, S(20 + 3600)));
+        Assert.Empty(m.CheckOutages(S(20 + 3600)));
+    }
+
+    [Fact]
+    public void Sign_out_of_a_session_without_a_known_user_keeps_the_clock_of_the_user()
+    {
+        var m = New();
+        m.SignedOut(null, Session, Logon, S(20));
+        Assert.False(m.MayStart(Session, Logon));
+        Assert.Equal(S(100), m.UnlockedTime(User, S(100)));
+    }
+
+    [Fact]
+    public void Gone_session_before_the_end_of_the_end_wait_is_a_session_end_end()
+    {
+        var m = New();
+        End(m, 10);
+        Assert.Empty(Classify(m, 99, id => id == Session));
+        Assert.Equal(0, m.PendingEnds);
+    }
+
+    [Fact]
+    public void Gone_session_at_or_after_the_end_of_the_end_wait_does_not_hide_the_unexpected_end()
+    {
+        var m = New();
+        End(m, 10);
+        Assert.Single(Classify(m, 101, id => id == Session));
+        Assert.Equal(0, m.PendingEnds);
     }
 }

@@ -63,6 +63,8 @@ public sealed class SessionProbeHost : BackgroundService
     private readonly Lock _gate = new();
     private readonly Dictionary<int, ProbeRun> _runs = new();
     private readonly Dictionary<int, long> _logonKeys = new();
+    // The Restricted User of each session, for the sign-out and the gone session (they stop the unlocked clock).
+    private readonly Dictionary<int, int> _sessionUsers = new();
     private readonly HashSet<(int SessionId, long LogonKey)> _started = [];
     private readonly ProbeOutageMonitor _monitor;
     private readonly ProbeLockGate _lockGate;
@@ -240,7 +242,8 @@ public sealed class SessionProbeHost : BackgroundService
         {
             if (!_ready) return;
             var key = _runs.TryGetValue(sessionId, out var run) ? run.LogonKey : _logonKeys.GetValueOrDefault(sessionId);
-            _monitor.SignedOut(sessionId, key);
+            _monitor.SignedOut(UserOf(sessionId), sessionId, key, SessionProbePlatform.UnbiasedNow());
+            _sessionUsers.Remove(sessionId);
             _logger.Information("Session Probe: sign-out of session {SessionId} (logon {Key})", sessionId, key);
             if (run is not null) EndRun(run, "sign-out");
             _counter.SessionEnded(sessionId);
@@ -310,6 +313,7 @@ public sealed class SessionProbeHost : BackgroundService
         if (!_tracker.ActiveSessions.TryGetValue(sessionId, out var session)) return;
         var user = UserRepository.GetBySid(session.UserSid);
         if (user is null || !user.IsRestricted) return;
+        _sessionUsers[sessionId] = user.Id;
 
         if (IsGone(sessionId)) return;
         var key = SessionProbePlatform.QueryLogonTime(sessionId) ?? _logonKeys.GetValueOrDefault(sessionId);
@@ -768,7 +772,8 @@ public sealed class SessionProbeHost : BackgroundService
                 foreach (var sessionId in _logonKeys.Keys.ToList())
                 {
                     if (_runs.ContainsKey(sessionId) || !IsGone(sessionId)) continue;
-                    _monitor.SessionGone(sessionId);
+                    _monitor.SessionGone(UserOf(sessionId), sessionId, now);
+                    _sessionUsers.Remove(sessionId);
                     _counter.SessionEnded(sessionId);
                     _agentBudgets.Remove(sessionId);
                     _lastForeground.Remove(sessionId);
@@ -940,6 +945,10 @@ public sealed class SessionProbeHost : BackgroundService
     });
 
     // ------------------------------------------------------------------ helpers
+
+    private int? UserOf(int sessionId) =>
+        _runs.TryGetValue(sessionId, out var run) ? run.UserId
+        : _sessionUsers.TryGetValue(sessionId, out var userId) ? userId : null;
 
     private bool IsLocked(int sessionId) => !_tracker.ActiveSessions.TryGetValue(sessionId, out var session) || session.IsLocked;
 

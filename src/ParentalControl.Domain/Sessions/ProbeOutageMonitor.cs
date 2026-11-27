@@ -202,9 +202,12 @@ public sealed class ProbeOutageMonitor
     }
 
     /// <summary><c>WTS_SESSION_LOGOFF</c> of the session: each pending end of it is a session-end end, and no probe
-    /// starts in it until a new sign-in.</summary>
-    public void SignedOut(int sessionId, long logonKey)
+    /// starts in it until a new sign-in. The unlocked clock of the user stops (S5), so the time of the sign-out never
+    /// counts as unlocked time and gives no <c>PROBE_OUTAGE</c>.</summary>
+    /// <param name="userId">The Restricted User of the session, or null if the service does not know one.</param>
+    public void SignedOut(int? userId, int sessionId, long logonKey, TimeSpan unbiasedNow)
     {
+        if (userId is { } id) Observe(id, unbiasedNow, false);
         _signedOut[sessionId] = logonKey;
         _pending.RemoveAll(p => p.SessionId == sessionId);
         _restartsAt.Remove((sessionId, logonKey));
@@ -219,8 +222,14 @@ public sealed class ProbeOutageMonitor
     /// <summary>The service stops: each pending end is a session-end end.</summary>
     public void ServiceStopping() => _pending.Clear();
 
-    /// <summary>The end of the session (it is gone): its pending ends are session-end ends.</summary>
-    public void SessionGone(int sessionId) => _pending.RemoveAll(p => p.SessionId == sessionId);
+    /// <summary>The end of the session (it is gone): its pending ends are session-end ends, and the unlocked clock of
+    /// the user stops (S5).</summary>
+    /// <param name="userId">The Restricted User of the session, or null if the service does not know one.</param>
+    public void SessionGone(int? userId, int sessionId, TimeSpan unbiasedNow)
+    {
+        if (userId is { } id) Observe(id, unbiasedNow, false);
+        _pending.RemoveAll(p => p.SessionId == sessionId);
+    }
 
     /// <summary>True if the service may start a probe in the session: it did not sign out in this logon. The caller
     /// also checks that the session exists.</summary>
@@ -229,19 +238,19 @@ public sealed class ProbeOutageMonitor
     /// <summary>
     /// Classifies each end whose end wait is over. <paramref name="isGone"/> is the live test of the service
     /// (<see cref="SessionPresence.IsGone"/>), checked again at each call: a session that is gone within the end wait
-    /// makes a Session-End End.
+    /// makes a Session-End End. The test counts only while the end wait runs: at or after <c>Due</c> the end is
+    /// unexpected also if the session is gone now, because the gone state then can come from after the end wait.
     /// </summary>
     public IReadOnlyList<UnexpectedProbeEnd> Classify(TimeSpan unbiasedNow, Func<int, bool> isGone, DateOnly today)
     {
         var result = new List<UnexpectedProbeEnd>();
         foreach (var pending in _pending.ToList())
         {
-            if (isGone(pending.SessionId))
+            if (unbiasedNow < pending.Due)
             {
-                _pending.Remove(pending);
+                if (isGone(pending.SessionId)) _pending.Remove(pending);
                 continue;
             }
-            if (unbiasedNow < pending.Due) continue;
             _pending.Remove(pending);
             result.Add(Unexpected(pending.UserId, pending.SessionId, unbiasedNow, pending.ActiveAndUnlockedAtEnd, today));
         }
