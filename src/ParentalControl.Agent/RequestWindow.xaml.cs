@@ -187,8 +187,12 @@ public partial class RequestWindow : Window
         var allowed = e.ResourceContext == CoreWebView2WebResourceContext.Document
             ? RequestWindowUrlPolicy.IsAllowedDocument(uri)
             : RequestWindowUrlPolicy.IsAllowedResource(uri);
-        if (!allowed && _environment is { } environment)
+        if (allowed)
+            return;
+        if (_environment is { } environment)
             e.Response = environment.CreateWebResourceResponse(null, 403, "Forbidden", "");
+        else
+            ShowFallback(); // Fail closed: without an environment the request cannot be refused.
     }
 
     private void OnNewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs e) => e.Handled = true;
