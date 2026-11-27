@@ -18,10 +18,11 @@
   </ItemGroup>
 
   <!--
-    The web admin (web/admin, ADR 0009): a React single-page app. Before the build, npm builds it into
-    web/admin/dist, and the service embeds these files as resources ("AdminSpa/<path>", see Web/AdminSpa.cs).
+    The web admin and the child request page (web/admin, ADR 0009): a React app with two pages, index.html and
+    request.html. Before the build, npm builds it into web/admin/dist, and the service embeds these files as
+    resources ("AdminSpa/<path>", see Web/AdminSpa.cs and Web/RequestSpa.cs).
     - "npm ci" runs only if node_modules is missing or older than package-lock.json.
-    - "npm run build" runs only if dist/index.html is missing or older than a source file.
+    - "npm run build" runs only if a page in dist is missing or older than a source file.
     - -p:SkipAdminSpaBuild=true skips npm, for example when CI built the bundle in an earlier step.
       The build still needs web/admin/dist.
   -->
@@ -32,7 +33,7 @@
   </PropertyGroup>
   <ItemGroup>
     <AdminSpaSource Include="$(AdminSpaDir)src/**/*" Exclude="$(AdminSpaDir)src/**/*.test.ts;$(AdminSpaDir)src/**/*.test.tsx;$(AdminSpaDir)src/test/**/*" />
-    <AdminSpaSource Include="$(AdminSpaDir)index.html;$(AdminSpaDir)package.json;$(AdminSpaDir)package-lock.json;$(AdminSpaDir)vite.config.ts;$(AdminSpaDir)tsconfig.json" />
+    <AdminSpaSource Include="$(AdminSpaDir)index.html;$(AdminSpaDir)request.html;$(AdminSpaDir)package.json;$(AdminSpaDir)package-lock.json;$(AdminSpaDir)vite.config.ts;$(AdminSpaDir)tsconfig.json" />
   </ItemGroup>
 
   <Target Name="AdminSpaNpmCi" Condition="'$(AdminSpaRunNpm)' == 'true'"
@@ -41,14 +42,14 @@
   </Target>
 
   <Target Name="AdminSpaBuild" DependsOnTargets="AdminSpaNpmCi" Condition="'$(AdminSpaRunNpm)' == 'true'"
-          Inputs="@(AdminSpaSource)" Outputs="$(AdminSpaDist)index.html">
+          Inputs="@(AdminSpaSource)" Outputs="$(AdminSpaDist)index.html;$(AdminSpaDist)request.html">
     <Exec Command="npm run build" WorkingDirectory="$(AdminSpaDir)" />
   </Target>
 
   <!-- A target adds the files after npm, because a static glob reads dist before npm writes it. -->
   <Target Name="AdminSpaEmbed" BeforeTargets="PrepareForBuild" DependsOnTargets="AdminSpaBuild" Condition="'$(DesignTimeBuild)' != 'true'">
-    <Error Condition="!Exists('$(AdminSpaDist)index.html')"
-           Text="The web admin is not built: $(AdminSpaDist)index.html is missing. Install Node.js 22.12 or later and build without -p:SkipAdminSpaBuild=true, or run 'npm ci' and 'npm run build' in web/admin." />
+    <Error Condition="!Exists('$(AdminSpaDist)index.html') or !Exists('$(AdminSpaDist)request.html')"
+           Text="The web admin is not built: $(AdminSpaDist)index.html or request.html is missing. Install Node.js 22.12 or later and build without -p:SkipAdminSpaBuild=true, or run 'npm ci' and 'npm run build' in web/admin." />
     <ItemGroup>
       <_AdminSpaFile Include="$(AdminSpaDist)**/*" />
       <EmbeddedResource Include="@(_AdminSpaFile)" WithCulture="false" Type="Non-Resx"

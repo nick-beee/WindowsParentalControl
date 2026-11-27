@@ -4,8 +4,8 @@ using ParentalControl.Domain.AdminAccess;
 namespace ParentalControl.Domain.Tests;
 
 /// <summary>
-/// A static scan of the web admin (web/admin, ADR 0009). React escapes text, so the XSS bug class of #5
-/// comes back only through code that writes raw HTML or runs a string as code. The ESLint rules of
+/// A static scan of the web admin and the child request page (web/admin, ADR 0009). React escapes text, so the XSS
+/// bug class of #5 comes back only through code that writes raw HTML or runs a string as code. The ESLint rules of
 /// web/admin/eslint.config.js refuse the same patterns; this test also runs without Node.
 /// </summary>
 public class AdminSpaSourceTests
@@ -45,6 +45,22 @@ public class AdminSpaSourceTests
         var files = SourceLines(includeTests: false).Select(l => l.File).Distinct().ToList();
         Assert.Contains("src/api/client.ts", files);
         Assert.Contains("src/views/AdminApp.tsx", files);
+        Assert.Contains("src/request/RequestApp.tsx", files);
+    }
+
+    /// <summary>
+    /// The child request page has no texts of its own: the service sends the texts of the Language Preset
+    /// (RequestPageModelTests). So the page must not use the German texts or the code of the web admin.
+    /// </summary>
+    [Fact]
+    public void TheRequestPageDoesNotUseTheTextsOfTheAdmin()
+    {
+        var findings = SourceLines(includeTests: false)
+            .Where(l => l.File.StartsWith("src/request/", StringComparison.Ordinal))
+            .Where(l => Regex.IsMatch(l.Line, @"from\s+'(\.\./)+(i18n|views|dialogs|api)\b|styles\.css"))
+            .Select(l => $"{l.File}:{l.LineNo}: {l.Line.Trim()}")
+            .ToList();
+        Assert.True(findings.Count == 0, string.Join(Environment.NewLine, findings));
     }
 
     [Fact]
@@ -71,14 +87,17 @@ public class AdminSpaSourceTests
         Assert.Equal(serviceCsp, viteCsp);
     }
 
-    [Fact]
-    public void ThePageHasNoInlineScriptOrStyle()
+    [Theory]
+    [InlineData("index.html", new[] { "__PC_ADMIN_VIEW__", "__PC_VERSION__" })]
+    [InlineData("request.html", new[] { "__PC_LANG__", "__PC_TITLE__", "__PC_REQUEST_DATA__" })]
+    public void ThePageHasNoInlineScriptOrStyle(string page, string[] placeholders)
     {
-        var html = File.ReadAllText(Path.Combine(RepoRoot(), SpaDir, "index.html"));
+        var html = File.ReadAllText(Path.Combine(RepoRoot(), SpaDir, page));
         Assert.DoesNotMatch(new Regex(@"<script(?![^>]*\bsrc=)[^>]*>"), html);
         Assert.DoesNotMatch(new Regex(@"<style\b|\sstyle=""|\son\w+="""), html);
-        Assert.Contains("__PC_ADMIN_VIEW__", html);
-        Assert.Contains("__PC_VERSION__", html);
+        // Each placeholder once: the service replaces it, and a copy in a comment would get the value too.
+        foreach (var placeholder in placeholders)
+            Assert.Single(Regex.Matches(html, Regex.Escape(placeholder)));
     }
 
     /// <summary>

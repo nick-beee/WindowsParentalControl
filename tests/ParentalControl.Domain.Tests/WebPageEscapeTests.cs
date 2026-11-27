@@ -6,8 +6,8 @@ namespace ParentalControl.Domain.Tests;
 /// A static scan of the source text of the web pages in ParentalControl.Service (issue #5, stored XSS).
 /// The pages are in a Windows project, so this test reads them as text and does not run them.
 /// The scan finds raw interpolation of untrusted values. It does not execute a payload in a browser.
-/// Since ADR 0009 the dashboard of the web admin is a React app (web/admin, see AdminSpaSourceTests). The pages
-/// that stay in C# are the child request page and the login page that the login route returns after a failure.
+/// Since ADR 0009 the web admin and the child request page are a React app (web/admin, see AdminSpaSourceTests).
+/// The pages that stay in C# are the login page that the login route returns after a failure and the setup text.
 /// </summary>
 public class WebPageEscapeTests
 {
@@ -100,7 +100,6 @@ public class WebPageEscapeTests
     {
         var files = PageLines().Select(l => l.File).Distinct().ToList();
         Assert.Contains("AdminPage.cs", files);
-        Assert.Contains("RequestPage.cs", files);
     }
 
     private static IEnumerable<(string File, int LineNo, string Line)> PageLines()

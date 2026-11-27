@@ -508,7 +508,6 @@ public sealed class WebServerHost : BackgroundService
             }
 
             var remainingSeconds = Math.Min(dailySec, curfewSec);
-            var remaining = (remainingSeconds + 59) / 60;
             var curfew = limit != null ? $"{limit.ScheduleStart:HH:mm} – {limit.ScheduleEnd:HH:mm}" : "08:00 – 22:00";
 
             var isOffline = !await TelegramBotService.CheckConnectivityAsync();
@@ -530,31 +529,20 @@ public sealed class WebServerHost : BackgroundService
             var baseLimit = LimitRepository.GetByUserId(targetUser.Id);
             var customSchedules = ScheduleRepository.GetWeeklySchedule(targetUser.Id);
             var upcomingExceptions = ScheduleExceptionRepository.GetUpcomingForUser(targetUser.Id, today);
-            // The page shows its texts in the Language Preset. The preset comes only from app_settings.
-            var preset = SettingsRepository.GetLanguagePreset();
-            var pageTexts = RequestPageTexts.For(preset);
-            var sessionTexts = SessionTexts.For(preset);
-            var defaultSummary = pageTexts.Format("schedule_default",
-                ("minutes", baseLimit?.DailyMinutes ?? 120),
-                ("start", (baseLimit?.ScheduleStart ?? new TimeOnly(8, 0)).ToString("HH:mm")),
-                ("end", (baseLimit?.ScheduleEnd ?? new TimeOnly(22, 0)).ToString("HH:mm")));
 
-            var dayNames = new[]
+            var weeklySchedule = new[]
             {
                 DayOfWeek.Monday, DayOfWeek.Tuesday, DayOfWeek.Wednesday, DayOfWeek.Thursday,
                 DayOfWeek.Friday, DayOfWeek.Saturday, DayOfWeek.Sunday
-            }.Select(d => (Day: d, Code: RequestPageTexts.DayCode(pageTexts, d), Name: SessionTexts.DayName(sessionTexts, d))).ToArray();
-
-            var weeklySchedule = dayNames.Select(dn =>
+            }.Select(day =>
             {
-                var custom = customSchedules.FirstOrDefault(s => s.DayOfWeek == dn.Day);
+                var custom = customSchedules.FirstOrDefault(s => s.DayOfWeek == day);
                 int mins = custom != null ? custom.DailyMinutes : (baseLimit?.DailyMinutes ?? 120);
                 var start = custom != null ? custom.ScheduleStart : (baseLimit?.ScheduleStart ?? new TimeOnly(8, 0));
                 var end = custom != null ? custom.ScheduleEnd : (baseLimit?.ScheduleEnd ?? new TimeOnly(22, 0));
 
                 bool hasExc = false;
-                string? excNote = null;
-                if (dn.Day == dayOfWeek)
+                if (day == dayOfWeek)
                 {
                     var todayExc = upcomingExceptions.FirstOrDefault(e => e.ExceptionDate == today);
                     if (todayExc != null)
@@ -563,44 +551,36 @@ public sealed class WebServerHost : BackgroundService
                         mins = todayExc.DailyMinutes;
                         start = todayExc.ScheduleStart;
                         end = todayExc.ScheduleEnd;
-                        excNote = pageTexts["exception_today"];
                     }
                 }
 
-                return new RequestPage.ScheduleDayView(
-                    dn.Day,
-                    dn.Code,
-                    dn.Name,
-                    mins,
-                    $"{start:HH:mm} – {end:HH:mm}",
-                    custom != null,
-                    dn.Day == dayOfWeek,
-                    hasExc,
-                    excNote
-                );
+                return new RequestPageDay(day, mins, $"{start:HH:mm} – {end:HH:mm}", custom != null, day == dayOfWeek, hasExc);
             }).ToList();
 
-            var html = RequestPage.Render(
-                pageTexts,
-                sessionTexts,
-                targetUser.Username,
-                remaining,
-                remainingSeconds,
-                curfew,
-                isOffline,
-                countToday,
-                maxRequests,
-                hasPending,
-                latestReq?.Status ?? lastOverallReq?.Status,
-                latestDeclineReason,
-                latestResolvedAt,
-                isAdminTesting,
-                availableUsernames,
-                isSessionActive,
-                isSessionLocked,
-                weeklySchedule,
-                defaultSummary);
-            return Results.Content(html, "text/html");
+            // The page (web/admin/request.html, ADR 0009) shows its texts in the Language Preset. The preset comes
+            // only from app_settings; the service gives the page all of its texts.
+            var model = RequestPageModel.Build(new RequestPageInput(
+                Preset: SettingsRepository.GetLanguagePreset(),
+                Username: targetUser.Username,
+                RemainingSeconds: remainingSeconds,
+                Curfew: curfew,
+                IsOffline: isOffline,
+                RequestsToday: countToday,
+                MaxRequests: maxRequests,
+                HasPending: hasPending,
+                LatestStatus: latestReq?.Status ?? lastOverallReq?.Status,
+                DeclineReason: latestDeclineReason,
+                DeclineResolvedAt: latestResolvedAt,
+                IsAdminTesting: isAdminTesting,
+                AvailableUsers: availableUsernames,
+                SessionActive: isSessionActive,
+                SessionLocked: isSessionLocked,
+                Week: weeklySchedule,
+                DefaultMinutes: baseLimit?.DailyMinutes ?? 120,
+                DefaultStart: baseLimit?.ScheduleStart ?? new TimeOnly(8, 0),
+                DefaultEnd: baseLimit?.ScheduleEnd ?? new TimeOnly(22, 0),
+                Today: today));
+            return RequestSpa.Page(ctx, model);
         });
 
         // User Grace Request Submission API
