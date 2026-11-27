@@ -167,7 +167,7 @@ public class RequestPageModelTests
         Assert.Contains("heading", used);
         Assert.Contains("request_used", used);
         Assert.Contains("ext_failed", used);
-        Assert.Empty(used.Where(k => !catalog.Contains(k)));
+        Assert.All(used, k => Assert.Contains(k, catalog));
     }
 
     private static string RepoRoot()
