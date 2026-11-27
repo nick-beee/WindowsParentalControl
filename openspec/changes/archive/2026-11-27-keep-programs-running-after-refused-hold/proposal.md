@@ -27,7 +27,7 @@ None.
 
 ### Modified Capabilities
 
-- `category-limits`: new requirement "Session End Guard"; "Keep a suspended process suspended" and "Limit the Session End Hold from the agent" name the guard.
+- `category-limits`: new requirements "Session End Guard" and "Limit the Session End Guard"; "Keep a suspended process suspended", "Limit the Session End Hold from the agent", "Keep a blocked suspension" and "Minimize a process before its suspension" name the guard.
 
 ## Impact
 

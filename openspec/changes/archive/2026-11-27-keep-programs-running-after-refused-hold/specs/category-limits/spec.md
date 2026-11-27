@@ -22,7 +22,7 @@ When the system refuses a session-end request of a Restricted User, it SHALL sta
 - **THEN** the system suspends the game within 70 seconds, as without the guard
 
 ### Requirement: Limit the Session End Guard
-A Session End Guard SHALL NOT cover a process that the system resumed itself since its last suspension, and SHALL cover a process at most once for each suspension by the system. A request during an active guard of the session SHALL NOT extend it. A guard SHALL NOT count against the limit of Session End Holds and SHALL NOT alert the parent. The system SHALL log the start of each guard.
+A Session End Guard SHALL NOT cover a process that the system resumed itself since its last suspension, and SHALL NOT cover a process again until the system suspends it again or sees it suspended outside a guard. A request during an active guard of the session SHALL NOT extend it. A guard SHALL NOT count against the limit of Session End Holds and SHALL NOT alert the parent. The system SHALL log the start of each guard.
 
 #### Scenario: Fake request without a resume
 - **WHEN** Games is exhausted, the game is suspended, a hold was refused, and the child sends the session-end request with `curl`
@@ -81,3 +81,46 @@ A request from the Session Agent is not authenticated, so the system SHALL grant
 #### Scenario: Sign-out, sign-in and sign-out again
 - **WHEN** the child signs out with a suspended game, signs in again, and signs out again 5 minutes later with a suspended game
 - **THEN** the system grants the second hold, because the first hold ended with a sign-out
+
+### Requirement: Keep a blocked suspension
+A process that the system suspended because its exe is a Blocked Program SHALL stay suspended while the block applies, also if its exe has time left, until the session ends or the service stops; `blocked-programs` defines when it resumes. A blocked suspension SHALL go through the Pending Suspension, the Session End Hold and the Session End Guard like a limit suspension; time left does not drop its Pending Suspension. During a Session End Hold, the system SHALL still close a Blocked Start.
+
+#### Scenario: Blocked browser on a new day
+- **WHEN** the system suspended a blocked Chrome yesterday, the block is still on, and the date changes
+- **THEN** Chrome stays suspended
+
+#### Scenario: Blocked browser with time left in its category
+- **WHEN** a blocked Chrome is a Pending Suspension and Unknown has time left
+- **THEN** the system suspends Chrome at the end of the 10 seconds
+
+#### Scenario: Chrome start during a Session End Hold
+- **WHEN** a Session End Hold of the child's session runs and the child starts Chrome, and `chrome.exe` is blocked
+- **THEN** the system closes Chrome at its start
+
+### Requirement: Minimize a process before its suspension
+Before the system suspends a process, it SHALL make the process a Pending Suspension for 10 seconds, and the Session Agent SHALL minimize the visible top-level windows of that process while it still runs. The system SHALL suspend the process after the 10 seconds, also if the agent does not run or answer. It SHALL drop a Pending Suspension without a suspension if the exe has time left again, if the process ended, if a Session End Hold of the session started, or if a Session End Guard covers it.
+
+#### Scenario: Full-screen game reaches the limit
+- **WHEN** Games usage reaches the Category Limit while a game fills the screen
+- **THEN** the game window is minimized before the system suspends the game
+- **AND** the system suspends the game 10 seconds after the start of the Pending Suspension
+- **AND** the child can use the desktop and the other programs
+
+#### Scenario: Agent does not run
+- **WHEN** the Session Agent does not run and Games usage reaches the Category Limit while a game runs
+- **THEN** the system suspends the game 10 seconds after the start of the Pending Suspension
+- **AND** the game window stays where it is
+
+#### Scenario: Bonus Minutes during a Pending Suspension
+- **WHEN** a game is a Pending Suspension and the parent approves 15 Bonus Minutes before the 10 seconds end
+- **THEN** the system does not suspend the game
+
+#### Scenario: Taskbar click on a minimized Suspended App
+- **WHEN** a Suspended App was minimized before its suspension and the child clicks its taskbar button
+- **THEN** the window does not come to the front
+- **AND** the child can use the desktop and the other programs
+
+#### Scenario: Browser that ran before the block
+- **WHEN** Chrome runs in the session of the child and the parent turns on the block for `chrome.exe`
+- **THEN** the system makes each Chrome process a Pending Suspension, and the agent minimizes the Chrome windows
+- **AND** the system suspends Chrome 10 seconds after the start of the Pending Suspension and does not close it

@@ -179,7 +179,7 @@ The system SHALL resume a suspended process when its exe has time left again und
 - **THEN** the system resumes the suspended games before it exits
 
 ### Requirement: Keep a blocked suspension
-A process that the system suspended because its exe is a Blocked Program SHALL stay suspended while the block applies, also if its exe has time left, until the session ends or the service stops; `blocked-programs` defines when it resumes. A blocked suspension SHALL go through the Pending Suspension and the Session End Hold like a limit suspension; time left does not drop its Pending Suspension. During a Session End Hold, the system SHALL still close a Blocked Start.
+A process that the system suspended because its exe is a Blocked Program SHALL stay suspended while the block applies, also if its exe has time left, until the session ends or the service stops; `blocked-programs` defines when it resumes. A blocked suspension SHALL go through the Pending Suspension, the Session End Hold and the Session End Guard like a limit suspension; time left does not drop its Pending Suspension. During a Session End Hold, the system SHALL still close a Blocked Start.
 
 #### Scenario: Blocked browser on a new day
 - **WHEN** the system suspended a blocked Chrome yesterday, the block is still on, and the date changes
@@ -309,7 +309,7 @@ Before the system logs off a session itself (Forced Logoff), it SHALL resume the
 - **THEN** the system resumes the game before it logs off the session
 
 ### Requirement: Minimize a process before its suspension
-Before the system suspends a process, it SHALL make the process a Pending Suspension for 10 seconds, and the Session Agent SHALL minimize the visible top-level windows of that process while it still runs. The system SHALL suspend the process at the end of the 10 seconds, also if the agent does not run or does not answer. The system SHALL drop a Pending Suspension without a suspension if the exe has time left again, if the process ended, or if a Session End Hold of the session started.
+Before the system suspends a process, it SHALL make the process a Pending Suspension for 10 seconds, and the Session Agent SHALL minimize the visible top-level windows of that process while it still runs. The system SHALL suspend the process after the 10 seconds, also if the agent does not run or answer. It SHALL drop a Pending Suspension without a suspension if the exe has time left again, if the process ended, if a Session End Hold of the session started, or if a Session End Guard covers it.
 
 #### Scenario: Full-screen game reaches the limit
 - **WHEN** Games usage reaches the Category Limit while a game fills the screen
@@ -358,7 +358,7 @@ When the system refuses a session-end request of a Restricted User, it SHALL sta
 - **THEN** the system suspends the game within 70 seconds, as without the guard
 
 ### Requirement: Limit the Session End Guard
-A Session End Guard SHALL NOT cover a process that the system resumed itself since its last suspension, and SHALL cover a process at most once for each suspension by the system. A request during an active guard of the session SHALL NOT extend it. A guard SHALL NOT count against the limit of Session End Holds and SHALL NOT alert the parent. The system SHALL log the start of each guard.
+A Session End Guard SHALL NOT cover a process that the system resumed itself since its last suspension, and SHALL NOT cover a process again until the system suspends it again or sees it suspended outside a guard. A request during an active guard of the session SHALL NOT extend it. A guard SHALL NOT count against the limit of Session End Holds and SHALL NOT alert the parent. The system SHALL log the start of each guard.
 
 #### Scenario: Fake request without a resume
 - **WHEN** Games is exhausted, the game is suspended, a hold was refused, and the child sends the session-end request with `curl`
