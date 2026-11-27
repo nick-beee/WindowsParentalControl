@@ -56,7 +56,7 @@ The child runs the Session Agent under its own account. So the child can read th
 - `child-messages`: the service sends the Language Preset in the status of the Agent Channel.
 - `session-lock`: the limit of the Lock Deferral names the session-end request of the Agent Channel; the old route gives no deferral.
 - `storage-failure`: the Pending Usage scenario uses a Session Probe sample.
-- `request-window`: the two Agent Window Budget requirements move to `category-limits` (once #54 is on main).
+- `request-window`: the two Agent Window Budget requirements move to `category-limits` (REMOVED here, ADDED there with the same text).
 
 ## Impact
 
