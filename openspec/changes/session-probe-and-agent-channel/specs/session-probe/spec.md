@@ -189,7 +189,7 @@ If the service accepts no line from a running Session Probe of an unlocked, conn
 - **AND** while the probe locks are on, the session is locked within 10 minutes
 
 ### Requirement: Shadow mode for the probe locks
-The probe locks are the locks after blind samples, the lock of a program that is never suspended, and the lock of a full set of Foreground Window exes. The system SHALL apply them only while the setting `probe_locks_enforced` is on. It SHALL be off after an install or update; the parent changes it in the web admin. While it is off, the system SHALL log each probe lock as "would lock" and alert the parent at most once per day, and SHALL still count and suspend.
+The probe locks are the locks after blind samples, for a program that is never suspended, and for a full set of Foreground Window exes. The system SHALL apply them only while the setting `probe_locks_enforced` is on. It SHALL be off until the parent stores it in the web admin; an update SHALL keep it. While it is off, the system SHALL log each probe lock as "would lock", alert the parent at most once per day, and still count and suspend.
 
 #### Scenario: First release on the child's PC
 - **WHEN** the setting is off and the child switches to a desktop that denies the probe for 2 minutes
@@ -201,6 +201,10 @@ The probe locks are the locks after blind samples, the lock of a program that is
 - **WHEN** the setting is off and the child plays a game in front until Games is exhausted
 - **THEN** Category Usage for Games increases
 - **AND** the game is suspended within 70 seconds
+
+#### Scenario: Later update keeps the setting
+- **WHEN** the parent switched the setting on and a later release is installed
+- **THEN** the setting is still on
 
 #### Scenario: Parent switches the probe locks on
 - **WHEN** the parent switches the setting on during a day with "would lock" events
