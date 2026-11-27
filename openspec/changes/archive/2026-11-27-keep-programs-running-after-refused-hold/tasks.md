@@ -45,7 +45,7 @@ Run on 2026-11-27 with the build of this change (`deploy.ps1`). The times are lo
 - [x] 5.5 Nits: D3 says "without a tool"; Risks says to measure the margin on the child's PC; the two guard requirements define an eligible process in the same words.
 - [x] 5.6 Build, Domain tests on the Mac, `scripts/vm-test.sh`. Result: build 0 errors, 0 warnings; 872 Domain tests passed on the Mac; `ALL ASSERTIONS PASSED` and 872 Domain tests on VM 102.
 - [x] 5.7 VM 102 (console): hold, guard and repeated guard with the suspended Pad Notepad (unsaved text) and a manual Cancel each time; the text is still there at the end.
-  Result (build of commit 2daf512, a watcher logged the suspended threads of Notepad each second):
+  Result (the code of commit 3fc891e; the run used the same code before the docs of this task were added. A watcher logged the suspended threads of Notepad each second):
   - Hold: `11:54:58.005 Session end hold started`, Cancel, `11:55:58.518 … ended without the end of the session`, `11:56:09.018 Suspended … again`.
   - First guard: `11:56:33.412 hold refused`, `11:56:33.417 Session end guard started … covers pids [4216]`. Notepad 0 of 3 threads suspended until `11:57:33.906 … ended by its time without the end of the session`; suspended again at 11:57:44.408 (71 s after the query).
   - Repeated guard: `11:58:08.657 Session end guard started … covers pids [4216], repeated`, and the alert line at 11:58:08.658 (no Telegram chat on the VM). Notepad 0 of 3 suspended until 11:59:09.156; suspended again at 11:59:19.658 (71 s).
