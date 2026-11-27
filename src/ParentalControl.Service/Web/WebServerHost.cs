@@ -32,6 +32,7 @@ public sealed class WebServerHost : BackgroundService
     private readonly ForegroundHistory _foregroundHistory;
     private readonly CategoryEnforcer _categoryEnforcer;
     private readonly BreakEnforcer _breakEnforcer;
+    private readonly SessionLocker _sessionLocker;
     private readonly AdminAccessService _adminAccess;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (string ProcessName, string WindowTitle, DateTime LastSeen)> _liveActivities = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CaptureCommandState> _captureStates = new(StringComparer.OrdinalIgnoreCase);
@@ -87,9 +88,12 @@ public sealed class WebServerHost : BackgroundService
     private readonly PortSquatAlert _squatAlert = new();
 
     /// <param name="startup">The start gate of the service, or null in a test (the database is ready then).</param>
+    /// <param name="sessionLocker">The shared locker of the service (dependency injection), or null in a test.</param>
     public WebServerHost(SessionTracker sessionTracker, TelegramBotService telegramBotService, Serilog.ILogger logger,
-        ForegroundHistory foregroundHistory, CategoryEnforcer categoryEnforcer, BreakEnforcer breakEnforcer, ServiceStartup? startup = null)
+        ForegroundHistory foregroundHistory, CategoryEnforcer categoryEnforcer, BreakEnforcer breakEnforcer,
+        ServiceStartup? startup = null, SessionLocker? sessionLocker = null)
     {
+        _sessionLocker = sessionLocker ?? new SessionLocker(logger);
         _startup = startup;
         _sessionTracker = sessionTracker;
         _telegramBotService = telegramBotService;
@@ -1015,6 +1019,10 @@ public sealed class WebServerHost : BackgroundService
                 return Results.Ok(new { result = "ignored" });
             }
 
+            // First the Lock Deferral (issue #50): no Enforced Workstation Lock in the first seconds of the session end.
+            // It has its own limit, so it starts also if the hold below is refused.
+            // The caller has no authentication: the response does not say whether the deferral was granted.
+            _sessionLocker.OnSessionEnding(sessionId, user.Id, user.Username, trusted: false, $"agent {reason}");
             var result = _categoryEnforcer.ResumeSessionForEnd(sessionId, user, trusted: false, $"agent {reason}");
             return Results.Ok(new { result = result.ToString() });
         });
@@ -1355,7 +1363,10 @@ public sealed class WebServerHost : BackgroundService
             var logoffUser = _sessionTracker.ActiveSessions.TryGetValue(sessionId, out var logoffSession)
                 ? UserRepository.GetBySid(logoffSession.UserSid) : null;
             if (logoffUser is { IsRestricted: true })
+            {
+                _sessionLocker.OnSessionEnding(sessionId, logoffUser.Id, logoffUser.Username, trusted: true, "forced logoff");
                 _categoryEnforcer.ResumeSessionForEnd(sessionId, logoffUser, trusted: true, "forced logoff");
+            }
 
             SessionManager.ForceLogoff(sessionId);
             _sessionTracker.RemoveSession(sessionId);
@@ -1392,12 +1403,21 @@ public sealed class WebServerHost : BackgroundService
                 var popupText = $"{message}\n\n{lockTexts.Format("lock_countdown", ("seconds", seconds))}";
                 NotificationManager.SendMessage(sessionId, lockTexts["lock_title"], popupText, isWarning: true, timeoutSeconds: seconds);
 
-                // 2. Schedule lock after countdown so user has 10-15s to view/save
+                // 2. Schedule lock after countdown so user has 10-15s to view/save. The child can start a sign-out during
+                // the countdown; a Lock Deferral then delays the lock until Windows asked each program (issue #50).
                 _ = Task.Run(async () =>
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(seconds));
-                    SessionManager.LockSession(sessionId);
-                    _sessionTracker.OnSessionLock(sessionId, $"Remote lock from Web Admin ({seconds}s delay): {message}");
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(seconds));
+                        if (await _sessionLocker.LockForParentAsync(sessionId, "lock of the parent",
+                                () => _sessionTracker.ActiveSessions.ContainsKey(sessionId)))
+                            _sessionTracker.OnSessionLock(sessionId, $"Remote lock from Web Admin ({seconds}s delay): {message}");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Delayed lock of the parent for session {SessionId} failed", sessionId);
+                    }
                 });
 
                 return Results.Ok(new { success = true, message = $"Peringatan dikirim ke {sessionUser}. Layar akan dikunci dalam {seconds} detik." });

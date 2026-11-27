@@ -24,6 +24,7 @@ builder.Services.AddSingleton(logger);
 builder.Services.AddSingleton<TelegramBotService>();
 builder.Services.AddSingleton<ParentAlertOutbox>();
 builder.Services.AddSingleton<ControlTimeService>();
+builder.Services.AddSingleton<SessionLocker>();
 builder.Services.AddSingleton<BreakEnforcer>();
 builder.Services.AddSingleton<SessionTracker>();
 builder.Services.AddSingleton<ParentalControl.Domain.Categories.ForegroundHistory>();

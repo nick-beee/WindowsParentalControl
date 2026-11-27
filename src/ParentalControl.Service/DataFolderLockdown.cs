@@ -24,7 +24,17 @@ public static class DataFolderLockdown
     public const int RestartExitCode = 3;
 
     /// <summary>Applies the lock to the sessions that <see cref="LockdownPolicy"/> selects. Returns the locked sessions.</summary>
-    public static IReadOnlyList<int> LockSessions()
+    public static IReadOnlyList<int> LockSessions() => LockSessions(id =>
+    {
+        SessionManager.LockSession(id);
+        return true;
+    });
+
+    /// <summary>
+    /// Applies <paramref name="lockSession"/> to the sessions that <see cref="LockdownPolicy"/> selects. It returns false
+    /// for a lock that it did not apply (a Lock Deferral of the Storage Lockdown). Returns the locked sessions.
+    /// </summary>
+    public static IReadOnlyList<int> LockSessions(Func<int, bool> lockSession)
     {
         var sessions = SessionManager.GetLoggedOnSessions()
             .Select(s => new LockdownSession(
@@ -32,10 +42,13 @@ public static class DataFolderLockdown
                 // A disconnected session or a Win+L lock is not active. An unknown flag counts as active (fail closed).
                 !s.IsDisconnected && SessionManager.QueryLockFlag(s.SessionId).Flag != WtsLockFlag.Locked,
                 SessionAdminCheck.ForSession(s.SessionId)));
-        var toLock = LockdownPolicy.SessionsToLock(sessions);
-        foreach (var id in toLock)
-            SessionManager.LockSession(id);
-        return toLock;
+        var locked = new List<int>();
+        foreach (var id in LockdownPolicy.SessionsToLock(sessions))
+        {
+            if (lockSession(id))
+                locked.Add(id);
+        }
+        return locked;
     }
 
     /// <summary>

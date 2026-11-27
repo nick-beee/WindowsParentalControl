@@ -31,14 +31,19 @@ public sealed class SessionTracker
     private readonly BreakEnforcer? _breakEnforcer;
     private readonly UsageLedger _ledger = UsageLedger.Shared;
     private readonly StorageHealth _health = StorageHealth.Shared;
+    private readonly SessionLocker _locker;
 
-    public SessionTracker(Serilog.ILogger logger) : this(null, null, logger) { }
+    public SessionTracker(Serilog.ILogger logger) : this(null, null, new SessionLocker(logger), logger) { }
 
-    public SessionTracker(TelegramBotService? telegramBotService, BreakEnforcer? breakEnforcer, Serilog.ILogger logger)
+    public SessionTracker(TelegramBotService? telegramBotService, BreakEnforcer? breakEnforcer, SessionLocker locker, Serilog.ILogger logger)
     {
         _telegramBotService = telegramBotService;
         _breakEnforcer = breakEnforcer;
+        _locker = locker;
         _logger = logger;
+        // The Lock Deferral of an ended session ends with it; a deferral whose session still exists owes its lock.
+        _locker.TrackSessions(id => _activeSessions.ContainsKey(id));
+        SessionEnded += _locker.OnSessionEnded;
     }
 
     public bool IsAwake => _isAwake;
@@ -54,6 +59,10 @@ public sealed class SessionTracker
     /// <summary>Writes an event row. A failed write is logged and reported, and never stops a lock (storage-failure).</summary>
     private void LogEvent(string userSid, EventType type, string details = "") =>
         _health.TryWrite(() => EventRepository.LogEvent(userSid, type, details), $"event {type}", _logger);
+
+    /// <summary>For a test: tracks a session without a Windows session.</summary>
+    internal void TrackForTest(ActiveSession session) => _activeSessions[session.SessionId] = session;
+
     public ActiveSession? GetConsoleSession()
     {
         var consoleId = SessionManager.GetActiveConsoleSessionId();
@@ -287,10 +296,18 @@ public sealed class SessionTracker
         {
             // A sign-out would close the programs of the autostart (hard rule): lock the new session instead.
             _logger.Information("Sign-in during a Break (until {End:o}): {Username}; locking the session", breakEndsUtc, username);
-            _activeSessions.TryAdd(sessionId, ActiveSession.Create(sessionId, sid, username, isLocked: true));
-            _breakEnforcer.LockForRunningBreak(sessionId, breakEndsUtc);
-            LogEvent(sid, EventType.LOGIN, "Break running - session locked");
-            LogEvent(sid, EventType.SESSION_LOCKED, "Break running on sign-in");
+            var tracked = ActiveSession.Create(sessionId, sid, username, isLocked: true);
+            _activeSessions.TryAdd(sessionId, tracked);
+            if (_breakEnforcer.LockForRunningBreak(sessionId, breakEndsUtc))
+            {
+                LogEvent(sid, EventType.LOGIN, "Break running - session locked");
+                LogEvent(sid, EventType.SESSION_LOCKED, "Break running on sign-in");
+            }
+            else
+            {
+                TrackDeferredLock(sessionId, tracked);
+                LogEvent(sid, EventType.LOGIN, "Break running - lock deferred");
+            }
             return;
         }
 
@@ -451,6 +468,13 @@ public sealed class SessionTracker
                         ? SettingsRepository.GetMessage(SettingsRepository.KeyMsgLoginDeniedCurfew)
                         : SettingsRepository.GetMessage(SettingsRepository.KeyMsgLoginDeniedLimit);
 
+                    // A Lock Deferral: the session stays unlocked for the ticks, so the tick at its end locks it.
+                    if (_locker.ShouldDefer(sessionId, reason))
+                    {
+                        TrackDeferredLock(sessionId, session);
+                        return;
+                    }
+
                     _logger.Information("Unlock rejected ({Reason}): {Username} on session {SessionId}", reason, session.Username, sessionId);
 
                     _activeSessions[sessionId] = session.Stamped() with { IsLocked = true };
@@ -465,7 +489,12 @@ public sealed class SessionTracker
                         NotificationManager.SendMessage(sessionId, "Parental Control", message, isWarning: true, timeoutSeconds: 5, wait: true);
                     }
 
-                    SessionManager.LockSession(sessionId);
+                    // A sign-out that started during the message defers the lock: no event either.
+                    if (!_locker.Lock(sessionId, reason))
+                    {
+                        TrackDeferredLock(sessionId, session);
+                        return;
+                    }
                     LogEvent(session.UserSid, EventType.LOGIN_DENIED, reason);
                     return;
                 }
@@ -473,9 +502,20 @@ public sealed class SessionTracker
 
             if (_breakEnforcer?.GetRunningBreakEnd(user.Id) is { } breakEndsUtc)
             {
+                // A Lock Deferral: the session stays unlocked for the ticks, so the tick at its end locks it again.
+                if (_locker.ShouldDefer(sessionId, "Break running on unlock"))
+                {
+                    TrackDeferredLock(sessionId, session);
+                    return;
+                }
+
                 _logger.Information("Unlock rejected (Break until {End:o}): {Username} on session {SessionId}", breakEndsUtc, session.Username, sessionId);
                 _activeSessions[sessionId] = session.Stamped() with { IsLocked = true };
-                _breakEnforcer.LockForRunningBreak(sessionId, breakEndsUtc);
+                if (!_breakEnforcer.LockForRunningBreak(sessionId, breakEndsUtc))
+                {
+                    TrackDeferredLock(sessionId, session);
+                    return;
+                }
                 LogEvent(session.UserSid, EventType.LOGIN_DENIED, "Break running on unlock");
                 return;
             }
@@ -488,6 +528,21 @@ public sealed class SessionTracker
         LogEvent(session.UserSid, EventType.SESSION_UNLOCKED, "Session unlocked");
         _logger.Information("Session {SessionId} ({Username}) unlocked", sessionId, session.Username);
         SessionUnlocked?.Invoke(sessionId);
+    }
+
+    /// <summary>
+    /// A Lock Deferral stopped the lock of the unlock check or of a sign-in during a Break, and Windows shows the session
+    /// as unlocked. The tracker marks it as unlocked, so the ticks count its time as used time and check the Allowance
+    /// Time, the Schedule Window and the Breaks again: the tick at the end of the deferral locks it if a lock is still
+    /// due. A tracked lock would make the ticks skip the session, and only a lock flag of Windows would end that.
+    /// It writes no event, ends no Rest and raises no <see cref="SessionUnlocked"/>: the lock is only delayed.
+    /// </summary>
+    /// <param name="before">The tracked state before the check.</param>
+    private void TrackDeferredLock(int sessionId, ActiveSession before)
+    {
+        // The time counts from now on; a session that was unlocked already keeps its last tick.
+        _activeSessions[sessionId] = (before.IsLocked ? before.Stamped() : before) with { IsLocked = false };
+        _logger.Information("Session {SessionId} ({Username}) tracked as unlocked: a Lock Deferral delayed its lock", sessionId, before.Username);
     }
 
     /// <summary>
@@ -624,9 +679,12 @@ public sealed class SessionTracker
                     var limit = LimitRepository.GetByUserId(clockUser.Id);
                     if (limit is not null)
                     {
-                        // Lock before the writes (storage-failure).
-                        SessionManager.LockSession(sessionId);
-                        _activeSessions.TryRemove(sessionId, out _);
+                        // Lock before the writes (storage-failure). A Lock Deferral keeps the session tracked: the
+                        // Allowance Time check of the tick at the end of the deferral locks it.
+                        if (_locker.Lock(sessionId, "clock went backwards"))
+                            _activeSessions.TryRemove(sessionId, out _);
+                        else
+                            _activeSessions[sessionId] = session.Stamped();
                         _ledger.AddAllowance(clockUser.Id, today, limit.DailyMinutes);
                         LogEvent(session.UserSid, EventType.CLOCK_TAMPER,
                             $"Clock went backwards: {session.LastTickUtc:HH:mm:ss} UTC → {nowUtc:HH:mm:ss} UTC. Locked for today.");
