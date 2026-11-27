@@ -28,11 +28,28 @@ public partial class RequestWindow : Window
     public RequestWindow(TextSet texts, string userName)
     {
         InitializeComponent();
+        PlaceInWorkArea();
         _texts = texts;
         _userName = userName;
         ApplyTexts(texts);
         Loaded += OnLoaded;
         Closed += OnClosed;
+    }
+
+    /// <summary>
+    /// Fits the window into the work area of the primary screen and puts it in the centre. On a small screen the
+    /// preferred height of the XAML is higher than the work area, and the title bar goes above the screen.
+    /// </summary>
+    private void PlaceInWorkArea()
+    {
+        var area = SystemParameters.WorkArea;
+        var rect = RequestWindowPlacement.Fit(
+            new WindowRect(area.Left, area.Top, area.Width, area.Height), Width, Height, MinWidth, MinHeight);
+        WindowStartupLocation = WindowStartupLocation.Manual;
+        Left = rect.Left;
+        Top = rect.Top;
+        Width = rect.Width;
+        Height = rect.Height;
     }
 
     /// <summary>The title and the fallback text of the Language Preset.</summary>
