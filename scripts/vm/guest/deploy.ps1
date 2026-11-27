@@ -4,8 +4,8 @@ $src = 'C:\dev\parental-control'
 $app = 'C:\Program Files\ParentalControl'
 $svc = 'ParentalControl.Service'
 if (Get-Service $svc -ErrorAction SilentlyContinue) { sc.exe stop $svc | Out-Null; Start-Sleep 4 }
-Get-Process ParentalControl.Agent -ErrorAction SilentlyContinue | Stop-Process -Force
-foreach ($p in 'Service', 'Agent', 'Admin') {
+Get-Process ParentalControl.Agent, ParentalControl.Probe -ErrorAction SilentlyContinue | Stop-Process -Force
+foreach ($p in 'Service', 'Agent', 'Admin', 'Probe') {
     dotnet publish "$src\src\ParentalControl.$p\ParentalControl.$p.csproj" -c Release -o "$app\$($p.ToLower())" --nologo -v q
     if ($LASTEXITCODE -ne 0) { throw "publish $p failed" }
 }
