@@ -47,6 +47,7 @@ public sealed record SuspensionPlan(
 /// <param name="HeldSessions">The sessions with a Session End Hold. No process of such a session is suspended; a resume still happens.</param>
 /// <param name="PendingClose">True for a process that the block enforcer closes now (a Blocked Start). The planner skips it.</param>
 /// <param name="ProtectedPrograms">The programs that a block never suspends. The block verdict of an exe below one of them is ignored.</param>
+/// <param name="GuardedProcesses">The processes (pid and start time) that a Session End Guard covers. A recorded process in this set is not suspended again; its record stays. A process without a record is not affected.</param>
 public sealed record PlannerInput(
     IReadOnlyList<SessionProcess> Processes,
     IReadOnlyDictionary<int, int> RestrictedSessions,
@@ -57,7 +58,8 @@ public sealed record PlannerInput(
     string? WindowsFolder,
     IReadOnlySet<int>? HeldSessions = null,
     Func<SessionProcess, bool>? PendingClose = null,
-    ProtectedPrograms? ProtectedPrograms = null);
+    ProtectedPrograms? ProtectedPrograms = null,
+    IReadOnlySet<(int Pid, DateTime StartTimeUtc)>? GuardedProcesses = null);
 
 /// <summary>
 /// Decides which processes to suspend, which recorded processes to resume and which records to drop.
@@ -66,6 +68,7 @@ public sealed record PlannerInput(
 /// A recorded process stays suspended while its exe has no time left, also if the exe was not a
 /// Foreground Window since the last service start.
 /// During a Session End Hold of a session, it suspends no process of that session, and the records of the session stay.
+/// A recorded process that a Session End Guard covers is not suspended again while the guard runs; its record stays.
 /// A process of a Blocked Program is suspended with the reason Blocked, also without a Foreground Window, and
 /// stays suspended while the block applies, also if its exe has time left. When the block ends, its record
 /// changes to Limit if the exe has no time left and was a Foreground Window today; else the process resumes.
@@ -82,6 +85,7 @@ public static class SuspensionPlanner
         var toResume = new List<SuspensionRecord>();
         var toDrop = new List<SuspensionRecord>();
         var held = input.HeldSessions ?? new HashSet<int>();
+        var guarded = input.GuardedProcesses ?? new HashSet<(int Pid, DateTime StartTimeUtc)>();
         var toRelabel = new List<SuspensionRecord>();
 
         bool BlockApplies(ExeVerdict verdict, string canonicalPath) =>
@@ -132,7 +136,7 @@ public static class SuspensionPlanner
                 current = current with { Reason = keep };
                 toRelabel.Add(current);
             }
-            if (!process.IsSuspended && !held.Contains(process.SessionId))
+            if (!process.IsSuspended && !held.Contains(process.SessionId) && !guarded.Contains((record.Pid, record.StartTimeUtc)))
                 toSuspend.Add(new SuspendAction(process, record.UserId, verdict.Category, path!, IsRecorded: true, keep));
         }
 
