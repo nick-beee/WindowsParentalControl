@@ -13,7 +13,7 @@ public sealed record ProbeLogLine(string Text);
 /// <para>
 /// Each sample line needs a valid <c>t</c> that is larger than the <c>t</c> of the previous accepted sample line of
 /// this run and not larger than the current tick of the service; else the line is dropped. A window sample needs a
-/// valid <c>fg</c>. Any other field with a wrong type, and a <c>cursor</c> or <c>children</c> list with more than 8
+/// valid <c>fg</c>. A missing or wrong <c>dur</c> counts as 0. Any other field with a wrong type, and a <c>cursor</c> or <c>children</c> list with more than 8
 /// entries, drops only that field. Content never ends the probe: the reader only counts the problems, and the service
 /// logs the first one once per run. Not thread-safe: one reader per probe run.
 /// </para>
@@ -37,6 +37,9 @@ public sealed class ProbeLineReader
 
     /// <summary>The number of fields that the reader dropped in this run.</summary>
     public int DroppedFields { get; private set; }
+
+    /// <summary>The number of sample lines without <c>dur</c> in this run.</summary>
+    public int MissingDurations { get; private set; }
 
     /// <summary>The first problem of this run (a dropped line or field), for one log line; null if none.</summary>
     public string? FirstProblem { get; private set; }
@@ -128,7 +131,7 @@ public sealed class ProbeLineReader
 
             var sample = ParseSample(root, t);
             if (sample is null) return;
-            sample = sample with { Duration = OptionalDuration(root) };
+            sample = sample with { Duration = Duration(root) };
             _lastT = t;
             output.Add(sample);
         }
@@ -176,13 +179,19 @@ public sealed class ProbeLineReader
             Desktop: OptionalText(root, "desktop", MaxDesktopChars));
     }
 
-    private TimeSpan? OptionalDuration(JsonElement root)
+    // dur: an integer of milliseconds. A missing or wrong dur counts as 0, with one problem for the log.
+    private TimeSpan Duration(JsonElement root)
     {
-        if (!root.TryGetProperty("dur", out var element) || element.ValueKind == JsonValueKind.Null) return null;
-        if (element.ValueKind == JsonValueKind.Number && element.TryGetDouble(out var ms) && ms >= 0 && ms < 86_400_000)
+        if (!root.TryGetProperty("dur", out var element))
+        {
+            MissingDurations++;
+            FirstProblem ??= "sample line without dur";
+            return TimeSpan.Zero;
+        }
+        if (element.ValueKind == JsonValueKind.Number && element.TryGetInt64(out var ms) && ms is >= 0 and < 86_400_000)
             return TimeSpan.FromMilliseconds(ms);
         DropField("dur");
-        return null;
+        return TimeSpan.Zero;
     }
 
     private ProbeWindow? OptionalEntry(JsonElement root, string name)

@@ -26,7 +26,6 @@ public class ProbeOutageMonitorTests
     private static ProbeLockDecision Readable(ProbeOutageMonitor m, double at) =>
         m.Sample(User, S(at), true, Today, blind: false, budgetItem: false);
 
-    private static readonly Func<int, bool> Active = _ => true;
     private static readonly Func<int, bool> NotGone = _ => false;
 
     // ---------- the budget and the strike ----------
@@ -205,50 +204,64 @@ public class ProbeOutageMonitorTests
 
     // ---------- the end of a probe ----------
 
-    private static (ProbeEndOutcome Outcome, UnexpectedProbeEnd? Unexpected) End(ProbeOutageMonitor m, double at,
-        ProbeEndCause cause = ProbeEndCause.Other, long logon = Logon) =>
-        m.ProbeEnded(User, Session, logon, S(at), cause, Active, Today);
+    private static ProbeEndOutcome End(ProbeOutageMonitor m, double at, ProbeEndCause cause = ProbeEndCause.Other,
+        long logon = Logon, bool active = true) =>
+        m.ProbeEnded(User, Session, logon, S(at), cause, active);
+
+    private static IReadOnlyList<UnexpectedProbeEnd> Classify(ProbeOutageMonitor m, double at, Func<int, bool>? gone = null) =>
+        m.Classify(S(at), gone ?? NotGone, Today);
 
     [Fact]
-    public void Restart_delays_are_1_2_and_5_s_within_10_minutes()
+    public void Restart_delays_are_1_2_and_5_s_per_session_and_logon_within_10_minutes()
     {
         var m = New();
-        Assert.Equal([1.0, 2, 5, 5], new[] { 10.0, 70, 130, 190 }.Select(t => End(m, t).Outcome.Delay.TotalSeconds));
-        Assert.Equal(1, End(m, 900).Outcome.Delay.TotalSeconds);
+        Assert.Equal([1.0, 2, 5, 5], new[] { 10.0, 70, 130, 190 }.Select(t => End(m, t).Delay.TotalSeconds));
+        Assert.Equal(1, End(m, 900).Delay.TotalSeconds);
+        Assert.Equal(1, End(m, 901, logon: Logon + 1).Delay.TotalSeconds);
     }
 
     [Fact]
-    public void End_in_a_session_that_stays_is_unexpected_after_90_s()
+    public void End_with_the_session_still_active_after_90_s_starts_after_1_s_and_gives_the_event_at_90_s()
     {
         var m = New();
-        var (outcome, unexpected) = End(m, 10);
+        var outcome = End(m, 10);
         Assert.True(outcome.Restart);
-        Assert.Null(unexpected);
-        Assert.Empty(m.Classify(S(99), NotGone, Active, Today));
-        var classified = Assert.Single(m.Classify(S(100), NotGone, Active, Today));
+        Assert.Equal(TimeSpan.FromSeconds(1), outcome.Delay);
+        Assert.Empty(Classify(m, 99));
+        var classified = Assert.Single(Classify(m, 100));
         Assert.Equal((User, Session, false, false), (classified.UserId, classified.SessionId, classified.Alert, classified.BudgetItem));
     }
 
     [Fact]
-    public void Two_sign_outs_within_one_hour_give_no_event_no_item_and_no_alert()
+    public void Two_sign_outs_within_one_hour_restart_after_1_and_2_s_and_give_no_event_no_item_and_no_alert()
     {
         var m = New();
-        foreach (var (start, logon) in new[] { (100.0, 1L), (1900.0, 2L) })
+        foreach (var (logoff, logon) in new[] { (100.0, 1L), (1900.0, 2L) })
         {
             m.SignedIn(Session, logon);
             Assert.True(m.MayStart(Session, logon));
-            Assert.True(End(m, start, logon: logon).Outcome.Restart);          // Windows ends the probe, 6 s before the notification
-            Assert.True(End(m, start + 5.7, logon: logon).Outcome.Restart);    // the restarted probe, 0.3 s before it
+            Assert.Equal(1, End(m, logoff - 6, logon: logon).Delay.TotalSeconds);
+            Assert.Equal(2, End(m, logoff - 0.3, logon: logon).Delay.TotalSeconds);
             m.SignedOut(Session, logon);
             Assert.False(m.MayStart(Session, logon));
-            Assert.False(End(m, start + 7, logon: logon).Outcome.Restart);
-            Assert.Empty(m.Classify(S(start + 200), NotGone, Active, Today));
+            Assert.False(End(m, logoff + 1, logon: logon).Restart);
+            Assert.Empty(Classify(m, logoff + 200));
         }
         Assert.Equal(0, m.PendingEnds);
     }
 
     [Fact]
-    public void New_sign_in_in_the_same_session_ID_clears_the_sign_out()
+    public void End_and_a_sign_out_80_s_later_is_a_session_end_end_after_the_restart()
+    {
+        var m = New();
+        Assert.True(End(m, 10).Restart);
+        Assert.Empty(Classify(m, 89));
+        m.SignedOut(Session, Logon);
+        Assert.Empty(Classify(m, 200));
+    }
+
+    [Fact]
+    public void New_logon_with_the_same_session_ID_after_a_sign_out_may_start()
     {
         var m = New();
         m.SignedOut(Session, 1);
@@ -262,8 +275,16 @@ public class ProbeOutageMonitorTests
     {
         var m = New();
         End(m, 10);
-        Assert.Empty(m.Classify(S(17), id => id == Session, Active, Today));
-        Assert.Empty(m.Classify(S(200), NotGone, Active, Today));
+        Assert.Empty(Classify(m, 17, id => id == Session));
+        Assert.Empty(Classify(m, 200));
+    }
+
+    [Fact]
+    public void Failed_query_of_a_session_that_the_enumeration_still_lists_is_not_gone()
+    {
+        Assert.False(SessionPresence.IsGone(queryFailed: true, listedByEnumeration: true));
+        Assert.False(SessionPresence.IsGone(queryFailed: false, listedByEnumeration: false));
+        Assert.True(SessionPresence.IsGone(queryFailed: true, listedByEnumeration: false));
     }
 
     [Fact]
@@ -281,25 +302,34 @@ public class ProbeOutageMonitorTests
         var m = New();
         End(m, 10);
         m.ServiceStopping();
-        Assert.Empty(m.Classify(S(200), NotGone, Active, Today));
+        Assert.Empty(Classify(m, 200));
     }
 
     [Fact]
     public void Service_end_is_expected_and_gives_no_restart()
     {
         var m = New();
-        Assert.False(End(m, 10, ProbeEndCause.Service).Outcome.Restart);
+        Assert.False(End(m, 10, ProbeEndCause.Service).Restart);
         Assert.Equal(0, m.PendingEnds);
     }
 
     [Fact]
-    public void Watchdog_kill_is_unexpected_at_once()
+    public void Watchdog_kill_and_a_sign_out_20_s_later_is_a_session_end_end()
     {
         var m = New();
-        var (outcome, unexpected) = End(m, 10, ProbeEndCause.Watchdog);
+        var outcome = End(m, 10, ProbeEndCause.Watchdog);
         Assert.True(outcome.Restart);
-        Assert.NotNull(unexpected);
-        Assert.Equal(0, m.PendingEnds);
+        Assert.Equal(1, m.PendingEnds);
+        m.SignedOut(Session, Logon);
+        Assert.Empty(Classify(m, 200));
+    }
+
+    [Fact]
+    public void Watchdog_kill_in_a_session_that_stays_is_unexpected_after_the_end_wait()
+    {
+        var m = New();
+        End(m, 10, ProbeEndCause.Watchdog);
+        Assert.Single(Classify(m, 100));
     }
 
     [Fact]
@@ -310,7 +340,7 @@ public class ProbeOutageMonitorTests
         foreach (var t in new[] { 10.0, 86, 162 })
         {
             End(m, t);
-            ends.AddRange(m.Classify(S(t + 90), NotGone, Active, Today));
+            ends.AddRange(Classify(m, t + 90));
         }
         Assert.Equal([false, false, true], ends.Select(e => e.BudgetItem));
         Assert.Equal([false, false, true], ends.Select(e => e.Alert));
@@ -325,11 +355,34 @@ public class ProbeOutageMonitorTests
         {
             var t = 10 + i * 70;
             End(m, t);
-            decisions.AddRange(m.Classify(S(t + 90), NotGone, Active, Today).Select(e => e.Lock));
+            decisions.AddRange(Classify(m, t + 90).Select(e => e.Lock));
         }
         Assert.Equal(8, decisions.Count);
         Assert.Equal(ProbeLockAction.Lock, decisions[7].Action);
         Assert.All(decisions.Take(7), d => Assert.Equal(ProbeLockAction.None, d.Action));
+    }
+
+    [Fact]
+    public void Crash_loop_with_a_crash_60_s_after_each_start_locks_at_the_6th_item_about_9_minutes_after_the_first_end()
+    {
+        var m = New();
+        var t = 0.0;
+        double? lockedAt = null;
+        var nextClassify = new List<double>();
+        for (var i = 0; i < 12 && lockedAt is null; i++)
+        {
+            var delay = End(m, t).Delay.TotalSeconds;
+            nextClassify.Add(t + 90);
+            var nextEnd = t + delay + 60;
+            foreach (var at in nextClassify.Where(c => c <= nextEnd).ToList())
+            {
+                if (Classify(m, at).Any(e => e.Lock.Action == ProbeLockAction.Lock)) lockedAt ??= at;
+                nextClassify.Remove(at);
+            }
+            t = nextEnd;
+        }
+        Assert.NotNull(lockedAt);
+        Assert.InRange(lockedAt!.Value, 8 * 60, 10 * 60);
     }
 
     [Fact]
@@ -341,35 +394,35 @@ public class ProbeOutageMonitorTests
         {
             var t = 10 + i * 120;
             End(m, t);
-            alerts += m.Classify(S(t + 90), NotGone, Active, Today).Count(e => e.Alert);
+            alerts += Classify(m, t + 90).Count(e => e.Alert);
         }
         Assert.Equal(1, alerts);
     }
 
     [Fact]
-    public void Item_of_an_unexpected_end_in_a_locked_session_is_ignored()
+    public void Item_of_an_end_in_a_session_that_was_locked_at_the_end_is_ignored()
     {
         var m = New();
         var items = 0;
         foreach (var t in new[] { 10.0, 86, 162, 238 })
         {
-            End(m, t);
-            items += m.Classify(S(t + 90), NotGone, _ => false, Today).Count(e => e.BudgetItem);
+            End(m, t, active: false);
+            items += Classify(m, t + 90).Count(e => e.BudgetItem);
         }
         Assert.Equal(0, items);
     }
 
     [Fact]
-    public void End_within_15_s_after_a_resume_is_benign()
+    public void End_10_s_after_a_resume_is_a_benign_end()
     {
         var m = New();
         m.Resumed(S(100));
-        var (outcome, unexpected) = End(m, 110);
+        var outcome = End(m, 110);
         Assert.True(outcome.Restart);
         Assert.True(outcome.Benign);
         Assert.Equal(TimeSpan.Zero, outcome.Delay);
-        Assert.Null(unexpected);
         Assert.Equal(0, m.PendingEnds);
+        Assert.Equal(1, End(m, 200).Delay.TotalSeconds);
     }
 
     [Fact]
@@ -383,13 +436,11 @@ public class ProbeOutageMonitorTests
         {
             t += 5;
             m.Resumed(S(t));
-            var (outcome, unexpected) = End(m, t + 1);
-            Assert.True(outcome.Benign);
-            Assert.Null(unexpected);
+            Assert.True(End(m, t + 1).Benign);
             Readable(m, t + 3);
         }
         Assert.Empty(m.CheckOutages(S(t + 60)));
-        Assert.Empty(m.Classify(S(t + 500), NotGone, Active, Today));
+        Assert.Empty(Classify(m, t + 500));
         Assert.False(m.IsLockDue(User, S(t + 60), Today));
     }
 }

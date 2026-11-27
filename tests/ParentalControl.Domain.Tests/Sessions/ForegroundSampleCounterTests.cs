@@ -23,7 +23,7 @@ public class ForegroundSampleCounterTests
         {
             var t = (long)(seconds * 1000);
             var receipt = (long)((receiptSeconds ?? seconds) * 1000) + 100_000;
-            return Counter.Accept(session, t, duration is { } d ? TimeSpan.FromSeconds(d) : null, receipt,
+            return Counter.Accept(session, t, TimeSpan.FromSeconds(duration ?? 0), receipt,
                 TimeSpan.FromMilliseconds(receipt) - _sleep, blind, counted);
         }
     }
@@ -117,7 +117,7 @@ public class ForegroundSampleCounterTests
     }
 
     [Fact]
-    public void Cursor_entries_do_not_change_the_sameness()
+    public void Same_game_with_another_noActivate_process_under_the_cursor_gives_34_s_and_no_item()
     {
         var d = new Driver();
         d.At(100, [Game]);
@@ -131,22 +131,22 @@ public class ForegroundSampleCounterTests
     {
         var d = new Driver();
         d.At(100, [Game]);
-        d.Counter.UnexpectedEnd(1);
+        d.Counter.EndNotAsked(1);
         var c = d.At(130, [Game]);
         Assert.Equal(30, S(c));
         Assert.False(c.GapItem);
     }
 
     [Fact]
-    public void Gap_over_an_unexpected_end_with_another_program_gives_12_s_and_no_item()
+    public void Gap_of_30_s_over_a_probe_end_with_another_program_gives_12_s_and_no_item()
     {
         var d = new Driver();
         d.At(100, [Game]);
-        d.Counter.UnexpectedEnd(1);
-        var c = d.At(134, [Study]);
+        d.Counter.EndNotAsked(1);
+        var c = d.At(130, [Study]);
         Assert.Equal(12, S(c));
         Assert.False(c.GapItem);
-        Assert.True(c.LongGap);
+        Assert.False(c.LongGap);
         var next = d.At(250, [Game]);
         Assert.True(next.GapItem);
     }
@@ -168,7 +168,7 @@ public class ForegroundSampleCounterTests
     {
         var d = new Driver();
         d.At(100, [Game]);
-        d.Counter.UnexpectedEnd(1);
+        d.Counter.EndNotAsked(1);
         Assert.Equal(4, S(d.At(104, [Game])));
     }
 
@@ -233,12 +233,35 @@ public class ForegroundSampleCounterTests
     }
 
     [Fact]
-    public void Sample_that_took_more_than_12_s_counts_at_most_12_s_and_is_a_gap_item()
+    public void Sample_20_s_after_the_last_with_a_dur_of_15_s_and_the_same_game_gives_12_s_and_one_item()
     {
         var d = new Driver();
         d.At(100, [Game]);
-        var c = d.At(134, [Game], duration: 24.2);
+        var c = d.At(120, [Game], duration: 15);
         Assert.Equal(12, S(c));
+        Assert.True(c.GapItem);
+        Assert.True(c.LongGap);
+    }
+
+    [Fact]
+    public void Sample_with_a_dur_of_15_s_after_a_probe_end_gives_no_item()
+    {
+        var d = new Driver();
+        d.At(100, [Game]);
+        d.Counter.EndNotAsked(1);
+        var c = d.At(120, [Game], duration: 15);
+        Assert.Equal(12, S(c));
+        Assert.False(c.GapItem);
+        Assert.False(c.LongGap);
+    }
+
+    [Fact]
+    public void Long_sample_after_a_short_gap_is_a_long_gap_fact()
+    {
+        var d = new Driver();
+        d.At(100, [Game]);
+        var c = d.At(108, [Game], duration: 13);
+        Assert.Equal(8, S(c));
         Assert.True(c.GapItem);
         Assert.True(c.LongGap);
     }

@@ -5,7 +5,8 @@ public enum ProbeEndCause
 {
     /// <summary>The service ended it at <c>WTS_SESSION_LOGOFF</c> or at the service stop: expected, no restart.</summary>
     Service,
-    /// <summary>The watchdog of the service ended a silent probe: an unexpected end at once.</summary>
+    /// <summary>The watchdog of the service ended a silent probe. It gets the end wait like any other end that the
+    /// service did not ask for.</summary>
     Watchdog,
     /// <summary>Any other end (a crash, an exit, an end by Windows).</summary>
     Other,
@@ -13,7 +14,7 @@ public enum ProbeEndCause
 
 /// <summary>What the service does after the end of a probe.</summary>
 /// <param name="Restart">Start a new probe after <paramref name="Delay"/>, if the session still exists then.</param>
-/// <param name="Benign">An end within 15 s after a resume: no event and no item, ever.</param>
+/// <param name="Benign">A benign end (within the resume window of 15 s after a resume): no event and no item.</param>
 public sealed record ProbeEndOutcome(bool Restart, TimeSpan Delay, bool Benign);
 
 /// <summary>An unexpected end of a probe after its classification.</summary>
@@ -28,18 +29,20 @@ public sealed record ProbeOutage(int UserId, bool Alert);
 
 /// <summary>
 /// The faults and the hidden states of the Session Probe of each Restricted User (session-probe-and-agent-channel,
-/// design D2, D6, D6a, D12 and S20), with the review changes that the orchestrator sent on 2026-11-27:
+/// design D2, D6, D6a, D12 and S20):
 /// <list type="bullet">
 /// <item><b>Blind samples and budget items</b> (<see cref="Sample"/>): one item per sample at most. An item of a
 /// session that is not active or is locked at its query is ignored (N23). The 6th item within 10 minutes of unlocked
 /// time, and each blind sample after the first lock of the day (the strike), give a probe lock.</item>
 /// <item><b>Shadow mode</b> (D12): while the probe locks are off, a probe lock is a "would lock", and the budget and the
 /// strike advance as if it had locked. The switch to on clears the budget and the strike.</item>
-/// <item><b>The end of a probe</b>: the service restarts the probe after 1, 2, then 5 seconds for each further end in
-/// 10 minutes. It classifies the end 90 seconds later: if <c>WTS_SESSION_LOGOFF</c>, a gone session or a service stop
-/// came in that time, the end is a session-end end (no event, no item, no alert); else it is unexpected
-/// (<c>PROBE_RESTART</c>; from the 3rd in 10 minutes of unlocked time a budget item; the 3rd in one hour alerts). An end
-/// within 15 seconds after a resume is benign. A watchdog kill is unexpected at once.</item>
+/// <item><b>The end of a probe</b> that the service did not ask for (also a watchdog kill): the service restarts the
+/// probe without a wait, after 1, 2, then 5 seconds for each further end of the session and logon in 10 minutes. The
+/// end wait is 90 seconds of unbiased time: if <c>WTS_SESSION_LOGOFF</c>, a gone session or a service stop comes in it,
+/// the end is a Session-End End (no event, no item, no alert); else, at the end of the end wait, it is unexpected
+/// (<c>PROBE_RESTART</c>; from the 3rd in 10 minutes of unlocked time a budget item, with the N23 state queried at the
+/// end itself; the 3rd in one hour alerts). An end within the resume window of 15 seconds after a resume is a Benign
+/// End: a restart at once, no event, no item, no delay count.</item>
 /// <item><b>Sign-out</b>: the state of a signed-out session is keyed by the session ID and the logon, so a new sign-in
 /// in the same session ID clears it. The service starts no probe in a signed-out session.</item>
 /// <item><b>Outage</b> (D6): 5 minutes of unlocked, connected time without a sample give one event, and one alert at
@@ -55,7 +58,7 @@ public sealed class ProbeOutageMonitor
     public static readonly TimeSpan OutageAfter = TimeSpan.FromMinutes(5);
     public static readonly TimeSpan AlertInterval = TimeSpan.FromHours(1);
     public static readonly TimeSpan EndWindow = TimeSpan.FromMinutes(10);
-    public static readonly TimeSpan ClassifyAfter = TimeSpan.FromSeconds(90);
+    public static readonly TimeSpan EndWait = TimeSpan.FromSeconds(90);
     public static readonly TimeSpan ResumeWindow = TimeSpan.FromSeconds(15);
     public const int RestartAlertAt = 3;
     public const int RestartItemFrom = 3;
@@ -72,15 +75,15 @@ public sealed class ProbeOutageMonitor
         public TimeSpan? LastOutageAlert;
         public readonly List<TimeSpan> EndsUnlocked = [];
         public readonly List<TimeSpan> EndsMonotonic = [];
-        public readonly List<TimeSpan> RestartDelaysAt = [];
         public TimeSpan? LastRestartAlert;
     }
 
-    private sealed record PendingEnd(int UserId, int SessionId, long LogonKey, TimeSpan Due);
+    private sealed record PendingEnd(int UserId, int SessionId, long LogonKey, TimeSpan Due, bool ActiveAndUnlockedAtEnd);
 
     private readonly Dictionary<int, UserState> _users = new();
     private readonly List<PendingEnd> _pending = [];
     private readonly Dictionary<int, long> _signedOut = new();
+    private readonly Dictionary<(int SessionId, long LogonKey), List<TimeSpan>> _restartsAt = new();
     private TimeSpan? _lastResume;
 
     public ProbeOutageMonitor(bool probeLocksEnforced) => ProbeLocksEnforced = probeLocksEnforced;
@@ -171,33 +174,31 @@ public sealed class ProbeOutageMonitor
         return outages;
     }
 
-    /// <summary>A probe of the session ended. Gives the restart; the classification of an end by another cause
-    /// follows in <see cref="Classify"/>.</summary>
+    /// <summary>A probe of the session ended. Gives the restart; the end wait classifies the end in
+    /// <see cref="Classify"/>.</summary>
     /// <param name="logonKey">The logon of the session (for example its logon time), so that a new sign-in in the same
     /// session ID is a new session.</param>
-    public (ProbeEndOutcome Outcome, UnexpectedProbeEnd? Unexpected) ProbeEnded(int userId, int sessionId, long logonKey,
-        TimeSpan unbiasedNow, ProbeEndCause cause, Func<int, bool> activeAndUnlocked, DateOnly today)
+    /// <param name="activeAndUnlocked">The connect and lock state of the session, queried at the end itself (N23).</param>
+    public ProbeEndOutcome ProbeEnded(int userId, int sessionId, long logonKey, TimeSpan unbiasedNow, ProbeEndCause cause,
+        bool activeAndUnlocked)
     {
         if (cause == ProbeEndCause.Service || IsSignedOut(sessionId, logonKey))
-            return (new ProbeEndOutcome(false, TimeSpan.Zero, false), null);
-        if (cause == ProbeEndCause.Other && _lastResume is { } resume && unbiasedNow - resume <= ResumeWindow)
-            return (new ProbeEndOutcome(true, TimeSpan.Zero, true), null);
+            return new ProbeEndOutcome(false, TimeSpan.Zero, false);
+        if (_lastResume is { } resume && unbiasedNow >= resume && unbiasedNow - resume <= ResumeWindow)
+            return new ProbeEndOutcome(true, TimeSpan.Zero, true);
 
-        var user = User(userId);
-        user.RestartDelaysAt.RemoveAll(t => unbiasedNow - t >= EndWindow);
-        var delay = user.RestartDelaysAt.Count switch
+        if (!_restartsAt.TryGetValue((sessionId, logonKey), out var restarts))
+            _restartsAt[(sessionId, logonKey)] = restarts = [];
+        restarts.RemoveAll(t => unbiasedNow - t >= EndWindow);
+        var delay = restarts.Count switch
         {
             0 => TimeSpan.FromSeconds(1),
             1 => TimeSpan.FromSeconds(2),
             _ => TimeSpan.FromSeconds(5),
         };
-        user.RestartDelaysAt.Add(unbiasedNow);
-        var outcome = new ProbeEndOutcome(true, delay, false);
-
-        if (cause == ProbeEndCause.Watchdog)
-            return (outcome, Unexpected(userId, sessionId, unbiasedNow, activeAndUnlocked(sessionId), today));
-        _pending.Add(new PendingEnd(userId, sessionId, logonKey, unbiasedNow + ClassifyAfter));
-        return (outcome, null);
+        restarts.Add(unbiasedNow);
+        _pending.Add(new PendingEnd(userId, sessionId, logonKey, unbiasedNow + EndWait, activeAndUnlocked));
+        return new ProbeEndOutcome(true, delay, false);
     }
 
     /// <summary><c>WTS_SESSION_LOGOFF</c> of the session: each pending end of it is a session-end end, and no probe
@@ -206,6 +207,7 @@ public sealed class ProbeOutageMonitor
     {
         _signedOut[sessionId] = logonKey;
         _pending.RemoveAll(p => p.SessionId == sessionId);
+        _restartsAt.Remove((sessionId, logonKey));
     }
 
     /// <summary><c>WTS_SESSION_LOGON</c> in the session: a new logon clears the signed-out state.</summary>
@@ -225,11 +227,11 @@ public sealed class ProbeOutageMonitor
     public bool MayStart(int sessionId, long logonKey) => !IsSignedOut(sessionId, logonKey);
 
     /// <summary>
-    /// Classifies each end whose 90 seconds are over. <paramref name="isGone"/> is the live test of the service
-    /// (<c>WTSQuerySessionInformationW</c> fails and <c>WTSEnumerateSessionsW</c> does not list the session).
+    /// Classifies each end whose end wait is over. <paramref name="isGone"/> is the live test of the service
+    /// (<see cref="SessionPresence.IsGone"/>), checked again at each call: a session that is gone within the end wait
+    /// makes a Session-End End.
     /// </summary>
-    public IReadOnlyList<UnexpectedProbeEnd> Classify(TimeSpan unbiasedNow, Func<int, bool> isGone, Func<int, bool> activeAndUnlocked,
-        DateOnly today)
+    public IReadOnlyList<UnexpectedProbeEnd> Classify(TimeSpan unbiasedNow, Func<int, bool> isGone, DateOnly today)
     {
         var result = new List<UnexpectedProbeEnd>();
         foreach (var pending in _pending.ToList())
@@ -241,7 +243,7 @@ public sealed class ProbeOutageMonitor
             }
             if (unbiasedNow < pending.Due) continue;
             _pending.Remove(pending);
-            result.Add(Unexpected(pending.UserId, pending.SessionId, unbiasedNow, activeAndUnlocked(pending.SessionId), today));
+            result.Add(Unexpected(pending.UserId, pending.SessionId, unbiasedNow, pending.ActiveAndUnlockedAtEnd, today));
         }
         return result;
     }
@@ -251,8 +253,8 @@ public sealed class ProbeOutageMonitor
 
     private UnexpectedProbeEnd Unexpected(int userId, int sessionId, TimeSpan unbiasedNow, bool activeAndUnlocked, DateOnly today)
     {
-        Observe(userId, unbiasedNow, activeAndUnlocked);
         var user = User(userId);
+        Observe(userId, unbiasedNow, user.WasUnlocked);
         user.EndsMonotonic.RemoveAll(t => unbiasedNow - t >= AlertInterval);
         user.EndsMonotonic.Add(unbiasedNow);
         var alert = user.EndsMonotonic.Count >= RestartAlertAt
@@ -282,4 +284,12 @@ public sealed class ProbeOutageMonitor
             _users[userId] = user = new UserState();
         return user;
     }
+}
+
+/// <summary>The gone test of a session (session-probe-and-agent-channel, design D2): never sticky, checked at each tick.</summary>
+public static class SessionPresence
+{
+    /// <summary>A session is gone only if <c>WTSQuerySessionInformationW</c> fails and <c>WTSEnumerateSessionsW</c>
+    /// does not list it.</summary>
+    public static bool IsGone(bool queryFailed, bool listedByEnumeration) => queryFailed && !listedByEnumeration;
 }

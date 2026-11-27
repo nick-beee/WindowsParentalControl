@@ -172,12 +172,31 @@ public class ProbeLineReaderTests
     }
 
     [Fact]
-    public void Sample_duration_in_milliseconds()
+    public void Line_with_dur_gives_the_duration()
     {
-        Assert.Equal(TimeSpan.FromMilliseconds(24200.5), One("""{"t":5,"window":false,"dur":24200.5}""").Duration);
+        Assert.Equal(TimeSpan.FromMilliseconds(15000), One("""{"t":5,"window":false,"dur":15000}""").Duration);
+    }
+
+    [Fact]
+    public void Line_without_dur_counts_0_with_one_problem()
+    {
         var reader = new ProbeLineReader();
-        var sample = Assert.IsType<ProbeSample>(Assert.Single(Read(reader, """{"t":5,"blind":"desktop","dur":"x"}""")));
-        Assert.Null(sample.Duration);
+        var sample = Assert.IsType<ProbeSample>(Assert.Single(Read(reader, """{"t":5,"window":false}""")));
+        Assert.Equal(TimeSpan.Zero, sample.Duration);
+        Assert.Equal(1, reader.MissingDurations);
+        Assert.Equal("sample line without dur", reader.FirstProblem);
+    }
+
+    [Theory]
+    [InlineData("\"x\"")]
+    [InlineData("24200.5")]
+    [InlineData("-1")]
+    public void Dur_with_a_wrong_type_counts_0_and_drops_only_that_field(string dur)
+    {
+        var reader = new ProbeLineReader();
+        var sample = Assert.IsType<ProbeSample>(Assert.Single(Read(reader, "{\"t\":5,\"blind\":\"desktop\",\"dur\":" + dur + "}")));
+        Assert.Equal(TimeSpan.Zero, sample.Duration);
+        Assert.Equal(ProbeBlindReason.Desktop, sample.BlindReason);
         Assert.Equal(1, reader.DroppedFields);
     }
 }
