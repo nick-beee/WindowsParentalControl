@@ -1,6 +1,8 @@
 # Installs the working tree build on VM 102 like the installer does. Test machine only.
+# -Source: the copy of the working tree (default C:\dev\parental-control).
+param([string]$Source = 'C:\dev\parental-control')
 $ErrorActionPreference = 'Stop'
-$src = 'C:\dev\parental-control'
+$src = $Source
 $app = 'C:\Program Files\ParentalControl'
 $svc = 'ParentalControl.Service'
 if (Get-Service $svc -ErrorAction SilentlyContinue) { sc.exe stop $svc | Out-Null; Start-Sleep 4 }
