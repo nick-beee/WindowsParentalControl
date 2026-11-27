@@ -2,12 +2,12 @@
 
 ## Purpose
 
-Gives the service the Foreground Window of each session of a Restricted User from a helper that the child cannot stop, read or change, so that no limit depends on data of the Session Agent. A child action that hides the Foreground Window from the service locks the session.
+Gives the service the Foreground Window of each session of a Restricted User from a helper that the child cannot stop, read or change, so that no limit depends on data of the Session Agent. A child action that hides the Foreground Window from the service locks the session, after the parent switches the probe locks on.
 
 ## ADDED Requirements
 
 ### Requirement: Start a Session Probe in each session of a Restricted User
-The system SHALL run exactly one Session Probe in each session of a Restricted User that exists, locked or not. It SHALL start the probe at the sign-in and at the unlock of the child, and within 60 seconds after the start of the service or the end of a probe. It SHALL NOT start a Session Probe in the session of an Administrator or of a user who is not restricted.
+The system SHALL run exactly one Session Probe in each session of a Restricted User that exists, locked or not. It SHALL start the probe at the sign-in and at the unlock of the child, within 60 seconds after the start of the service, and within 10 seconds after an unexpected end of a probe. It SHALL NOT start a Session Probe in the session of an Administrator or of a user who is not restricted.
 
 #### Scenario: Sign-in of the child
 - **WHEN** the Restricted User signs in
@@ -52,7 +52,7 @@ The Session Probe SHALL create no window of any kind, also no hidden or message-
 #### Scenario: Probe crash
 - **WHEN** the Session Probe crashes in the session of the child
 - **THEN** no error window appears in that session
-- **AND** the service starts a new probe within 60 seconds
+- **AND** the service starts a new probe within 10 seconds
 
 ### Requirement: Sample the Foreground Window of the input desktop
 The Session Probe SHALL sample the input desktop of its session at random times, at least 0.2 seconds, about 5 seconds on average and at most 10 seconds apart, also if the child created that desktop. Each sample SHALL carry the time of the probe at the sample. A sample SHALL give the window handle, thread ID and process ID of the Foreground Window. It SHALL NOT give an empty process for a found window.
@@ -75,7 +75,7 @@ The Session Probe SHALL sample the input desktop of its session at random times,
 - **THEN** the handle count of the Session Probe does not grow
 
 ### Requirement: Sample the other windows that the child can use
-A sample SHALL also give the focus window if another process owns it, one visible child window of each other process below the Foreground Window, and the top-level window under the cursor if another process owns it, with its `WS_EX_NOACTIVATE` style. If more than 8 other processes have visible windows below the Foreground Window, the sample SHALL be a blind sample.
+A sample SHALL also give the focus window if another process owns it, one visible child window of each other process below the Foreground Window, and each other process of the window under the cursor and of its parent windows, with the `WS_EX_NOACTIVATE` style of their top-level window. If more than 8 other processes have visible windows below the Foreground Window, the sample SHALL be a blind sample.
 
 #### Scenario: Store app
 - **WHEN** the Windows Calculator from the Microsoft Store is the Foreground Window
@@ -93,8 +93,12 @@ A sample SHALL also give the focus window if another process owns it, one visibl
 - **WHEN** a script of the child sets `WS_EX_NOACTIVATE` on the window of a game and the child plays it with the mouse
 - **THEN** the sample gives the game process as the window under the cursor, with the style `WS_EX_NOACTIVATE`
 
+#### Scenario: Game inside a WS_EX_NOACTIVATE System window
+- **WHEN** a script of the child puts the window of a game into a window of `notepad.exe` with `SetParent`, sets `WS_EX_NOACTIVATE` on the Notepad window, and the child plays the game with the mouse while another window is the Foreground Window
+- **THEN** the sample gives the game process as a process under the cursor, with the style `WS_EX_NOACTIVATE`
+
 ### Requirement: The service reads the process of a sample itself
-The service SHALL read the exe path, the session and the start time of each process in a sample itself, with `SeDebugPrivilege` enabled, and SHALL check that the thread belongs to that process. If the process ended, that process SHALL count no time; an ended Foreground Window process SHALL also count in the budget of blind samples, but SHALL NOT lock at once. If the service cannot read it for another reason, the sample SHALL be a blind sample.
+The service SHALL read the exe path, the session and the start time of each process in a sample itself, with `SeDebugPrivilege` enabled, and SHALL check that the thread still belongs to that process. If the thread or the process ended, or the thread belongs to another process, that entry SHALL count no time. If access is denied or the process is in another session, the sample SHALL be a blind sample. The wall clock SHALL NOT decide the outcome.
 
 #### Scenario: Game that denies SYSTEM
 - **WHEN** the child removes SYSTEM from the DACL of its game process and plays the game
@@ -108,8 +112,25 @@ The service SHALL read the exe path, the session and the start time of each proc
 - **WHEN** the child makes the service slow with a CPU load and again and again re-creates its game window on a new thread and ends the old thread, so that the service finds the thread of the Foreground Window ended
 - **THEN** the session is locked within 2 minutes
 
+#### Scenario: Embedded game window on a new thread before each read
+- **WHEN** the child does the same with a game window inside a window of `notepad.exe`, so that the service finds the thread of the child window ended
+- **THEN** the session is locked within 2 minutes
+
+#### Scenario: Clock step
+- **WHEN** an Administrator sets the system clock back by one hour while the child plays a game in front
+- **THEN** the time still counts in Games
+- **AND** no blind sample results
+
+### Requirement: Blind samples and budget items
+A blind sample SHALL be a sample whose input desktop is not readable, whose Foreground Window gives no thread, with more than 8 other processes or 4096 windows below the Foreground Window, or with an entry that is denied or in another session. A budget item SHALL be a sample with an ended entry that would count time, or an unexpected end of the probe from the 3rd within 10 minutes. The service SHALL query the session state at each one and ignore it unless the session is active and unlocked.
+
+#### Scenario: Honest window close
+- **WHEN** the child closes a program window just as the Session Probe samples it
+- **THEN** that sample is a budget item, not a blind sample
+- **AND** the session is not locked at once, also after an earlier lock of that day
+
 ### Requirement: Lock the session after blind samples
-A blind sample is one that the service cannot attribute to an exe: the input desktop is not readable, or the service cannot read a process of the sample. At the 6th blind sample within 10 minutes of unlocked, connected time of a Restricted User, the system SHALL apply the Enforced Workstation Lock and notify the parent through the Alert Channel at most once per day. After that lock, each blind sample of that day SHALL lock. It SHALL NOT close a program.
+At the 6th blind sample or budget item within 10 minutes of unlocked, connected time of a Restricted User, the system SHALL apply the Enforced Workstation Lock and notify the parent through the Alert Channel at most once per day. After that lock, each blind sample of that day SHALL lock; a budget item SHALL NOT. These locks SHALL follow the requirement "Shadow mode for the probe locks". The system SHALL NOT close a program.
 
 #### Scenario: Desktop that denies the probe
 - **WHEN** the child creates a desktop whose security gives access only to the child, switches to it and starts a game there
@@ -153,3 +174,35 @@ The system SHALL end the Session Probe of a session when the session ends, and t
 - **WHEN** the child signs out
 - **THEN** the sign-out completes as without the Session Probe
 - **AND** no Session Probe of that session runs after the end of the session
+
+### Requirement: Restart a silent or crashing Session Probe
+If the service accepts no line from a running Session Probe of an unlocked, connected session for 30 seconds, it SHALL end that probe. After each unexpected end of a probe it SHALL start a new probe within 10 seconds and keep the time of the last sample, so that the gap counts up to 12 seconds. It SHALL write an event for each unexpected end and alert the parent at the 3rd within one hour, at most once per Restricted User and hour.
+
+#### Scenario: Silent probe
+- **WHEN** the Session Probe of the child still runs but sends no line for 30 seconds while the session is unlocked
+- **THEN** the service ends it and a new Session Probe runs within 40 seconds after the last line
+
+#### Scenario: Crash loop
+- **WHEN** the Session Probe of the child crashes once a minute
+- **THEN** the service starts a new probe within 10 seconds after each crash
+- **AND** the parent gets one alert within one hour
+- **AND** while the probe locks are on, the session is locked within 10 minutes
+
+### Requirement: Shadow mode for the probe locks
+The probe locks are the locks after blind samples, the lock of a program that is never suspended, and the lock of a full set of Foreground Window exes. The system SHALL apply them only while the setting `probe_locks_enforced` is on. It SHALL be off after an install or update; the parent changes it in the web admin. While it is off, the system SHALL log each probe lock as "would lock" and alert the parent at most once per day, and SHALL still count and suspend.
+
+#### Scenario: First release on the child's PC
+- **WHEN** the setting is off and the child switches to a desktop that denies the probe for 2 minutes
+- **THEN** the session is not locked
+- **AND** the system writes a "would lock" event that names the child and the reason
+- **AND** the parent gets one alert on that day
+
+#### Scenario: Counting in shadow mode
+- **WHEN** the setting is off and the child plays a game in front until Games is exhausted
+- **THEN** Category Usage for Games increases
+- **AND** the game is suspended within 70 seconds
+
+#### Scenario: Parent switches the probe locks on
+- **WHEN** the parent switches the setting on during a day with "would lock" events
+- **THEN** the session is not locked at the switch
+- **AND** a later 6th blind sample within 10 minutes locks the session
