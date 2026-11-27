@@ -58,10 +58,11 @@ public class SuspensionPlannerTests
         Func<int, string, ExeVerdict> verdict,
         Func<int, string, bool>? seen = null,
         IEnumerable<SuspensionRecord>? records = null,
-        IReadOnlySet<int>? held = null) =>
+        IReadOnlySet<int>? held = null,
+        IReadOnlySet<(int Pid, DateTime StartTimeUtc)>? guarded = null) =>
         SuspensionPlanner.Plan(new PlannerInput(
             processes.ToList(), KidSessions, verdict, seen ?? Seen(Game, Minecraft, Word, Helper, WebView, NewExe, Agent, Explorer, TaskManager),
-            (records ?? []).ToList(), Agent, WindowsFolder, held));
+            (records ?? []).ToList(), Agent, WindowsFolder, held, GuardedProcesses: guarded));
 
     [Fact]
     public void Exhausted_category_suspends_its_process_and_not_a_Study_program()
@@ -293,5 +294,50 @@ public class SuspensionPlannerTests
     {
         var plan = Plan([Proc(10, Game)], Verdict(Rules, Tuesday, gamesUsed: 120), held: new HashSet<int> { AdminSession });
         Assert.Single(plan.ToSuspend);
+    }
+
+    // Session End Guard (spec: "Session End Guard", "Keep a suspended process suspended", issue #47).
+
+    [Fact]
+    public void Guarded_recorded_game_that_the_agent_resumed_is_not_suspended_again_and_keeps_its_record()
+    {
+        var plan = Plan([Proc(10, Game)], Verdict(Rules, Tuesday, gamesUsed: 125), records: [Record(10, Game)],
+            guarded: new HashSet<(int, DateTime)> { (10, T0) });
+        Assert.Empty(plan.ToSuspend);
+        Assert.Empty(plan.ToDrop);
+        Assert.Empty(plan.ToResume);
+    }
+
+    [Fact]
+    public void Guard_does_not_stop_a_new_suspension_in_the_session()
+    {
+        // A guard covers only recorded processes. A game whose time runs out during the guard is still suspended.
+        var plan = Plan([Proc(10, Game), Proc(12, Minecraft)], Verdict(Rules, Tuesday, gamesUsed: 185), records: [Record(10, Game)],
+            guarded: new HashSet<(int, DateTime)> { (10, T0), (12, T0) });
+        Assert.Equal([12], plan.ToSuspend.Select(a => a.Process.Pid));
+        Assert.False(plan.ToSuspend[0].IsRecorded);
+    }
+
+    [Fact]
+    public void Guard_of_another_process_start_time_does_not_cover_a_reused_pid()
+    {
+        var plan = Plan([Proc(10, Game)], Verdict(Rules, Tuesday, gamesUsed: 125), records: [Record(10, Game)],
+            guarded: new HashSet<(int, DateTime)> { (10, T0.AddMinutes(-5)) });
+        Assert.True(Assert.Single(plan.ToSuspend).IsRecorded);
+    }
+
+    [Fact]
+    public void Guarded_game_with_time_back_still_resumes()
+    {
+        var plan = Plan([Proc(10, Game, suspended: true)], Verdict(Rules, Tuesday, gamesUsed: 125, bonus: 15), records: [Record(10, Game)],
+            guarded: new HashSet<(int, DateTime)> { (10, T0) });
+        Assert.Equal([10], plan.ToResume.Select(r => r.Pid));
+    }
+
+    [Fact]
+    public void Recorded_game_is_suspended_again_after_the_guard()
+    {
+        var after = Plan([Proc(10, Game)], Verdict(Rules, Tuesday, gamesUsed: 125), records: [Record(10, Game)]);
+        Assert.True(Assert.Single(after.ToSuspend).IsRecorded);
     }
 }

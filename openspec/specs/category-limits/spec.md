@@ -101,7 +101,7 @@ When the Category Usage of a category reaches the limit of the day of an exe (it
 - **THEN** the system does not suspend the game during the hold
 
 ### Requirement: Keep a suspended process suspended
-If a recorded process runs again (for example, the child resumes it with a tool), the system SHALL suspend it again within 70 seconds while its exe still has no time left or while it is still a Blocked Program. The 70 seconds include the 10 seconds of the Pending Suspension. During a Session End Hold of its session, the system SHALL wait until the hold ends, and SHALL then suspend it again within 20 seconds.
+If a recorded process runs again (for example, the child resumes it with a tool), the system SHALL suspend it again within 70 seconds while its exe still has no time left or while it is still a Blocked Program. The 70 seconds include the 10 seconds of the Pending Suspension. During a Session End Hold of its session, or a Session End Guard that covers it, the system SHALL wait until the hold or the guard ends, and SHALL then suspend it again within 20 seconds.
 
 #### Scenario: Child resumes a suspended game
 - **WHEN** Games is exhausted and the child resumes the suspended game with a tool
@@ -110,6 +110,11 @@ If a recorded process runs again (for example, the child resumes it with a tool)
 #### Scenario: Recorded game during a hold
 - **WHEN** the system resumed a recorded game for a sign-out and the hold is active
 - **THEN** the system does not suspend the game until the hold ends
+- **AND** the suspension record stays
+
+#### Scenario: Recorded game during a guard
+- **WHEN** the Session Agent resumed a recorded game for a sign-out, the system refused the hold, and the guard is active
+- **THEN** the system does not suspend the game until the guard ends
 - **AND** the suspension record stays
 
 #### Scenario: Child resumes a suspended blocked browser
@@ -174,7 +179,7 @@ The system SHALL resume a suspended process when its exe has time left again und
 - **THEN** the system resumes the suspended games before it exits
 
 ### Requirement: Keep a blocked suspension
-A process that the system suspended because its exe is a Blocked Program SHALL stay suspended while the block applies, also if its exe has time left, until the session ends or the service stops; `blocked-programs` defines when it resumes. A blocked suspension SHALL go through the Pending Suspension and the Session End Hold like a limit suspension; time left does not drop its Pending Suspension. During a Session End Hold, the system SHALL still close a Blocked Start.
+A process that the system suspended because its exe is a Blocked Program SHALL stay suspended while the block applies, also if its exe has time left, until the session ends or the service stops; `blocked-programs` defines when it resumes. A blocked suspension SHALL go through the Pending Suspension, the Session End Hold and the Session End Guard like a limit suspension; time left does not drop its Pending Suspension. During a Session End Hold, the system SHALL still close a Blocked Start.
 
 #### Scenario: Blocked browser on a new day
 - **WHEN** the system suspended a blocked Chrome yesterday, the block is still on, and the date changes
@@ -263,7 +268,7 @@ After the system resumes the Suspended Apps of a session because the session end
 - **AND** the system suspends Chrome again, within 20 seconds after the end of the hold, while `chrome.exe` is still blocked
 
 ### Requirement: Limit the Session End Hold from the agent
-A request from the Session Agent is not authenticated, so the system SHALL grant at most one Session End Hold per Restricted User in 15 minutes that does not end with the end of the session. For a request outside this limit, no hold starts and the requirement "Keep a suspended process suspended" applies without the hold exception. The system SHALL log each request and each refusal.
+A request from the Session Agent is not authenticated, so the system SHALL grant at most one Session End Hold per Restricted User in 15 minutes that does not end with the end of the session. For a request outside this limit, no hold starts, the system resumes no process, and the requirement "Session End Guard" applies. The system SHALL log each request and each refusal.
 
 #### Scenario: Fake request from the child
 - **WHEN** Games is exhausted and the child sends the session-end request to the service, but does not sign out
@@ -277,7 +282,7 @@ A request from the Session Agent is not authenticated, so the system SHALL grant
 
 #### Scenario: Fake end-session message to the agent
 - **WHEN** a hold was refused and the child makes the Session Agent resume the game without a sign-out
-- **THEN** the system suspends the game again within 70 seconds
+- **THEN** the system suspends the game again within 20 seconds after the end of the guard, so the game runs for at most 80 seconds
 
 #### Scenario: Sign-out, sign-in and sign-out again
 - **WHEN** the child signs out with a suspended game, signs in again, and signs out again 5 minutes later with a suspended game
@@ -304,7 +309,7 @@ Before the system logs off a session itself (Forced Logoff), it SHALL resume the
 - **THEN** the system resumes the game before it logs off the session
 
 ### Requirement: Minimize a process before its suspension
-Before the system suspends a process, it SHALL make the process a Pending Suspension for 10 seconds, and the Session Agent SHALL minimize the visible top-level windows of that process while it still runs. The system SHALL suspend the process at the end of the 10 seconds, also if the agent does not run or does not answer. The system SHALL drop a Pending Suspension without a suspension if the exe has time left again, if the process ended, or if a Session End Hold of the session started.
+Before the system suspends a process, it SHALL make the process a Pending Suspension for 10 seconds, and the Session Agent SHALL minimize the visible top-level windows of that process while it still runs. The system SHALL suspend the process after the 10 seconds, also if the agent does not run or answer. It SHALL drop a Pending Suspension without a suspension if the exe has time left again, if the process ended, if a Session End Hold of the session started, or if a Session End Guard covers it.
 
 #### Scenario: Full-screen game reaches the limit
 - **WHEN** Games usage reaches the Category Limit while a game fills the screen
@@ -330,3 +335,57 @@ Before the system suspends a process, it SHALL make the process a Pending Suspen
 - **WHEN** Chrome runs in the session of the child and the parent turns on the block for `chrome.exe`
 - **THEN** the system makes each Chrome process a Pending Suspension, and the agent minimizes the Chrome windows
 - **AND** the system suspends Chrome 10 seconds after the start of the Pending Suspension and does not close it
+
+### Requirement: Session End Guard
+When the system refuses a session-end request of a Restricted User, it SHALL start a Session End Guard (60 seconds) for that session if it covers a process. A guard covers each eligible process of the session: a recorded process that the system suspended, or saw suspended while no guard covered it, and did not resume itself since. During the guard it SHALL NOT suspend a covered process again. The guard SHALL end when the session ends or its time is over. A guard SHALL NOT resume a process.
+
+#### Scenario: Second sign-out within 15 minutes
+- **WHEN** a sign-out of the child did not complete, Notepad is suspended because of a block, and the child signs out again 7 minutes later
+- **THEN** the system refuses the hold and starts a guard
+- **AND** the Session Agent resumes Notepad, and a tick during the sign-out does not suspend Notepad
+
+#### Scenario: Second sign-out completes
+- **WHEN** the system refused a hold and started a guard, and the agent resumed a suspended game for the sign-out
+- **THEN** the game gets the end-session query of Windows while it runs and closes itself
+- **AND** the session ends and the guard ends with it
+
+#### Scenario: Guard ends and the session goes on
+- **WHEN** a guard covers a game and the child cancels the sign-out
+- **THEN** the system suspends the game again within 20 seconds after the end of the guard, while Games is still exhausted
+
+#### Scenario: Due game during a guard
+- **WHEN** a guard of the session runs and Games usage reaches the Category Limit while a game runs that the system did not suspend before
+- **THEN** the system suspends the game within 70 seconds, as without the guard
+
+### Requirement: Limit the Session End Guard
+A Session End Guard SHALL cover only an eligible process. A covered process SHALL NOT be eligible until the system suspends it again, or sees it suspended while no guard covers it. A request without an eligible process SHALL NOT start a guard. A request during an active guard of the session SHALL NOT extend it. A guard SHALL NOT stop a new suspension and SHALL NOT count against the limit of Session End Holds. The system SHALL log the start of each guard.
+
+#### Scenario: Fake request without a resume
+- **WHEN** Games is exhausted, the game is suspended, a hold was refused, and the child sends the session-end request with `curl`
+- **THEN** the game stays suspended
+
+#### Scenario: Fake request after a granted hold
+- **WHEN** the system resumed the game for a hold that ended without a sign-out, and the child sends the session-end request during the Pending Suspension after the hold
+- **THEN** the system refuses the request and the guard does not cover the game
+- **AND** the system suspends the game at the end of the Pending Suspension
+
+#### Scenario: Fake request after a guard
+- **WHEN** a guard covered the game, the guard ended, and the child sends the session-end request again during the Pending Suspension of the game
+- **THEN** no new guard starts
+- **AND** the system suspends the game at the end of the Pending Suspension
+
+#### Scenario: Request without an eligible process
+- **WHEN** a hold was refused and no process was eligible, Games then runs out and the system suspends a game, and the child signs out 30 seconds after the request
+- **THEN** the system starts a guard that covers the game
+
+### Requirement: Report a repeated Session End Guard
+A guard that ends by its time while its session still exists is unconfirmed. When a guard starts after an unconfirmed guard of the same Restricted User in the last 15 minutes, the system SHALL write an event to the event log and SHALL send the parent a Telegram alert, at most one alert per Restricted User per day. A repeated guard SHALL cover the same processes as another guard. A guard SHALL NOT lock the session.
+
+#### Scenario: Sign-out and Cancel again and again
+- **WHEN** the child cancelled a sign-out under a guard, the game is suspended again, and the child signs out and cancels again within 15 minutes
+- **THEN** the system starts a guard that covers the game, writes an event and alerts the parent
+- **AND** the system suspends the game again within 20 seconds after the end of the guard
+
+#### Scenario: Completed sign-out does not count
+- **WHEN** an earlier guard of the child ended with the end of its session
+- **THEN** the next guard of the child does not alert the parent

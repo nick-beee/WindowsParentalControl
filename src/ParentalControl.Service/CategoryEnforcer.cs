@@ -15,9 +15,10 @@ namespace ParentalControl.Service;
 /// It never closes or kills a process itself. If Windows refuses a suspension, it locks the session (fallback).
 /// Each suspension (also a blocked one) starts as a Pending Suspension: the Session Agent minimizes the windows of the
 /// process, and the enforcer suspends it <see cref="PendingSuspensions.Delay"/> later. During a Session End Hold of a
-/// session, it suspends no process of that session.
+/// session, it suspends no process of that session. After a refused hold, a Session End Guard keeps the processes
+/// that the Session Agent resumed for the end of the session from a new suspension (<see cref="SessionEndGuards"/>).
 /// <see cref="UsageMonitorWorker"/> calls <see cref="Tick"/> every 60 seconds. A bonus approval, an admin
-/// change, an unlock and the follow-up timer (the end of a Pending Suspension or of a hold) call <see cref="RequestTick"/>.
+/// change, an unlock and the follow-up timer (the end of a Pending Suspension, a hold or a guard) call <see cref="RequestTick"/>.
 /// </summary>
 public sealed class CategoryEnforcer : IDisposable
 {
@@ -45,6 +46,7 @@ public sealed class CategoryEnforcer : IDisposable
     private readonly HashSet<string> _sentToday = new(StringComparer.OrdinalIgnoreCase);
     private int _tickRequested;
     private readonly SessionEndHolds _holds = new();
+    private readonly SessionEndGuards _guards = new();
     private readonly PendingSuspensions _pending = new();
     private readonly Timer _followUp;
     // A copy of the Pending Suspensions for the status route, which reads it without the lock.
@@ -125,6 +127,9 @@ public sealed class CategoryEnforcer : IDisposable
 
             foreach (var hold in _holds.Expire(nowUtc, today, id => _sessionTracker.ActiveSessions.ContainsKey(id)))
                 OnHoldExpired(hold);
+            foreach (var expired in _guards.Expire(nowUtc, id => _sessionTracker.ActiveSessions.ContainsKey(id)))
+                _logger.Information("Session end guard of session {SessionId} ended by its time{Unconfirmed}", expired.Guard.SessionId,
+                    expired.Confirmed ? "" : " without the end of the session: the next guard of the user in 15 min is repeated");
 
             // The sessions of Restricted Users, locked or not.
             var restrictedSessions = new Dictionary<int, int>();
@@ -146,6 +151,7 @@ public sealed class CategoryEnforcer : IDisposable
                     UsageRepository.GetUsage(id, today)?.BonusMinutes ?? 0));
 
             var records = SuspensionRepository.GetAll();
+            _guards.Retain(records.Select(r => (r.Pid, r.StartTimeUtc)).ToHashSet());
             if (restrictedSessions.Count == 0 && records.Count == 0)
             {
                 _pending.Clear();
@@ -155,6 +161,9 @@ public sealed class CategoryEnforcer : IDisposable
 
             var sessionIds = restrictedSessions.Keys.Concat(records.Select(r => r.SessionId)).ToHashSet();
             var processes = ProcessControl.ListProcesses(sessionIds);
+            _guards.Observe(records.Select(r => (r.Pid, r.StartTimeUtc)),
+                processes.Where(p => p.IsSuspended).Select(p => (p.Pid, p.StartTimeUtc)).ToHashSet(), nowUtc);
+            var guarded = _guards.Covered(nowUtc);
 
             SendWarnings(users, dayLimits, RunningExes(processes, restrictedSessions, config.Resolver));
 
@@ -177,7 +186,8 @@ public sealed class CategoryEnforcer : IDisposable
                 Environment.GetFolderPath(Environment.SpecialFolder.Windows),
                 _holds.HeldSessions(nowUtc),
                 p => pendingClose.Contains((p.Pid, p.StartTimeUtc)),
-                _blockEnforcer.ProtectedPrograms));
+                _blockEnforcer.ProtectedPrograms,
+                guarded));
 
             foreach (var record in plan.ToDrop)
             {
@@ -235,6 +245,8 @@ public sealed class CategoryEnforcer : IDisposable
                         user.Username, sessionId, reason, SessionEndHolds.UnconfirmedWindow.TotalMinutes);
                     EventRepository.LogEvent(user.Sid, EventType.SECURITY_ALERT,
                         $"Session end request refused ({reason}): an earlier sign-out did not complete");
+                    StartGuard(sessionId, user);
+                    PublishAndSchedule();
                     return result;
                 case HoldRequestResult.AlreadyHeld:
                     _logger.Information("Session end request for {Username} (session {SessionId}, {Reason}): the session is already held",
@@ -249,6 +261,8 @@ public sealed class CategoryEnforcer : IDisposable
             foreach (var record in SuspensionRepository.GetAll().Where(r => r.SessionId == sessionId))
             {
                 var resumed = ProcessControl.Resume(record.Pid, record.StartTimeUtc, out var detail);
+                if (resumed is ProcessOpResult.Ok or ProcessOpResult.NotFound)
+                    _guards.MarkResumed(record.Pid, record.StartTimeUtc);
                 _logger.Information("Resumed {Exe} (pid {Pid}, {Category}) for the session end: {Result} {Detail}",
                     record.ExePath, record.Pid, record.Category, resumed, detail);
             }
@@ -258,12 +272,48 @@ public sealed class CategoryEnforcer : IDisposable
         }
     }
 
+    /// <summary>
+    /// The hold was refused, but the Session Agent resumed the Suspended Apps already. Starts a Session End Guard that
+    /// covers each eligible record of the session. A repeated guard (an earlier guard of the user in 15 min ended
+    /// without the end of the session) writes an event and alerts the parent once per day. The guard never locks the
+    /// session: a lock in the first second of a sign-out makes Windows end a program with unsaved data. Call it with the lock.
+    /// </summary>
+    private void StartGuard(int sessionId, User user)
+    {
+        var keys = SuspensionRepository.GetAll().Where(r => r.SessionId == sessionId).Select(r => (r.Pid, r.StartTimeUtc));
+        var start = _guards.Start(sessionId, user.Id, keys, DateTime.UtcNow);
+        switch (start.Outcome)
+        {
+            case GuardStartOutcome.AlreadyRunning:
+                _logger.Information("Session end guard of {Username} (session {SessionId}) runs already: not extended", user.Username, sessionId);
+                return;
+            case GuardStartOutcome.NothingToCover:
+                _logger.Information("No session end guard for {Username} (session {SessionId}): no process to cover", user.Username, sessionId);
+                return;
+        }
+
+        var guard = start.Guard!;
+        _logger.Information("Session end guard started for {Username} (session {SessionId}) for {Seconds} s, covers pids [{Pids}]{Repeated}",
+            user.Username, sessionId, SessionEndGuards.Duration.TotalSeconds, string.Join(", ", guard.Covered.Select(c => c.Pid)),
+            guard.Repeated ? ", repeated: an earlier guard in the last 15 min ended without the end of the session" : "");
+        if (!guard.Repeated)
+            return;
+
+        EventRepository.LogEvent(user.Sid, EventType.SECURITY_ALERT,
+            "Repeated sign-out that did not complete: the paused programs ran for about one minute again");
+        if (_sentToday.Add($"guard:{user.Id}"))
+            SendParentAlert($"Parental Control: {user.Username} on {Environment.MachineName} started a sign-out again and again " +
+                            "without completing it. Each time the paused programs run for about one minute, and then they are paused again.");
+    }
+
     private void OnSessionEnded(int sessionId)
     {
         lock (_gate)
         {
             if (_holds.SessionEnded(sessionId))
                 _logger.Information("Session end hold of session {SessionId} confirmed: the session ended", sessionId);
+            if (_guards.SessionEnded(sessionId))
+                _logger.Information("Session end guard of session {SessionId} ended: the session ended", sessionId);
             PublishAndSchedule();
         }
     }
@@ -296,6 +346,8 @@ public sealed class CategoryEnforcer : IDisposable
         var next = _pending.NextDueUtc;
         if (_holds.NextEndUtc is { } holdEnd && (next is null || holdEnd < next))
             next = holdEnd;
+        if (_guards.NextEndUtc is { } guardEnd && (next is null || guardEnd < next))
+            next = guardEnd;
 
         if (_stopped || next is null)
         {
@@ -331,6 +383,7 @@ public sealed class CategoryEnforcer : IDisposable
         var result = ProcessControl.Resume(record.Pid, record.StartTimeUtc, out var detail);
         if (result is ProcessOpResult.Ok or ProcessOpResult.NotFound)
         {
+            _guards.MarkResumed(record.Pid, record.StartTimeUtc);
             SuspensionRepository.Delete(record.Pid, record.StartTimeUtc);
             _logger.Information("Resumed {Exe} (pid {Pid}, {Category}): {Reason} ({Result})",
                 record.ExePath, record.Pid, record.Category, reason, result);
@@ -368,6 +421,7 @@ public sealed class CategoryEnforcer : IDisposable
         switch (result)
         {
             case ProcessOpResult.Ok:
+                _guards.MarkSuspended(p.Pid, p.StartTimeUtc);
                 _logger.Information("Suspended {Exe} (pid {Pid}, {Category}, {Reason}) of {Username}{Again}",
                     action.ExePath, p.Pid, action.Category, action.Reason, username, action.IsRecorded ? " again" : "");
                 if (action.Reason == SuspensionReason.Blocked)
