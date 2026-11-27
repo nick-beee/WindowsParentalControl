@@ -79,7 +79,7 @@ The Session Probe SHALL sample the input desktop of its session at random times,
 - **THEN** the handle count of the Session Probe does not grow
 
 ### Requirement: The service reads the process of a sample itself
-The service SHALL read the exe path, the session and the start time of each process in a sample itself, with `SeDebugPrivilege` enabled, and SHALL check that the thread belongs to that process. If the process ended, the sample SHALL count no time. If the service cannot read it for another reason, the sample SHALL be a blind sample.
+The service SHALL read the exe path, the session and the start time of each process in a sample itself, with `SeDebugPrivilege` enabled, and SHALL check that the thread belongs to that process. If the process ended, that process SHALL count no time. If the service cannot read it for another reason, the sample SHALL be a blind sample.
 
 #### Scenario: Game that denies SYSTEM
 - **WHEN** the child removes SYSTEM from the DACL of its game process and plays the game
@@ -90,7 +90,7 @@ The service SHALL read the exe path, the session and the start time of each proc
 - **THEN** the time counts for the game, not for the Study program
 
 ### Requirement: Lock the session after blind samples
-A blind sample is one that the service cannot attribute to an exe: the input desktop is not readable, or the service cannot read a process of the sample. At the 6th blind sample within 10 minutes of unlocked time of a Restricted User, the system SHALL apply the Enforced Workstation Lock and notify the parent through the Alert Channel at most once per day. After that lock, each blind sample of that day SHALL lock. It SHALL NOT close a program.
+A blind sample is one that the service cannot attribute to an exe: the input desktop is not readable, or the service cannot read a process of the sample. At the 6th blind sample within 10 minutes of unlocked, connected time of a Restricted User, the system SHALL apply the Enforced Workstation Lock and notify the parent through the Alert Channel at most once per day. After that lock, each blind sample of that day SHALL lock. It SHALL NOT close a program.
 
 #### Scenario: Desktop that denies the probe
 - **WHEN** the child creates a desktop whose security gives access only to the child, switches to it and starts a game there
@@ -106,12 +106,16 @@ A blind sample is one that the service cannot attribute to an exe: the input des
 - **WHEN** the session was locked for this reason and the child unlocks it and switches to that desktop again on the same day
 - **THEN** the session is locked again within 15 seconds
 
+#### Scenario: Fast user switch
+- **WHEN** an Administrator switches to their account while the session of the child stays signed in
+- **THEN** samples of the disconnected session of the child count as no blind sample
+
 #### Scenario: Windows secure desktops
 - **WHEN** the child sees a UAC prompt, presses Ctrl+Alt+Del, or the secure screen saver starts
 - **THEN** no blind sample results and the session is not locked for this reason
 
 ### Requirement: No category time without Session Probe samples
-If the service gets no sample from the Session Probe of an unlocked session for more than 12 seconds (the probe does not run or does not answer), it SHALL add no Category Usage for that time. It SHALL start a new probe within 60 seconds if the probe ended. After 5 minutes without samples it SHALL write an event and alert the parent, at most once per Restricted User and hour. It SHALL NOT use data of the Session Agent instead.
+If the service gets no sample from the Session Probe of an unlocked, connected session for more than 12 seconds (the probe does not run or does not answer), it SHALL add no Category Usage for that time. It SHALL start a new probe within 60 seconds if the probe ended. After 5 minutes without samples it SHALL write an event and alert the parent, at most once per Restricted User and hour. It SHALL NOT use data of the Session Agent instead.
 
 #### Scenario: Probe cannot start
 - **WHEN** the Session Probe of the child cannot start for 5 minutes in an unlocked session
