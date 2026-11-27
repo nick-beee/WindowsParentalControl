@@ -582,6 +582,7 @@ public sealed class WebServerHost : BackgroundService
                 DefaultMinutes: baseLimit?.DailyMinutes ?? 120,
                 DefaultStart: baseLimit?.ScheduleStart ?? new TimeOnly(8, 0),
                 DefaultEnd: baseLimit?.ScheduleEnd ?? new TimeOnly(22, 0),
+                // The day of the Control Time Zone: the dates of a Schedule Change Request are control days (control-clock).
                 Today: today));
             return RequestSpa.Page(ctx, model);
         });

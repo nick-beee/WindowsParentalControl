@@ -12,7 +12,7 @@ Current state that shapes the approach:
   - `CategoryEnforcer.Tick` (today).
   - `WebServerHost`: the activity route (App Usage and Category Usage day), the agent status and the remaining time (`DateTime.Now.TimeOfDay`, the elapsed seconds from `LastTick`), the capture quota (`DateTime.Today`) and the `Timestamp = DateTime.Now` of each capture row that the quota counts, the request routes, the dashboard routes.
   - `ScreenCaptureRepository`: `GetDayTotals` (rows with `timestamp >= <start of the day>`) and `PruneOldCaptures` (cutoff from `DateTime.Now`).
-  - `RequestPage` (the min and max dates of a Schedule Change Request).
+  - `RequestPage` (the min and max dates of a Schedule Change Request). After #42 the request page is in React, and the `/request` handler of `WebServerHost` gives these dates through `RequestPageModel`.
   - Core: `GraceRequestRepository` (once per day), `ScheduleRepository.GetEffectiveLimit` (default date), `AppUsageRepository` (hour bucket).
   - Admin app: `UserRow` and `UserDetailViewModel` (today, the date of a new Schedule Exception).
   - Breaks (usage-breaks, merged after this proposal): `BreakEnforcer.Tick` and `OtherLockTimes` (today, the time of day, and the Schedule Window end in UTC from `DateTimeKind.Local`), the three `BreakTexts` calls with `TimeZoneInfo.Local` (the end time in the child messages), and `TelegramBotService` (the `/break` list and the Break notice with `TimeZoneInfo.Local`). The break state itself is in UTC.
