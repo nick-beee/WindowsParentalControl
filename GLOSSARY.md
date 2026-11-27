@@ -104,3 +104,9 @@ A window of the Session Agent that shows the child request page of the local ser
 
 ## Agent Window Budget
 At most 5 minutes in any 60 minutes of unlocked time in which the Session Agent, as a counted process of a Session Probe sample, adds no Category Usage and does not count toward the lock of a program that is never suspended. Only the agent's own time is exempt; another process in the same sample still counts. It does not change the Allowance Time, Continuous Use, a Break or the Schedule Window. It reads only probe samples, never data of the Session Agent.
+
+## Session-End End
+An end of a Session Probe that the service did not ask for, after which the sign-out of its session, the end of the session or a stop of the service comes within 90 seconds. Windows ends the probe at a sign-out before the service knows about it. The service needs no new probe for it, and it gives no event, no alert and no budget item. Data of the Session Agent never decides it.
+
+## Benign End
+An end of a Session Probe within 15 seconds after a resume from sleep or hibernation (the resume window). The service starts a new probe at once, and the end gives no event and no budget item.

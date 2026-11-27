@@ -108,7 +108,7 @@ A Session End Guard SHALL cover only an eligible process. A covered process SHAL
 ## ADDED Requirements
 
 ### Requirement: The gap rule
-A gap of 12 seconds or less between two samples SHALL count in full. A longer gap SHALL count in full, at most 60 seconds, if neither sample is a blind sample and both have the same counted processes (same process, same category). Else the system SHALL count at most 12 seconds and the gap SHALL be one budget item, never a reason for the lock at each blind sample. A gap over 60 seconds SHALL also be one budget item. The first sample after a sign-in, an unlock or a resume SHALL add nothing.
+A gap of 12 seconds or less between two samples SHALL count in full. A longer gap SHALL count in full, at most 60 seconds, if no sample is blind and both have the same counted exes and categories, without those under the cursor. Else the system SHALL count at most 12 seconds, and the gap SHALL be one budget item that never locks at once. A gap over 60 seconds SHALL also be one item. A gap over a probe end SHALL be no item. The first sample after a sign-in, unlock or resume SHALL add nothing.
 
 #### Scenario: Long gap with the same game
 - **WHEN** a game is the Foreground Window and the next sample, 34 seconds later, shows the same game process
@@ -123,6 +123,34 @@ A gap of 12 seconds or less between two samples SHALL count in full. A longer ga
 #### Scenario: Gap over a probe restart
 - **WHEN** the Session Probe crashes while a game is the Foreground Window, and the first sample of the new probe shows the same game process
 - **THEN** Category Usage for Games increases by the whole time since the last sample of the old probe, at most 60 seconds
+
+#### Scenario: Gap over a probe restart with another program
+- **WHEN** the Session Probe crashes while a game is the Foreground Window, and the first sample of the new probe, 30 seconds later, shows a Study program
+- **THEN** Category Usage for Study increases by at most 12 seconds for that sample
+- **AND** the gap is no budget item
+
+#### Scenario: Cursor moves during a long gap
+- **WHEN** a game is the Foreground Window, and the next sample, 34 seconds later, shows the same game and another program under the cursor in a window with `WS_EX_NOACTIVATE`
+- **THEN** Category Usage for Games increases by 34 seconds for that sample
+- **AND** no budget item results
+
+#### Scenario: Game restarted during a long gap
+- **WHEN** a game is the Foreground Window, the child ends it and starts the same game exe again, and the next sample, 34 seconds later, shows the new game process
+- **THEN** Category Usage for Games increases by 34 seconds for that sample
+
+### Requirement: Long samples and gap alerts
+A sample that took more than 12 seconds SHALL count at most 12 seconds for the gap that ends at it, and that gap SHALL be one budget item. The system SHALL write a `PROBE_GAP` event for each gap over 12 seconds and each such sample, except a gap over an end of the probe, and SHALL alert the parent through the Alert Channel at most once per Restricted User and day. A gap SHALL NOT lock the session by itself.
+
+#### Scenario: Long sample
+- **WHEN** a game is the Foreground Window and the next sample, 20 seconds later, shows the same game but took 15 seconds itself
+- **THEN** Category Usage for Games increases by at most 12 seconds for that sample
+- **AND** the gap is one budget item
+
+#### Scenario: Gap alert
+- **WHEN** the child plays under a CPU load that gives three gaps of 30 seconds on one day
+- **THEN** the system writes three `PROBE_GAP` events
+- **AND** the parent gets one alert on that day
+- **AND** the session is not locked because of the gaps alone
 
 ### Requirement: The counted processes of a sample
 The counted processes of a sample SHALL be the Foreground Window process, the focus process, each process with a visible child window below the Foreground Window, and each process under the cursor if the top-level window there has `WS_EX_NOACTIVATE`, except each one in System. The system SHALL record the exe of each process of a sample, also each other process under the cursor, as a Foreground Window exe of that user today.

@@ -7,7 +7,7 @@ Gives the service the Foreground Window of each session of a Restricted User fro
 ## ADDED Requirements
 
 ### Requirement: Start a Session Probe in each session of a Restricted User
-The system SHALL run exactly one Session Probe in each session of a Restricted User that exists, locked or not. It SHALL start the probe at the sign-in and at the unlock of the child, within 60 seconds after the start of the service, and within 25 seconds after an unexpected end of a probe. It SHALL NOT start a Session Probe in a session that signs out or is gone, or in the session of an Administrator or of a user who is not restricted.
+The system SHALL run exactly one Session Probe in each session of a Restricted User that exists, locked or not. It SHALL start the probe at the sign-in and at the unlock of the child, within 60 seconds after the start of the service, and within 10 seconds after each end of a probe that it did not ask for. It SHALL NOT start a Session Probe in a session that signed out or is gone, or in the session of an Administrator or of a user who is not restricted.
 
 #### Scenario: Sign-in of the child
 - **WHEN** the Restricted User signs in
@@ -52,10 +52,10 @@ The Session Probe SHALL create no window of any kind, also no hidden or message-
 #### Scenario: Probe crash
 - **WHEN** the Session Probe crashes in the session of the child
 - **THEN** no error window appears in that session
-- **AND** the service starts a new probe within 25 seconds
+- **AND** the service starts a new probe within 10 seconds
 
 ### Requirement: Sample the Foreground Window of the input desktop
-The Session Probe SHALL sample the input desktop of its session at random times, at least 0.2 seconds, about 5 seconds on average and at most 10 seconds apart, also if the child created that desktop. Each sample SHALL carry the time of the probe at the sample. A sample SHALL give the window handle, thread ID and process ID of the Foreground Window. It SHALL NOT give an empty process for a found window.
+The Session Probe SHALL sample the input desktop of its session at random times, at least 0.2 seconds, about 5 seconds on average and at most 10 seconds apart, also if the child created that desktop. Each sample SHALL carry the time of the probe, read after the Foreground Window, and the duration of the sample. A sample SHALL give the window handle, thread ID and process ID of the Foreground Window. It SHALL NOT give an empty process for a found window.
 
 #### Scenario: Game in front
 - **WHEN** the child plays a game in a window that has the input focus
@@ -98,15 +98,19 @@ A sample SHALL also give the focus window if another process owns it, one visibl
 - **THEN** the sample gives the game process as a process under the cursor, with the style `WS_EX_NOACTIVATE`
 
 ### Requirement: A hung window counts as its program
-If the Foreground Window is the ghost window that Windows shows for a hung window, the system SHALL count the process of the hung window, not `dwm.exe`. If it cannot find that window, it SHALL count the Foreground Window process of the last sample before the ghost while that process runs. A window that only has the class name of a ghost SHALL count as its own process.
+If the Foreground Window is the ghost window that Windows shows for a hung window, the system SHALL count the process of the hung window, not `dwm.exe`, and SHALL read it like each other entry. Only if the probe finds no hung window and the Foreground Window is `dwm.exe` SHALL it count the Foreground Window process of the last sample before the ghost while that process runs. A window that only has the class name of a ghost SHALL count as its own process.
 
 #### Scenario: Hung game in front
 - **WHEN** a game in front stops responding and Windows shows its ghost window
 - **THEN** the time counts in Games
 
 #### Scenario: Ghost window that cannot be resolved
-- **WHEN** a game in front stops responding and the system cannot find the hung window of the ghost window
+- **WHEN** a game in front stops responding and the Session Probe cannot find the hung window of the ghost window
 - **THEN** the time counts in Games while the game process runs
+
+#### Scenario: Hung game that denies SYSTEM
+- **WHEN** the child removes SYSTEM from the DACL of its game and the service is denied the hung window of a ghost window in front
+- **THEN** the sample is a blind sample
 
 #### Scenario: Fake ghost window
 - **WHEN** a game of the child registers the window class `Ghost` and is the Foreground Window after a Study program
@@ -145,7 +149,7 @@ The service SHALL read the exe path, the session and the start time of each proc
 - **AND** no blind sample results
 
 ### Requirement: Blind samples and budget items
-A blind sample SHALL be a sample whose input desktop is not readable, whose Foreground Window gives no thread, with more than 8 other processes or 4096 windows below the Foreground Window, or with an entry that is denied or in another session. A budget item SHALL be a sample with an ended entry that would count time, a gap that the gap rule names, or an unexpected end of the probe from the 3rd in 10 minutes. The service SHALL ignore each one unless the session is active and unlocked.
+A blind sample SHALL be a sample whose input desktop is not readable, whose Foreground Window gives no thread, with more than 8 other processes or 4096 windows below it, or with an entry that is denied or in another session. A budget item SHALL be a sample with an ended entry that would count time, a gap that the gap rule names, or an unexpected end from the 3rd in 10 minutes. At each one, the service SHALL query the session state and ignore it unless the session is active and unlocked.
 
 #### Scenario: Honest window close
 - **WHEN** the probe locks are on and the child closes a program window just as the Session Probe samples it
@@ -178,7 +182,7 @@ At the 6th blind sample or budget item within 10 minutes of unlocked, connected 
 - **THEN** no blind sample results and the session is not locked for this reason
 
 ### Requirement: No category time without Session Probe samples
-If the Session Probe of an unlocked, connected session gives no sample (it does not run or does not answer), the service SHALL add no Category Usage for that time beyond the gap rule (capability category-limits). It SHALL start a new probe within 25 seconds after an unexpected end, and within 60 seconds otherwise. After 5 minutes without samples it SHALL write an event and alert the parent, at most once per Restricted User and hour. It SHALL NOT use data of the Session Agent instead.
+If the Session Probe of an unlocked, connected session gives no sample, the service SHALL add no Category Usage for that time beyond the gap rule (capability category-limits). It SHALL start a new probe within 10 seconds after an end that it did not ask for, and within 60 seconds otherwise. After 5 minutes without samples it SHALL write an event and alert the parent, at most once per Restricted User and hour. It SHALL NOT use data of the Session Agent instead.
 
 #### Scenario: Probe cannot start
 - **WHEN** the Session Probe of the child cannot start for 5 minutes in an unlocked session
@@ -198,30 +202,45 @@ The system SHALL end the Session Probe of a session when the session ends, and t
 - **THEN** the sign-out completes as without the Session Probe
 - **AND** no Session Probe of that session runs after the end of the session
 
-### Requirement: An end of the Session Probe at a sign-out is expected
-When a Session Probe ends and the service did not end it, the service SHALL start no probe in that session for 15 seconds. If the session signs out or is gone, or the service stops, in that time, the end SHALL be expected: no new probe, no event, no alert and no budget item. Else the end SHALL be unexpected. Data of the Session Agent SHALL NOT decide whether an end is expected.
+### Requirement: Classify each end of the Session Probe
+After an end of a Session Probe that it did not ask for, the service SHALL start a new probe after the restart delay, without a further wait, unless the session signed out or is gone. If the session signs out or is gone, or the service stops, within 90 seconds after the end, the end SHALL be a session-end end: no event, no alert and no budget item. Only after these 90 seconds SHALL the end count as unexpected. Data of the Session Agent SHALL NOT decide the class.
 
 #### Scenario: Windows ends the probe before the sign-out notification
 - **WHEN** the child signs out and Windows ends the Session Probe before the sign-out notification reaches the service
-- **THEN** no new Session Probe starts in that session
+- **THEN** the sign-out completes in normal time
 - **AND** no `PROBE_RESTART` event, no alert and no budget item results
+- **AND** no Session Probe of that session runs after the end of the session
 
 #### Scenario: Two sign-outs within one hour
 - **WHEN** the child signs out, signs in and signs out again within one hour
 - **THEN** the parent gets no alert about the Session Probe
 
+#### Scenario: Sign-out with unsaved work, then Cancel
+- **WHEN** the child signs out with unsaved text in Notepad, Windows shows that apps prevent the sign-out, and the child clicks Cancel
+- **THEN** a Session Probe runs in the session within 10 seconds after the Cancel
+- **AND** no budget item results
+
+#### Scenario: Sign-out with unsaved work, then Sign out anyway
+- **WHEN** the child signs out with unsaved text in Notepad, waits at the screen that apps prevent the sign-out, and then clicks "Sign out anyway"
+- **THEN** no `PROBE_RESTART` event and no budget item results
+- **AND** no Session Probe of that session runs after the end of the session
+
 #### Scenario: Probe ends in a session that stays
-- **WHEN** the Session Probe of the child crashes and the session is still signed in and active 15 seconds later
-- **THEN** the service writes a `PROBE_RESTART` event
-- **AND** a new Session Probe runs within 25 seconds after the crash
+- **WHEN** the Session Probe of the child crashes and the session is still signed in and active 90 seconds later
+- **THEN** a new Session Probe runs within 10 seconds after the crash
+- **AND** the service writes a `PROBE_RESTART` event after the 90 seconds
 
 #### Scenario: Session-end request of the agent
 - **WHEN** the Session Agent of the child sends a session-end request, the Session Probe then crashes, and the session stays signed in
 - **THEN** the end of the probe is an unexpected end
-- **AND** a new Session Probe runs within 25 seconds after the crash
+- **AND** a new Session Probe runs within 10 seconds after the crash
+
+#### Scenario: Session ID used again
+- **WHEN** the child signs out, and a new sign-in of the child gets the same session ID
+- **THEN** one Session Probe runs in the new session within 10 seconds after the sign-in
 
 ### Requirement: Restart a silent or crashing Session Probe
-If the service accepts no line from a running Session Probe of an unlocked, connected session for 30 seconds, it SHALL end that probe. After each unexpected end of a probe it SHALL start a new probe within 25 seconds and keep the time of the last sample, so that the gap rule of capability category-limits applies to the gap. It SHALL write an event for each unexpected end and alert the parent at the 3rd within one hour, at most once per Restricted User and hour.
+If the service accepts no line from a running Session Probe of an unlocked, connected session for 30 seconds, it SHALL end that probe. After each end of a probe that it did not ask for, it SHALL start a new probe within 10 seconds and keep the time of the last sample, so that the gap rule of capability category-limits applies to the gap. It SHALL write an event for each unexpected end and alert the parent at the 3rd within one hour, at most once per Restricted User and hour.
 
 #### Scenario: Silent probe
 - **WHEN** the Session Probe of the child still runs but sends no line for 30 seconds while the session is unlocked
@@ -229,12 +248,12 @@ If the service accepts no line from a running Session Probe of an unlocked, conn
 
 #### Scenario: Crash loop
 - **WHEN** the Session Probe of the child crashes once a minute
-- **THEN** the service starts a new probe within 25 seconds after each crash
+- **THEN** the service starts a new probe within 10 seconds after each crash
 - **AND** the parent gets one alert within one hour
-- **AND** while the probe locks are on, the session is locked within 12 minutes
+- **AND** while the probe locks are on, the session is locked within 10 minutes
 
 ### Requirement: Sleep and resume are not a probe fault
-Time in sleep or hibernation SHALL NOT count toward the 30 seconds of the watchdog, the 5 minutes of an outage, a gap between samples, or a window of 10 minutes of unlocked time. The first sample of a session after a resume SHALL add no time. An end of a Session Probe within 15 seconds after a resume SHALL count as an expected end.
+Time in sleep or hibernation SHALL NOT count toward the 30 seconds of the watchdog, the 5 minutes of an outage, a gap between samples, or a window of 10 minutes of unlocked time. The first sample of a session after a resume SHALL add no time. An end of a Session Probe within 15 seconds after a resume SHALL be a benign end: the service starts a new probe at once, and the end gives no event and no budget item.
 
 #### Scenario: Sleep and resume without a sign-in
 - **WHEN** the probe locks are on, the child signs in without a password, and the PC sleeps three times within 10 minutes for 5 minutes each and resumes without a sign-in screen
