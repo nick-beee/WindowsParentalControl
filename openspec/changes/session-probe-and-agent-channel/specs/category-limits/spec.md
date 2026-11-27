@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Count Category Usage from the Foreground Window
-The system SHALL count Category Usage per Restricted User, App Category and day from the samples of the Session Probe, never from data of the Session Agent. For each sample it SHALL add the time since the previous sample of the session, at most 12 seconds, to the category of each counted process, at most once per category, and store whole minutes. It SHALL NOT count System, a locked session, or an exe that it suspended for this user.
+The system SHALL count Category Usage per Restricted User, App Category and day from the samples of the Session Probe, never from data of the Session Agent. For each sample it SHALL add the time since the previous sample of the session, measured with the time of the probe and at most 12 seconds, to the category of each counted process, at most once per category, and store whole minutes. It SHALL NOT count System, a locked session, or an exe that it suspended for this user.
 
 #### Scenario: Three samples of a game
 - **WHEN** the Session Probe reports a Games exe as Foreground Window in three samples, each 5 seconds after the previous sample of the unlocked session
@@ -28,6 +28,10 @@ The system SHALL count Category Usage per Restricted User, App Category and day 
 - **WHEN** a game is the Foreground Window and a process of the child sends Study exe samples to the service, also through its Session Agent
 - **THEN** Category Usage for Games increases
 - **AND** Category Usage for Study does not increase
+
+#### Scenario: CPU load of the child
+- **WHEN** the child plays a game in front for 3 minutes while its programs load each CPU core at the highest priority that a standard user can set
+- **THEN** Category Usage for Games increases by 3 minutes, with a tolerance of 1 minute
 
 #### Scenario: Gap between samples
 - **WHEN** the Session Probe gives no sample for 2 minutes and then sends a Games sample
@@ -82,10 +86,10 @@ The child controls its Session Agent, so a session-end request through the Agent
 ## ADDED Requirements
 
 ### Requirement: The counted processes of a sample
-The counted processes of a sample SHALL be the Foreground Window process, the focus process if another process owns the focus, and the app process of a Store app, except each one in System. A focus process `msedgewebview2.exe` SHALL NOT count if the Foreground Window process is not System. The system SHALL record each process of a sample as a Foreground Window of that user today.
+The counted processes of a sample SHALL be the Foreground Window process, the focus process, each process with a visible child window below the Foreground Window, and the process of a `WS_EX_NOACTIVATE` window under the cursor, except each one in System. The system SHALL record the exe of each process of a sample, also of another window under the cursor, as a Foreground Window exe of that user today.
 
 #### Scenario: Game embedded in a System window
-- **WHEN** the child puts a game window into a window of `notepad.exe` and plays the game
+- **WHEN** the child puts a game window into a window of `notepad.exe`, the focus stays on Notepad, and the child plays the game with the mouse
 - **THEN** the time counts in Games
 - **AND** the game is suspended when Games is exhausted
 
@@ -97,12 +101,34 @@ The counted processes of a sample SHALL be the Foreground Window process, the fo
 - **WHEN** the child puts a Study window into a game window, gives it the focus and plays the game with the mouse
 - **THEN** the time counts in Games and in Study
 
+#### Scenario: Game with WS_EX_NOACTIVATE
+- **WHEN** a script of the child sets `WS_EX_NOACTIVATE` on a game window, a Study program is the Foreground Window, and the child plays the game with the mouse
+- **THEN** the time counts in Games and in Study
+
+#### Scenario: Cursor on a background game
+- **WHEN** a Study program is the Foreground Window and the cursor rests on the normal window of a game in the background
+- **THEN** the time counts in Study only
+- **AND** the game is suspended when Games is exhausted
+
+### Requirement: WebView2 counts with its host
+A `msedgewebview2.exe` below `Microsoft\EdgeWebView\Application` in a Program Files folder SHALL NOT count on its own as the focus, child window or cursor process; the Foreground Window process counts for it. Each other `msedgewebview2.exe` SHALL count by its App Rule, like any other exe.
+
 #### Scenario: WebView2 in a Study app
-- **WHEN** a Study app is the Foreground Window and its `msedgewebview2.exe` control has the focus
+- **WHEN** a Study app is the Foreground Window and its `msedgewebview2.exe` control from the WebView2 Runtime has the focus
 - **THEN** the time counts in Study only
 
+#### Scenario: WebView2 in the shell
+- **WHEN** Unknown is exhausted and the child reads "News and interests" of `explorer.exe` for 5 minutes
+- **THEN** no Category Usage increases
+- **AND** the session is not locked
+
+#### Scenario: Game renamed as WebView2
+- **WHEN** Games is exhausted and the child copies a game as `msedgewebview2.exe` into its Downloads folder, puts it into a Study app and plays it
+- **THEN** the time counts in Games
+- **AND** the session is locked within 2 minutes
+
 ### Requirement: A program that is never suspended still has a limit
-The system SHALL count the Session Agent in Unknown, whatever the App Rules say. If the category of an exe that the system never suspends (the Session Agent, `msedgewebview2.exe`) is exhausted, and that exe is a counted process for more than 60 seconds within 10 minutes of unlocked time, the system SHALL apply the fallback when a process cannot be suspended.
+The system SHALL count the Session Agent in Unknown as the Foreground Window or focus process, whatever the App Rules say, but not while the parent has an active prompt for that user. If the category of a counted exe that the system never suspends and that is not in System is exhausted, and that exe is a counted process for more than 60 seconds within 10 minutes of unlocked time, the system SHALL apply the fallback when a process cannot be suspended.
 
 #### Scenario: Game drawn in the agent window
 - **WHEN** Unknown is exhausted and the child plays a game that its code draws in the window of the Session Agent
@@ -111,7 +137,12 @@ The system SHALL count the Session Agent in Unknown, whatever the App Rules say.
 - **AND** the Session Agent still runs
 
 #### Scenario: Child reads a prompt
-- **WHEN** Unknown is exhausted and the child reads a prompt of the parent in the agent window for 30 seconds
+- **WHEN** Unknown is exhausted and the prompt of the parent stays in front for 3 minutes before the child answers it
+- **THEN** the session is not locked
+- **AND** Category Usage for Unknown does not increase
+
+#### Scenario: Cursor on the widget
+- **WHEN** Unknown is exhausted and the cursor rests on the widget of the Session Agent for 5 minutes
 - **THEN** the session is not locked
 
 ### Requirement: The set of Foreground Window exes fails closed
