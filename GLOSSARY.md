@@ -86,3 +86,12 @@ A time without use: the session is locked or disconnected, the user is signed ou
 
 ## Break
 A time of M minutes after N minutes of Continuous Use. The service sends a message with the end time and locks the session with the Enforced Workstation Lock. It locks the session again after each unlock and each sign-in until the end. A Break never closes, kills or suspends a program, and it ends at the latest at the end of the Schedule Window. The parent can end a running Break.
+
+## Control Time Zone
+The Windows time zone that gives each day, weekday and time of day of a limit: the Allowance Time, the Schedule Window, the Category Limits, the Grace Requests, the capture quota and the end of a Break. Only an administrator can change it (registry value `HKLM\SOFTWARE\ParentalControl\ControlTimeZone`, set in the Admin app). A change of the Windows time zone by the Restricted User has no effect on a limit.
+
+## Pending Usage
+Counted minutes of Allowance Time or Category Usage that the database did not store yet, for example on a full disk. The service keeps them in memory, adds them to the stored minutes for each limit check, and stores them at the next successful write.
+
+## Storage Lockdown
+The state of the service after 3 ticks in a row with a failed database write. The service applies the Enforced Workstation Lock to each active session of a user who is not an administrator, at least every 2 seconds, and alerts the parent. It ends after a successful write when the volume has at least 100 MB free. It never closes or kills a program.

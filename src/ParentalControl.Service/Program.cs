@@ -22,6 +22,8 @@ builder.Services.Configure<HostOptions>(o => o.BackgroundServiceExceptionBehavio
 builder.Services.AddSingleton(startup);
 builder.Services.AddSingleton(logger);
 builder.Services.AddSingleton<TelegramBotService>();
+builder.Services.AddSingleton<ParentAlertOutbox>();
+builder.Services.AddSingleton<ControlTimeService>();
 builder.Services.AddSingleton<BreakEnforcer>();
 builder.Services.AddSingleton<SessionTracker>();
 builder.Services.AddSingleton<ParentalControl.Domain.Categories.ForegroundHistory>();
@@ -51,6 +53,9 @@ using var host = builder.Build();
 
 // Only connects the Telegram callbacks. TelegramWorker waits for the start gate before it reads a command.
 host.Services.GetRequiredService<BreakEnforcer>().AttachTelegram();
+
+// control-clock D1: the Control Time Zone before any worker reads a day key. It needs the registry only, not the database.
+host.Services.GetRequiredService<ControlTimeService>().Refresh();
 
 host.Run();
 return Environment.ExitCode;

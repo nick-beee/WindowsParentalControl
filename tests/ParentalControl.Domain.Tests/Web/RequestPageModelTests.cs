@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using ParentalControl.Domain.Messages;
+using ParentalControl.Domain.Tests.Time;
+using ParentalControl.Domain.Time;
 using ParentalControl.Domain.Web;
 
 namespace ParentalControl.Domain.Tests.Web;
@@ -125,6 +127,15 @@ public class RequestPageModelTests
     }
 
     [Fact]
+    public void TheDatesOfTheScheduleFormFollowTheControlDay()
+    {
+        // 23:30 UTC on 31 Dec: the control day in W. Europe is already 1 Jan, while a system zone of UTC still shows 31 Dec.
+        var clock = new ControlClock(TestZones.WEurope, () => TestZones.Utc(2026, 12, 31, 23, 30));
+        var dates = RequestPageModel.Build(Input() with { Today = clock.Today }).Dates;
+        Assert.Equal(new RequestPageDates("2027-01-01", "2027-01-02", "2027-01-08"), dates);
+    }
+
+    [Fact]
     public void TheJsonHasTheNamesThatThePageReads()
     {
         using var doc = JsonDocument.Parse(RequestPageModel.Build(Input()).ToJson());
@@ -156,7 +167,7 @@ public class RequestPageModelTests
         Assert.Contains("heading", used);
         Assert.Contains("request_used", used);
         Assert.Contains("ext_failed", used);
-        Assert.Empty(used.Where(k => !catalog.Contains(k)));
+        Assert.All(used, k => Assert.Contains(k, catalog));
     }
 
     private static string RepoRoot()

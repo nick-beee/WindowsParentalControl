@@ -1,3 +1,4 @@
+using ParentalControl.Core;
 using ParentalControl.Core.Data;
 using ParentalControl.Core.Models;
 using ParentalControl.Core.Platform;
@@ -19,6 +20,11 @@ public sealed class BreakEnforcer
     private readonly System.Collections.Concurrent.ConcurrentDictionary<int, DateTime> _lastRunningMessage = new();
     private readonly TelegramBotService? _telegram;
     private readonly Serilog.ILogger _logger;
+    private readonly StorageHealth _health = StorageHealth.Shared;
+
+    // The break states that the database did not store (storage-failure). A read goes through this overlay, so a
+    // failed write never loses Continuous Use and never ends a running Break. In memory only.
+    private readonly Dictionary<int, BreakState> _unsaved = new();
 
     public BreakEnforcer(Serilog.ILogger logger) : this(null, logger) { }
 
@@ -109,13 +115,13 @@ public sealed class BreakEnforcer
         var bootUtc = DateTime.UtcNow - TimeSpan.FromMilliseconds(Environment.TickCount64);
         Run(user, Apply(user.Id, (rule, state, now) => BreakPlanner.ServiceStart(rule, state, now, hasUnlockedSession, bootUtc)));
         _logger.Information("Break state of {Username} at the service start: {State} (unlocked session: {Unlocked}, boot {Boot:o})",
-            user.Username, BreakRepository.GetState(user.Id), hasUnlockedSession, bootUtc);
+            user.Username, ReadState(user.Id), hasUnlockedSession, bootUtc);
     }
 
     /// <summary>The end of the running Break of the user, or null if no Break runs.</summary>
     public DateTime? GetRunningBreakEnd(int userId)
     {
-        var state = BreakRepository.GetState(userId);
+        var state = ReadState(userId);
         return state.IsBreakRunning(DateTime.UtcNow) ? state.BreakEndsUtc : null;
     }
 
@@ -128,12 +134,13 @@ public sealed class BreakEnforcer
     /// </summary>
     public void Tick(SessionTracker tracker)
     {
-        var nowLocal = DateTime.Now;
+        // control-clock: the day, the time of day and the Schedule Window end come from the Control Time Zone.
+        var clock = ControlTime.Current;
         foreach (var user in UserRepository.GetAll().Where(u => u.IsRestricted))
         {
             try
             {
-                TickUser(tracker, user, nowLocal);
+                TickUser(tracker, user, clock);
             }
             catch (Exception ex)
             {
@@ -142,13 +149,13 @@ public sealed class BreakEnforcer
         }
     }
 
-    private void TickUser(SessionTracker tracker, User user, DateTime nowLocal)
+    private void TickUser(SessionTracker tracker, User user, Domain.Time.ControlClock clock)
     {
         var unlockedSessions = tracker.ActiveSessions.Values
             .Where(s => s.UserSid == user.Sid && !s.IsLocked)
             .Select(s => s.SessionId)
             .ToList();
-        var (minutesUntilOtherLock, scheduleEndUtc) = OtherLockTimes(user.Id, nowLocal);
+        var (minutesUntilOtherLock, scheduleEndUtc) = OtherLockTimes(user.Id, clock);
         var tick = new BreakTick(
             SessionUnlocked: unlockedSessions.Count > 0,
             OtherLockInThisTick: false,
@@ -184,21 +191,24 @@ public sealed class BreakEnforcer
 
     /// <summary>
     /// The minutes until the Allowance Time or the Schedule Window ends, and today's Schedule Window end in UTC.
-    /// Both are null without a schedule. The same rule as in <see cref="UsageMonitorWorker"/>.
+    /// Both are null without a schedule. The same rule as in <see cref="UsageMonitorWorker"/>: the day and the Schedule
+    /// Window are in the Control Time Zone, and the used time includes the Pending Usage.
     /// </summary>
-    private static (int? MinutesUntilOtherLock, DateTime? ScheduleEndUtc) OtherLockTimes(int userId, DateTime nowLocal)
+    private static (int? MinutesUntilOtherLock, DateTime? ScheduleEndUtc) OtherLockTimes(int userId, Domain.Time.ControlClock clock)
     {
-        var today = DateOnly.FromDateTime(nowLocal);
-        var limit = ScheduleRepository.GetEffectiveLimit(userId, nowLocal.DayOfWeek, today);
+        var moment = clock.Read();
+        var today = moment.Today;
+        var limit = ScheduleRepository.GetEffectiveLimit(userId, moment.DayOfWeek, today);
         if (limit is null) return (null, null);
 
         var usage = UsageRepository.GetUsage(userId, today);
-        var remainingDaily = Math.Max(0, limit.DailyMinutes + (usage?.BonusMinutes ?? 0) - (usage?.MinutesUsed ?? 0));
+        var used = UsageLedger.Shared.AllowanceUsed(userId, today, usage);
+        var remainingDaily = Math.Max(0, limit.DailyMinutes + (usage?.BonusMinutes ?? 0) - used);
 
-        var now = TimeOnly.FromDateTime(nowLocal);
+        var now = moment.TimeOfDay;
         if (now >= limit.ScheduleEnd) return (0, null);
         var remainingSchedule = (int)(limit.ScheduleEnd.ToTimeSpan() - now.ToTimeSpan()).TotalMinutes;
-        var scheduleEndUtc = today.ToDateTime(limit.ScheduleEnd, DateTimeKind.Local).ToUniversalTime();
+        var scheduleEndUtc = clock.ToUtc(today, limit.ScheduleEnd);
         return (Math.Min(remainingDaily, remainingSchedule), scheduleEndUtc);
     }
 
@@ -220,9 +230,9 @@ public sealed class BreakEnforcer
     /// </summary>
     private void StartBreakInSessions(SessionTracker tracker, User user, IReadOnlyList<int> sessions, StartBreak start)
     {
-        var endText = BreakTexts.EndText(start.EndsUtc, TimeZoneInfo.Local);
+        var zone = ControlTime.Zone;
+        var endText = BreakTexts.EndText(start.EndsUtc, zone);
         var minutes = BreakPlanner.MinutesLeft(start.StartUtc, start.EndsUtc);
-        EventRepository.LogEvent(user.Sid, EventType.BREAK_STARTED, $"Until {endText} ({minutes} min)");
         _logger.Information("Break of {Username} starts: {Minutes} min until {End}", user.Username, minutes, endText);
 
         if (_telegram is not null && SettingsRepository.IsTelegramNotifyBreakEnabled())
@@ -236,13 +246,17 @@ public sealed class BreakEnforcer
 
         var title = SessionTexts.For(SettingsRepository.GetLanguagePreset())["break_title"];
         var message = SettingsRepository.GetMessage(SettingsRepository.KeyMsgBreakStart,
-            BreakTexts.StartValues(start.StartUtc, start.EndsUtc, TimeZoneInfo.Local));
+            BreakTexts.StartValues(start.StartUtc, start.EndsUtc, zone));
         foreach (var sessionId in sessions)
         {
             NotificationManager.SendMessage(sessionId, title, message, isWarning: true, timeoutSeconds: 5, wait: true);
             SessionManager.LockSession(sessionId);
             tracker.OnSessionLock(sessionId, $"Break until {endText} - workstation locked");
         }
+
+        // The event after the lock: a failed write never stops the lock (storage-failure).
+        _health.TryWrite(() => EventRepository.LogEvent(user.Sid, EventType.BREAK_STARTED, $"Until {endText} ({minutes} min)"),
+            "break start event", _logger);
     }
 
     /// <summary>
@@ -259,7 +273,7 @@ public sealed class BreakEnforcer
             _lastRunningMessage[sessionId] = now;
             var title = SessionTexts.For(SettingsRepository.GetLanguagePreset())["break_title"];
             var message = SettingsRepository.GetMessage(SettingsRepository.KeyMsgBreakRunning,
-                BreakTexts.RunningValues(now, endsUtc, TimeZoneInfo.Local));
+                BreakTexts.RunningValues(now, endsUtc, ControlTime.Zone));
             Thread.Sleep(300);
             NotificationManager.SendMessage(sessionId, title, message, isWarning: true, timeoutSeconds: 5, wait: true);
         }
@@ -273,17 +287,33 @@ public sealed class BreakEnforcer
     private BreakResult Apply(int userId, Func<BreakRule, BreakState, DateTime, BreakResult> step) =>
         Apply(userId, (rule, state, now) => (step(rule, state, now), true)).Result;
 
-    /// <summary>Reads the rule and the state, runs one planner step and stores a changed state, in one lock.</summary>
+    /// <summary>
+    /// Reads the rule and the state, runs one planner step and stores a changed state, in one lock. If the store fails,
+    /// it reports the failure and still returns the result, so the actions (a Break start, a lock again) run.
+    /// </summary>
     private (BreakResult Result, T Extra) Apply<T>(int userId, Func<BreakRule, BreakState, DateTime, (BreakResult, T)> step)
     {
         lock (_gate)
         {
             var rule = BreakRepository.GetRule(userId);
-            var state = BreakRepository.GetState(userId);
+            var state = ReadState(userId);
             var (result, extra) = step(rule, state, DateTime.UtcNow);
-            if (result.State != state) BreakRepository.SaveState(userId, result.State);
+            if (result.State != state || _unsaved.ContainsKey(userId))
+            {
+                if (_health.TryWrite(() => BreakRepository.SaveState(userId, result.State), "break state", _logger))
+                    _unsaved.Remove(userId);
+                else
+                    _unsaved[userId] = result.State;
+            }
             return (result, extra);
         }
+    }
+
+    /// <summary>The break state: the unsaved state of this process if one exists, else the stored state.</summary>
+    private BreakState ReadState(int userId)
+    {
+        lock (_gate)
+            return _unsaved.TryGetValue(userId, out var unsaved) ? unsaved : BreakRepository.GetState(userId);
     }
 
     /// <summary>Runs the actions that need no session: the events of an ended Break.</summary>
@@ -294,7 +324,7 @@ public sealed class BreakEnforcer
             if (action is EndBreak end)
             {
                 var reason = BreakPlanner.ReasonText(end.Reason);
-                EventRepository.LogEvent(user.Sid, EventType.BREAK_ENDED, reason);
+                _health.TryWrite(() => EventRepository.LogEvent(user.Sid, EventType.BREAK_ENDED, reason), "break end event", _logger);
                 _logger.Information("Break of {Username} ended ({Reason})", user.Username, reason);
             }
         }

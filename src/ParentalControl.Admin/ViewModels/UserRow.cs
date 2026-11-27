@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using ParentalControl.Core.Data;
+using ParentalControl.Core;
 using ParentalControl.Core.Models;
 
 namespace ParentalControl.Admin.ViewModels;
@@ -99,7 +100,7 @@ public partial class UserRow : ObservableObject
             row.ScheduleEnd = limit.ScheduleEnd.ToString("HH:mm");
         }
 
-        var today = DateOnly.FromDateTime(DateTime.Now);
+        var today = ControlTime.Current.Today;
         var usage = UsageRepository.GetUsage(user.Id, today);
         if (usage is not null)
         {
@@ -128,7 +129,7 @@ public partial class UserRow : ObservableObject
 
     public void RefreshUsage()
     {
-        var today = DateOnly.FromDateTime(DateTime.Now);
+        var today = ControlTime.Current.Today;
         var usage = UsageRepository.GetUsage(Id, today);
         TodayMinutesUsed = usage?.MinutesUsed ?? 0;
     }

@@ -234,6 +234,37 @@
                     </StackPanel>
                 </md:Card>
 
+                <!-- ═══ Control Time Zone (control-clock) ═══ -->
+                <md:ColorZone Mode="PrimaryMid" Padding="10,8" CornerRadius="4" Margin="0,0,0,8">
+                    <TextBlock Text="🕒 Time zone of the limits"
+                               FontSize="14" FontWeight="DemiBold"
+                               Foreground="{DynamicResource MaterialDesign.Brush.Primary.Foreground}"
+                               VerticalAlignment="Center" />
+                </md:ColorZone>
+
+                <md:Card Padding="20" Margin="0,0,0,24" md:ElevationAssist.Elevation="Dp2">
+                    <StackPanel>
+                        <TextBlock Text="The day, the Schedule Window and all limits use this time zone (the Control Time Zone). A change of the Windows time zone has no effect on the limits. If you change this zone during the day, &quot;today&quot; can move to another date."
+                                   TextWrapping="Wrap" Opacity="0.8" Margin="0,0,0,16" LineHeight="20" />
+                        <TextBlock Text="{Binding TimeZoneStatusText}" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,12" />
+                        <Border Background="#FFF4E5" BorderBrush="#E65100" BorderThickness="1" CornerRadius="4" Padding="12" Margin="0,0,0,12"
+                                Visibility="{Binding HasTimeZoneWarning, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <TextBlock Text="{Binding TimeZoneWarningText}" TextWrapping="Wrap" Foreground="#BF360C" />
+                        </Border>
+                        <ComboBox ItemsSource="{Binding TimeZones}"
+                                  SelectedItem="{Binding SelectedControlZone}"
+                                  DisplayMemberPath="DisplayName"
+                                  md:HintAssist.Hint="Control Time Zone"
+                                  Style="{StaticResource MaterialDesignOutlinedComboBox}"
+                                  Margin="0,0,0,12" />
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Save time zone" Command="{Binding SaveControlTimeZoneCommand}"
+                                    Style="{StaticResource MaterialDesignRaisedButton}" />
+                            <TextBlock Text="{Binding TimeZoneSaveStatus}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="12,0,0,0" />
+                        </StackPanel>
+                    </StackPanel>
+                </md:Card>
+
                 <!-- ═══ Web admin sign-in (Authenticator TOTP) ═══ -->
                 <md:ColorZone Mode="PrimaryMid" Padding="10,8" CornerRadius="4" Margin="0,0,0,8">
                     <TextBlock Text="🔐 Web admin sign-in"

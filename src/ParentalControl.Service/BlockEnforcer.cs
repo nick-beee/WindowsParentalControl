@@ -1,3 +1,4 @@
+using ParentalControl.Core;
 using ParentalControl.Core.Data;
 using ParentalControl.Core.Models;
 using ParentalControl.Core.Platform;
@@ -187,12 +188,17 @@ internal sealed class BlockEnforcer : IDisposable
     {
         try
         {
-            var today = DateOnly.FromDateTime(DateTime.Now);
+            var today = ControlTime.Current.Today;
             var fileName = WindowsPath.GetFileName(exePath);
-            var isNew = BlockedStartRepository.Record(user.Id, today, fileName, exePath, closed, counted: !kind.IsSubProcess, DateTime.UtcNow);
+            // A failed write counts for the Storage Lockdown (storage-failure); the close or the suspension stays.
+            var isNew = false;
+            if (!StorageHealth.Shared.TryWrite(
+                    () => isNew = BlockedStartRepository.Record(user.Id, today, fileName, exePath, closed, counted: !kind.IsSubProcess, DateTime.UtcNow),
+                    "blocked start record", _logger))
+                return;
             if (isNew)
-                EventRepository.LogEvent(user.Sid, EventType.PROGRAM_BLOCKED,
-                    $"Blocked program {fileName} {(closed ? "closed at start" : "paused")}");
+                StorageHealth.Shared.TryWrite(() => EventRepository.LogEvent(user.Sid, EventType.PROGRAM_BLOCKED,
+                    $"Blocked program {fileName} {(closed ? "closed at start" : "paused")}"), "blocked program event", _logger);
 
             if (kind.IsSilent)
                 return;

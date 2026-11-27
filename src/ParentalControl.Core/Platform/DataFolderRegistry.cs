@@ -1,6 +1,7 @@
 using System.Security.AccessControl;
 using Microsoft.Win32;
 using ParentalControl.Domain.DataFolder;
+using ParentalControl.Domain.Time;
 
 namespace ParentalControl.Core.Platform;
 
@@ -22,6 +23,12 @@ public sealed class DataFolderRegistry
     /// succeeded. So the setup lock survives a lockdown retry, an exit of the process, a power cut and a reboot.
     /// </summary>
     public const string SetupLockPendingValue = "SetupLockPending";
+
+    /// <summary>The Control Time Zone: a Windows time zone ID (harden-clock-and-disk, design D1).</summary>
+    public const string ControlTimeZoneValue = "ControlTimeZone";
+
+    /// <summary>The last seen system time zone, <c>&lt;key name&gt;|&lt;0 or 1&gt;</c> (design D5).</summary>
+    public const string LastSystemTimeZoneValue = "LastSystemTimeZone";
 
     // Owner Administrators; a protected DACL: full control for SYSTEM and Administrators, read for Users.
     public const string KeySddl = "O:BAD:PAI(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;BU)";
@@ -110,6 +117,71 @@ public sealed class DataFolderRegistry
             using var hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
             using var key = hklm.OpenSubKey(KeyPath, writable: true);
             key?.DeleteValue(SetupLockPendingValue, throwOnMissingValue: false);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Reads <see cref="ControlTimeZoneValue"/> with the trust check of the key. An absent key or value gives a null ID.
+    /// A read error counts as an untrusted key.
+    /// </summary>
+    public ControlZoneReading ReadControlTimeZone()
+    {
+        try
+        {
+            using var hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+            using var key = hklm.OpenSubKey(KeyPath, writable: false);
+            if (key is null)
+                return new ControlZoneReading(null, null);
+            var keyError = CheckKey(key);
+            return key.GetValue(ControlTimeZoneValue, null, RegistryValueOptions.DoNotExpandEnvironmentNames) switch
+            {
+                null => new ControlZoneReading(null, keyError),
+                string id => new ControlZoneReading(id, keyError),
+                _ => new ControlZoneReading("(not a string)", keyError),
+            };
+        }
+        catch (Exception ex)
+        {
+            return new ControlZoneReading(null, "The registry key of Parental Control could not be read: " + ex.Message);
+        }
+    }
+
+    /// <summary>Stores the Control Time Zone. Only the service and the elevated Admin app call this. Throws on an error.</summary>
+    public void WriteControlTimeZone(string zoneId)
+    {
+        using var key = OpenForWrite();
+        key.SetValue(ControlTimeZoneValue, zoneId, RegistryValueKind.String);
+    }
+
+    /// <summary>The last seen system time zone, or null if it is absent, not valid, or the key is not trusted.</summary>
+    public SystemZoneSetting? ReadLastSystemTimeZone()
+    {
+        try
+        {
+            using var hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+            using var key = hklm.OpenSubKey(KeyPath, writable: false);
+            if (key is null || CheckKey(key) is not null)
+                return null;
+            return SystemZoneSetting.Parse(key.GetValue(LastSystemTimeZoneValue) as string);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Stores the last seen system time zone. Returns false on an error.</summary>
+    public bool TryWriteLastSystemTimeZone(SystemZoneSetting setting)
+    {
+        try
+        {
+            using var key = OpenForWrite();
+            key.SetValue(LastSystemTimeZoneValue, setting.Format(), RegistryValueKind.String);
             return true;
         }
         catch

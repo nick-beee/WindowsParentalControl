@@ -153,10 +153,67 @@ public partial class SettingsViewModel : ObservableObject
 
     [ObservableProperty]
     private bool _telegramNotifyAdminLogon = true;
+
+    // Control Time Zone (control-clock): the limits use this zone, not the system time zone.
+    public IReadOnlyList<TimeZoneInfo> TimeZones { get; } = TimeZoneInfo.GetSystemTimeZones();
+
+    [ObservableProperty]
+    private TimeZoneInfo? _selectedControlZone;
+
+    [ObservableProperty]
+    private string _timeZoneStatusText = string.Empty;
+
+    [ObservableProperty]
+    private string _timeZoneWarningText = string.Empty;
+
+    [ObservableProperty]
+    private bool _hasTimeZoneWarning;
+
+    [ObservableProperty]
+    private string _timeZoneSaveStatus = string.Empty;
+
     public SettingsViewModel(Action navigateBack)
     {
         _navigateBack = navigateBack;
         LoadSettings();
+    }
+
+    /// <summary>Reads the Control Time Zone and the system time zone and shows a warning while they differ.</summary>
+    private void RefreshTimeZone()
+    {
+        var control = ControlTime.ReadZone(Core.Platform.DataFolderRegistry.Default);
+        ControlTime.Use(control);
+        var system = Core.Platform.SystemTimeZone.CurrentZone();
+        SelectedControlZone = TimeZones.FirstOrDefault(z => string.Equals(z.Id, control.Id, StringComparison.OrdinalIgnoreCase)) ?? control;
+        TimeZoneStatusText = $"Control Time Zone: {control.DisplayName}\nWindows time zone now: {system.DisplayName}";
+        var differs = !string.Equals(control.Id, system.Id, StringComparison.OrdinalIgnoreCase);
+        HasTimeZoneWarning = differs;
+        TimeZoneWarningText = differs
+            ? "The Windows time zone differs from the Control Time Zone. The limits still use the Control Time Zone. " +
+              "If the family moved or travels, select the new zone here. If not, a user changed the Windows time zone."
+            : string.Empty;
+    }
+
+    /// <summary>Saves the selected zone in the registry. The service uses it within 60 seconds.</summary>
+    [RelayCommand]
+    private void SaveControlTimeZone()
+    {
+        if (SelectedControlZone is not { } zone || Core.Platform.SystemTimeZone.Find(zone.Id) is null)
+        {
+            TimeZoneSaveStatus = "Select a time zone of Windows.";
+            return;
+        }
+
+        try
+        {
+            Core.Platform.DataFolderRegistry.Default.WriteControlTimeZone(zone.Id);
+            RefreshTimeZone();
+            TimeZoneSaveStatus = $"Saved. The service uses \"{zone.Id}\" within 60 seconds. \"Today\" is now the date in this zone.";
+        }
+        catch (Exception ex)
+        {
+            TimeZoneSaveStatus = "Could not save the time zone: " + ex.Message;
+        }
     }
 
     public void LoadSettings()
@@ -169,6 +226,7 @@ public partial class SettingsViewModel : ObservableObject
         AlertIntervals = SettingsRepository.Get(SettingsRepository.KeyAlertIntervals, "15,5,1");
         MaxDailyRequests = SettingsRepository.GetMaxDailyRequests();
         RefreshSignInState();
+        RefreshTimeZone();
 
         // Load message templates
         LanguagePreset = SettingsRepository.GetLanguagePreset();

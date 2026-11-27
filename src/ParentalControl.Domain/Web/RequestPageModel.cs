@@ -14,6 +14,10 @@ public sealed record RequestPageDay(
     bool HasException);
 
 /// <summary>The state of the child request page (<c>/request</c>) that the service reads on each page load.</summary>
+/// <remarks>
+/// <c>Today</c> is the day of the Control Time Zone (control-clock), not of the system time zone. The page takes the
+/// first, the default and the last date of a Schedule Change Request from it.
+/// </remarks>
 public sealed record RequestPageInput(
     string? Preset,
     string Username,

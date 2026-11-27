@@ -1,5 +1,6 @@
 using System.Windows;
 using ParentalControl.Core.Data;
+using ParentalControl.Core;
 using ParentalControl.Core.Platform;
 using ParentalControl.Domain.DataFolder;
 
@@ -13,6 +14,8 @@ public partial class App : Application
         try
         {
             DatabaseManager.Initialize();
+            // control-clock: "today" is the day of the Control Time Zone, the same day as in the service.
+            ControlTime.Use(ControlTime.ReadZone(DataFolderRegistry.Default));
         }
         catch (DataFolderUnsafeException ex)
         {
