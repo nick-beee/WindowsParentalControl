@@ -17,8 +17,28 @@ When the service starts the Session Agent in a session, it SHALL give that agent
 - **WHEN** a process of the child gives the agent exe a channel to its own server
 - **THEN** the agent exits and shows nothing
 
+### Requirement: The service starts the agent without runtime variables of the child
+The service SHALL start the Session Agent without each environment variable whose name starts with `DOTNET_`, `COMPlus_` or `CORECLR_`, also if the Restricted User set it.
+
+#### Scenario: Startup hook for the agent
+- **WHEN** the child sets the user environment variable `DOTNET_STARTUP_HOOKS` to its own file and the service starts the Session Agent
+- **THEN** the environment of the agent has no `DOTNET_STARTUP_HOOKS`
+
+### Requirement: The Agent Channel resists a flood or a stall
+The service SHALL check the length of each Agent Channel frame before it reads the frame, and SHALL close the channel for a frame over the limit. It SHALL read and write the channel without a blocked thread, close it after a stall of 10 seconds, and limit the messages per channel. A flood or a stall on one channel SHALL NOT delay another channel or a limit.
+
+#### Scenario: Huge frame length
+- **WHEN** code in the agent of the child sends a frame length of 2 GB
+- **THEN** the service closes that channel without a large allocation
+- **AND** the service starts a new Session Agent within 60 seconds
+
+#### Scenario: Agent that never reads
+- **WHEN** code in the agent of the child sends status polls and never reads the answers
+- **THEN** the service closes that channel
+- **AND** the limits of the child still apply on time
+
 ### Requirement: The service takes the identity of an agent message from the launch
-The service SHALL take the user and the session of each Agent Channel message from the agent that it started on that channel. It SHALL ignore a user name or a session ID in the message.
+The service SHALL take the user and the session of each Agent Channel message from the agent that it started on that channel: the user SID from the token that started the agent, and the session of that start. It SHALL ignore a user name or a session ID in the message.
 
 #### Scenario: Message names another user
 - **WHEN** the agent of the child sends a status poll that names the user `Mama`

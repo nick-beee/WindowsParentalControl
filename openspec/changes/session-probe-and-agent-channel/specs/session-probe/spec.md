@@ -2,16 +2,16 @@
 
 ## Purpose
 
-Gives the service the Foreground Window of each session of a Restricted User from a helper that the child cannot stop, read or change, so that no limit depends on data of the Session Agent.
+Gives the service the Foreground Window of each session of a Restricted User from a helper that the child cannot stop, read or change, so that no limit depends on data of the Session Agent. A child action that hides the Foreground Window from the service locks the session.
 
 ## ADDED Requirements
 
 ### Requirement: Start a Session Probe in each session of a Restricted User
-The system SHALL run exactly one Session Probe in each session of a Restricted User that exists, locked or not. It SHALL start the probe within 60 seconds after the sign-in of the child, after the start of the service, and after the end of a probe. It SHALL NOT start a Session Probe in the session of an Administrator or of a user who is not restricted.
+The system SHALL run exactly one Session Probe in each session of a Restricted User that exists, locked or not. It SHALL start the probe at the sign-in and at the unlock of the child, and within 60 seconds after the start of the service or the end of a probe. It SHALL NOT start a Session Probe in the session of an Administrator or of a user who is not restricted.
 
 #### Scenario: Sign-in of the child
 - **WHEN** the Restricted User signs in
-- **THEN** one Session Probe runs in the session of the child within 60 seconds
+- **THEN** one Session Probe runs in the session of the child within 10 seconds
 
 #### Scenario: Service restart
 - **WHEN** the service restarts while the child is signed in
@@ -23,7 +23,7 @@ The system SHALL run exactly one Session Probe in each session of a Restricted U
 - **THEN** no Session Probe runs in that session
 
 ### Requirement: The child cannot stop or change the Session Probe
-The Session Probe SHALL run as SYSTEM, with no window and no privilege that it does not need. A process of the Restricted User SHALL NOT be able to end it, suspend it, read or write its memory, or write to its channel. The probe SHALL NOT use environment variables, files or folders that the Restricted User can change.
+The Session Probe SHALL run as SYSTEM with no privilege that it does not need. A process of the Restricted User SHALL NOT be able to open the probe process, its threads or its token, end or suspend it, read or write its memory, or write to its pipe. The probe SHALL NOT use environment variables, files or folders that the Restricted User can change, and SHALL NOT open a process of the child.
 
 #### Scenario: Task Manager
 - **WHEN** the child selects the Session Probe in Task Manager and clicks "End task"
@@ -34,16 +34,28 @@ The Session Probe SHALL run as SYSTEM, with no window and no privilege that it d
 - **WHEN** the child sets the user environment variable `DOTNET_STARTUP_HOOKS` to its own file, signs out and signs in again
 - **THEN** the Session Probe does not load that file
 
+#### Scenario: Window hook of the child
+- **WHEN** a program of the child sets a global window hook with its own DLL
+- **THEN** the DLL is not loaded into the Session Probe
+
 #### Scenario: Service stops
 - **WHEN** the service stops or ends with an error
-- **THEN** the Session Probe ends too
+- **THEN** the Session Probe ends within 10 seconds
+
+### Requirement: The Session Probe shows nothing
+The Session Probe SHALL create no window of any kind, also no hidden or message-only window, and SHALL show no console and no error dialog, also when it fails to start or crashes.
+
+#### Scenario: Probe crash
+- **WHEN** the Session Probe crashes in the session of the child
+- **THEN** no error window appears in that session
+- **AND** the service starts a new probe within 60 seconds
 
 ### Requirement: Sample the Foreground Window of the input desktop
-The Session Probe SHALL read, every 5 seconds, the Foreground Window of the desktop that gets the input in its session, also if the child created that desktop. It SHALL send the process ID and the start time of the window process, and the window title. For a Store app it SHALL send the process of the app, not `ApplicationFrameHost.exe`. A title that it cannot read or encode SHALL NOT stop the samples. The service SHALL read the exe path itself.
+The Session Probe SHALL sample the input desktop of its session at random times, about every 5 seconds and at most 10 seconds apart, also if the child created that desktop. A sample SHALL give the window handle, thread ID and process ID of the Foreground Window, of the focus window if another process owns it, and of the app window of a Store app. It SHALL NOT give an empty process for a found window.
 
 #### Scenario: Game in front
 - **WHEN** the child plays a game in a window that has the input focus
-- **THEN** the service gets a sample with the process of the game within 5 seconds
+- **THEN** the service gets a sample with the process of the game within 10 seconds
 
 #### Scenario: Game on a second desktop
 - **WHEN** the child creates a second desktop with a tool, switches to it and starts a game there
@@ -51,15 +63,34 @@ The Session Probe SHALL read, every 5 seconds, the Foreground Window of the desk
 
 #### Scenario: Store app
 - **WHEN** the Windows Calculator from the Microsoft Store is the Foreground Window
-- **THEN** the sample names the process of `CalculatorApp.exe` in `C:\Program Files\WindowsApps`
+- **THEN** the service reads `CalculatorApp.exe` in `C:\Program Files\WindowsApps` for the sample
+
+#### Scenario: Game inside a System window
+- **WHEN** the child puts the window of a game into a window of `notepad.exe` with `SetParent` and plays the game
+- **THEN** the sample gives the game process as the focus process
 
 #### Scenario: Strange window title
 - **WHEN** a game in front has a window title of 10,000 characters with characters that are not valid text
-- **THEN** the service still gets a sample with the process of the game every 5 seconds
+- **THEN** the service still gets samples with the process of the game
 - **AND** Category Usage for Games increases
 
-### Requirement: Lock the session when the probe cannot read the input desktop
-If the Session Probe of an unlocked session of a Restricted User runs but cannot read the input desktop for 30 seconds, the system SHALL lock the session with the Enforced Workstation Lock and SHALL notify the parent through the Alert Channel, at most once per Restricted User and day. It SHALL NOT close or kill a program. The check SHALL apply again after each unlock.
+#### Scenario: Many desktop switches
+- **WHEN** the child switches between two desktops every few seconds for one hour
+- **THEN** the handle count of the Session Probe does not grow
+
+### Requirement: The service reads the process of a sample itself
+The service SHALL read the exe path, the session and the start time of each process in a sample itself, with `SeDebugPrivilege` enabled, and SHALL check that the thread belongs to that process. If the process ended, the sample SHALL count no time. If the service cannot read it for another reason, the sample SHALL be a blind sample.
+
+#### Scenario: Game that denies SYSTEM
+- **WHEN** the child removes SYSTEM from the DACL of its game process and plays the game
+- **THEN** the service reads the exe of the game and counts its time in Games
+
+#### Scenario: Fake Store app window
+- **WHEN** a game of the child registers the window class `ApplicationFrameWindow` and shows a child window of a Study program
+- **THEN** the time counts for the game, not for the Study program
+
+### Requirement: Lock the session after blind samples
+A blind sample is one that the service cannot attribute to an exe: the input desktop is not readable, or the service cannot read a process of the sample. At the 6th blind sample within 10 minutes of unlocked time of a Restricted User, the system SHALL apply the Enforced Workstation Lock and notify the parent through the Alert Channel at most once per day. After that lock, each blind sample of that day SHALL lock. It SHALL NOT close a program.
 
 #### Scenario: Desktop that denies the probe
 - **WHEN** the child creates a desktop whose security gives access only to the child, switches to it and starts a game there
@@ -67,12 +98,20 @@ If the Session Probe of an unlocked session of a Restricted User runs but cannot
 - **AND** the parent gets an alert that names the child
 - **AND** the game process still exists
 
+#### Scenario: Short returns to the default desktop
+- **WHEN** the child plays on a desktop that denies the probe for 25 seconds and then returns to the default desktop for 5 seconds, again and again
+- **THEN** the session is locked within 2 minutes
+
 #### Scenario: Unlock and the same desktop again
-- **WHEN** the session was locked for this reason and the child unlocks it and switches to that desktop again
-- **THEN** the session is locked again within 40 seconds
+- **WHEN** the session was locked for this reason and the child unlocks it and switches to that desktop again on the same day
+- **THEN** the session is locked again within 15 seconds
+
+#### Scenario: Windows secure desktops
+- **WHEN** the child sees a UAC prompt, presses Ctrl+Alt+Del, or the secure screen saver starts
+- **THEN** no blind sample results and the session is not locked for this reason
 
 ### Requirement: No category time without Session Probe samples
-If the service gets no sample from the Session Probe of an unlocked session for more than 10 seconds (the probe does not run or does not answer), it SHALL add no Category Usage for that time. It SHALL start a new probe within 60 seconds if the probe ended. After 5 minutes without samples it SHALL write an event and send the parent one alert per Restricted User and day. It SHALL NOT use data of the Session Agent instead.
+If the service gets no sample from the Session Probe of an unlocked session for more than 12 seconds (the probe does not run or does not answer), it SHALL add no Category Usage for that time. It SHALL start a new probe within 60 seconds if the probe ended. After 5 minutes without samples it SHALL write an event and alert the parent, at most once per Restricted User and hour. It SHALL NOT use data of the Session Agent instead.
 
 #### Scenario: Probe cannot start
 - **WHEN** the Session Probe of the child cannot start for 5 minutes in an unlocked session
