@@ -37,7 +37,7 @@ public sealed class AgentController : IDisposable
     private readonly System.Windows.Forms.NotifyIcon _notifyIcon;
     private readonly DispatcherTimer _statusTimer;
     private readonly DispatcherTimer _activityTimer;
-    private readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(3) };
+    private readonly HttpClient _httpClient = AgentHttp.Create(TimeSpan.FromSeconds(3));
     private readonly WidgetWindow _widgetWindow;
     private DispatcherTimer? _watchTimer;
     private int _currentWatchInterval;

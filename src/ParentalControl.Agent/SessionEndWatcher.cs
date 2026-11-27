@@ -21,7 +21,7 @@ internal sealed class SessionEndWatcher : NativeWindow, IDisposable
     private const int WsPopup = unchecked((int)0x80000000);
 
     // The handler runs on the UI thread and must answer well within the hung-app timeout of Windows (5 s).
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(2) };
+    private static readonly HttpClient Http = AgentHttp.Create(TimeSpan.FromSeconds(2));
 
     private readonly Func<IReadOnlyList<AgentAppDto>> _suspendedApps;
     // The time of the last WM_QUERYENDSESSION (Environment.TickCount64), for WaitForQuery.
