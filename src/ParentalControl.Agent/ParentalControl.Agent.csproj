@@ -13,7 +13,15 @@
   <ItemGroup>
     <!-- Core Audio API (IAudioSessionManager2, ISimpleAudioVolume) to mute Suspended Apps. MIT. -->
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+    <!-- The Request Window (request-window, ADR 0014): the WPF WebView2 control. BSD license. Ships WebView2Loader.dll. -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
   </ItemGroup>
+
+  <!-- Task 7.10 of request-window: a test build whose Request Window throws during the setup of the web view.
+       Build it with -p:RequestWindowFaultTest=true. Never ship it. -->
+  <PropertyGroup Condition="'$(RequestWindowFaultTest)' == 'true'">
+    <DefineConstants>$(DefineConstants);REQUEST_WINDOW_FAULT_TEST</DefineConstants>
+  </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\ParentalControl.Core\ParentalControl.Core.csproj" />

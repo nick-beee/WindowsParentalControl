@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.Diagnostics;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -422,15 +421,10 @@ public partial class WidgetWindow : Window
         SettingsBtn_Click(this, new RoutedEventArgs());
     }
 
-    private void RequestBtn_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var username = Uri.EscapeDataString(Environment.UserName);
-            Process.Start(new ProcessStartInfo($"http://localhost:5050/request?user={username}") { UseShellExecute = true });
-        }
-        catch { }
-    }
+    /// <summary>The request button: the controller opens the Request Window (request-window). The agent starts no browser.</summary>
+    public event Action? RequestClicked;
+
+    private void RequestBtn_Click(object sender, RoutedEventArgs e) => RequestClicked?.Invoke();
 
     protected override void OnClosing(CancelEventArgs e)
     {

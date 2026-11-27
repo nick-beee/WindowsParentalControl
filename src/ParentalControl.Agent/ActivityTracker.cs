@@ -11,7 +11,7 @@ public static class ActivityTracker
 {
     private sealed record ActivityResponse(bool Success, int[]? SuspendedPids);
 
-    private static readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(3) };
+    private static readonly HttpClient _httpClient = AgentHttp.Create(TimeSpan.FromSeconds(3));
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();

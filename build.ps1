@@ -5,7 +5,8 @@
 .DESCRIPTION
     1. Publishes ParentalControl.Service and ParentalControl.Admin as self-contained win-x64.
        The Service build runs npm to build the web admin (web/admin), so Node.js 22.12 or later must be installed.
-    2. Invokes the Inno Setup compiler to produce ParentalControlSetup.exe.
+    2. Downloads the Evergreen WebView2 Runtime bootstrapper and checks its Authenticode signature (request-window D7).
+    3. Invokes the Inno Setup compiler to produce ParentalControlSetup.exe.
 .PARAMETER InnoSetupPath
     Path to iscc.exe. Defaults to the standard Inno Setup 6 install location.
 .PARAMETER Configuration
@@ -23,6 +24,11 @@ $repoRoot   = $PSScriptRoot
 $srcDir     = Join-Path $repoRoot "src"
 $publishDir = Join-Path $repoRoot "publish"
 $issFile    = Join-Path $repoRoot "installer\ParentalControl.iss"
+
+# request-window D7: the link of the "Get the Link" button of the Evergreen Bootstrapper on
+# https://developer.microsoft.com/en-us/microsoft-edge/webview2/ (copied 2026-11-27). The signature check below is the
+# control, not the URL.
+$WebView2BootstrapperUrl = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
 
 # Resolve Inno Setup compiler path
 if ([string]::IsNullOrWhiteSpace($InnoSetupPath)) {
@@ -93,6 +99,25 @@ dotnet publish "$srcDir\ParentalControl.Agent\ParentalControl.Agent.csproj" `
     --output "$publishDir\agent"
 
 if ($LASTEXITCODE -ne 0) { Write-Error "Agent publish failed."; exit 1 }
+
+# Download the WebView2 Runtime bootstrapper (request-window D7). The installer runs it only if the runtime is missing.
+Write-Host "`n=== Downloading the WebView2 Runtime bootstrapper ===" -ForegroundColor Cyan
+$redistDir = Join-Path $publishDir "redist"
+New-Item -ItemType Directory -Path $redistDir -Force | Out-Null
+$bootstrapper = Join-Path $redistDir "MicrosoftEdgeWebview2Setup.exe"
+Invoke-WebRequest -Uri $WebView2BootstrapperUrl -OutFile $bootstrapper -UseBasicParsing
+
+# Stop the build unless the file has a valid Authenticode signature of Microsoft Corporation.
+$signature = Get-AuthenticodeSignature -FilePath $bootstrapper
+$signer = $null
+if ($null -ne $signature.SignerCertificate) {
+    $signer = $signature.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+}
+if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or $signer -ne "Microsoft Corporation") {
+    Write-Error "The WebView2 bootstrapper has no valid signature of Microsoft Corporation (status: $($signature.Status), signer: $signer)."
+    exit 1
+}
+Write-Host "WebView2 bootstrapper signed by $signer" -ForegroundColor DarkCyan
 
 # Build Installer
 Write-Host "`n=== Building Installer ===" -ForegroundColor Cyan
