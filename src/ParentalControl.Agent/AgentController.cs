@@ -1,5 +1,4 @@
 using System.Net.Http;
-using System.Diagnostics;
 using System.Drawing;
 using System.Net.Http.Json;
 using System.Windows.Threading;
@@ -52,11 +51,16 @@ public sealed class AgentController : IDisposable
     private readonly SessionEndWatcher _sessionEndWatcher;
     // The Suspended Apps of the last status poll, for the resume at the end of the session. Read on the UI thread.
     private IReadOnlyList<AgentAppDto> _suspendedApps = [];
+    // isRestricted of the last status that the agent received; null before the first status (request-window, design D6).
+    private bool? _isRestricted;
+    private System.Windows.Forms.ToolStripMenuItem? _requestItem;
+    private RequestWindow? _requestWindow;
 
     public AgentController(System.Windows.Application app)
     {
         _app = app;
         _widgetWindow = new WidgetWindow();
+        _widgetWindow.RequestClicked += OpenRequestWindow;
         _sessionEndWatcher = new SessionEndWatcher(() => _suspendedApps);
 
         _notifyIcon = new System.Windows.Forms.NotifyIcon
@@ -119,14 +123,14 @@ public sealed class AgentController : IDisposable
 
         var requestItem = new System.Windows.Forms.ToolStripMenuItem(_texts["tray_request"], null, (s, e) =>
         {
-            try
-            {
-                var username = Uri.EscapeDataString(Environment.UserName);
-                Process.Start(new ProcessStartInfo($"http://localhost:5050/request?user={username}") { UseShellExecute = true });
-            }
-            catch { }
-        });
+            _app.Dispatcher.Invoke(OpenRequestWindow);
+        })
+        {
+            // request-window: only while the last status says that the user is a Restricted User.
+            Visible = _isRestricted == true
+        };
         menu.Items.Add(requestItem);
+        _requestItem = requestItem;
 
         var oldMenu = _notifyIcon.ContextMenuStrip;
         _notifyIcon.ContextMenuStrip = menu;
@@ -144,6 +148,7 @@ public sealed class AgentController : IDisposable
             if (status == null) return;
 
             ApplyLanguage(status.language);
+            ApplyRestricted(status.isRestricted);
 
             // Check for interactive prompt from parent/admin (all accounts)
             if (status.activePrompt != null && status.activePrompt.id != _lastHandledPromptId)
@@ -267,6 +272,39 @@ public sealed class AgentController : IDisposable
         }
     }
 
+    /// <summary>
+    /// Opens the Request Window, or brings the open one to the front (request-window). Only for a Restricted User
+    /// according to the last status. The agent never starts a browser for the request page.
+    /// </summary>
+    private void OpenRequestWindow()
+    {
+        if (_isRestricted != true) return;
+        if (_requestWindow is { } open)
+        {
+            if (open.WindowState == System.Windows.WindowState.Minimized)
+                open.WindowState = System.Windows.WindowState.Normal;
+            open.Activate();
+            return;
+        }
+
+        var window = new RequestWindow(_texts, Environment.UserName);
+        window.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_requestWindow, window)) _requestWindow = null;
+        };
+        _requestWindow = window;
+        window.Show();
+        window.Activate();
+    }
+
+    /// <summary>Keeps the request item and the Request Window in line with the last status (request-window, design D6).</summary>
+    private void ApplyRestricted(bool isRestricted)
+    {
+        _isRestricted = isRestricted;
+        if (_requestItem is { } item) item.Visible = isRestricted;
+        if (!isRestricted) _requestWindow?.Close();
+    }
+
     /// <summary>Uses the texts of the Language Preset of the service. A missing preset (an earlier service) gives "de".</summary>
     private void ApplyLanguage(string? language)
     {
@@ -275,6 +313,7 @@ public sealed class AgentController : IDisposable
         _language = preset;
         _texts = AgentTexts.For(preset);
         _widgetWindow.ApplyTexts(_texts);
+        _requestWindow?.ApplyTexts(_texts);
         BuildContextMenu();
     }
 
@@ -318,6 +357,11 @@ public sealed class AgentController : IDisposable
         _notifyIcon.Dispose();
         _sessionEndWatcher.Dispose();
         _httpClient.Dispose();
+        try
+        {
+            _requestWindow?.Close();
+        }
+        catch { }
         try
         {
             _widgetWindow?.Close();

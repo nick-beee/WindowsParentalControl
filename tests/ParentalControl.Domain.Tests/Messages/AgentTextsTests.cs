@@ -36,4 +36,13 @@ public class AgentTextsTests
         Assert.Equal("🎮 Mehr Zeit wünschen", de["widget_request_button"]);
         Assert.Equal("SISA WAKTU HARI INI", AgentTexts.For("id")["widget_remaining_label"]);
     }
+
+    [Fact]
+    public void GermanRequestWindowTexts()
+    {
+        var de = AgentTexts.For("de");
+        Assert.Equal("Mehr Zeit wünschen", de["request_window_title"]);
+        Assert.Equal("Das Anfragefenster geht gerade nicht. Frag deine Eltern direkt.", de["request_window_unavailable"]);
+        Assert.Equal("Ask for More Time", AgentTexts.For("en")["request_window_title"]);
+    }
 }

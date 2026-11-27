@@ -28,6 +28,9 @@ UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\admin\{#MyAppExeName}
 SetupIconFile=..\icon.ico
 CloseApplications=force
+; request-window D7: Log() writes the result of the WebView2 Runtime bootstrapper. Without this, Log() writes nothing.
+; The log is "Setup Log <date> #<n>.txt" in the temp folder of the user, or the file of /LOG= (the updater uses it).
+SetupLogging=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -40,6 +43,9 @@ Source: "..\publish\service\*"; DestDir: "{app}\service"; Flags: ignoreversion r
 Source: "..\publish\admin\*"; DestDir: "{app}\admin"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Agent files
 Source: "..\publish\agent\*"; DestDir: "{app}\agent"; Flags: ignoreversion recursesubdirs createallsubdirs
+; request-window D7: the Evergreen WebView2 Runtime bootstrapper (build.ps1 downloads it and checks its signature).
+; Not installed: [Code] extracts it only if the runtime is missing, and runs it after the service start.
+Source: "..\publish\redist\MicrosoftEdgeWebview2Setup.exe"; Flags: dontcopy
 
 [Registry]
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "ParentalControlAgent"; ValueData: """{app}\agent\{#AgentExeName}"""; Flags: uninsdeletevalue
@@ -174,6 +180,48 @@ begin
                mbInformation, MB_OK);
 end;
 
+// request-window D7: the machine-wide Evergreen WebView2 Runtime. The setup runs in 64-bit mode, so a plain HKLM reads
+// the 64-bit view; the key is in the 32-bit view (WOW6432Node). Present: pv is not empty and not 0.0.0.0.
+const
+    WebView2ClientKey = 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
+    WebView2Bootstrapper = 'MicrosoftEdgeWebview2Setup.exe';
+
+function IsWebView2RuntimeInstalled(): Boolean;
+var
+    Version: String;
+begin
+    Result := RegQueryStringValue(HKLM32, WebView2ClientKey, 'pv', Version)
+              and (Version <> '') and (Version <> '0.0.0.0');
+    if Result then
+        Log('WebView2 Runtime: version ' + Version)
+    else
+        Log('WebView2 Runtime: not installed');
+end;
+
+// Runs after StartService(), so the limits work while the bootstrapper downloads the runtime. A failure (for example
+// offline) does not stop the setup; the log has the result and the exit code, and the service writes a warning event
+// 15 minutes after its start if the runtime is still missing.
+procedure InstallWebView2RuntimeIfMissing();
+var
+    ResultCode: Integer;
+begin
+    if IsWebView2RuntimeInstalled() then
+        Exit;
+    try
+        ExtractTemporaryFile(WebView2Bootstrapper);
+    except
+        Log('WebView2 Runtime: the bootstrapper could not be extracted: ' + GetExceptionMessage());
+        Exit;
+    end;
+    Log('WebView2 Runtime: running the bootstrapper /silent /install');
+    if Exec(ExpandConstant('{tmp}\' + WebView2Bootstrapper), '/silent /install', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+        Log(Format('WebView2 Runtime: the bootstrapper ended with exit code %d', [ResultCode]))
+    else
+        Log(Format('WebView2 Runtime: the bootstrapper did not start: error %d (%s)', [ResultCode, SysErrorMessage(ResultCode)]));
+    if not IsWebView2RuntimeInstalled() then
+        Log('WebView2 Runtime: still missing; the Request Window shows its fallback text');
+end;
+
 procedure StopRunningProcesses();
 var
     ResultCode: Integer;
@@ -209,6 +257,8 @@ begin
         else
             UpdateService();
         StartService();
+        // Not a [Run] entry: Inno Setup runs those before ssPostInstall, while the service is still stopped.
+        InstallWebView2RuntimeIfMissing();
     end;
 end;
 

@@ -362,6 +362,16 @@ Debug.Assert(UpdateService.IsNewerVersion("zzz", "1.5.0") == false, "A tag that 
 Debug.Assert(UpdateService.IsNewerVersion("1.2.1", "1.4.1") == false, "1.2.1 is not newer than 1.4.1");
 Console.WriteLine("✅ AppVersion & UpdateService SemVer Comparison Verification Passed.");
 
+// request-window, task 5.4: the updater runs the setup with a log in the logs folder of the data folder.
+var silentSetupArgs = UpdateService.InstallerArgumentsFor(silent: true);
+var normalSetupArgs = UpdateService.InstallerArgumentsFor(silent: false);
+var setupLogPrefix = $"/LOG=\"{DatabaseManager.LogsDirectory}\\setup-";
+Debug.Assert(silentSetupArgs.StartsWith("/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=\"", StringComparison.Ordinal), $"Silent setup arguments: {silentSetupArgs}");
+Debug.Assert(silentSetupArgs.Contains(setupLogPrefix, StringComparison.OrdinalIgnoreCase) && silentSetupArgs.EndsWith(".log\"", StringComparison.Ordinal), $"Silent setup log: {silentSetupArgs}");
+Debug.Assert(normalSetupArgs.StartsWith(setupLogPrefix, StringComparison.OrdinalIgnoreCase) && normalSetupArgs.EndsWith(".log\"", StringComparison.Ordinal), $"Normal setup log: {normalSetupArgs}");
+Debug.Assert(Directory.Exists(DatabaseManager.LogsDirectory), "The logs folder exists before the setup starts");
+Console.WriteLine("✅ Setup Log Arguments of the Updater Verification Passed.");
+
 // Live call to the GitHub API. Skipped on GitHub Actions: shared runner IPs often hit the
 // unauthenticated rate limit (403), which would make CI fail for no code reason.
 var isGitHubActions = Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true";

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using ParentalControl.Core.Data;
 using ParentalControl.Domain.Updates;
 using Serilog;
 
@@ -266,7 +267,7 @@ public static class UpdateService
             var startInfo = new ProcessStartInfo
             {
                 FileName = installerPath,
-                Arguments = silent ? "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" : "",
+                Arguments = InstallerArgumentsFor(silent),
                 UseShellExecute = true,
                 Verb = "runas"
             };
@@ -279,6 +280,26 @@ public static class UpdateService
             _logger.Error(ex, "Failed to launch update installer");
             return (false, $"Gagal menjalankan installer: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// The arguments of the setup with <c>/LOG</c> in the logs folder of the data folder (request-window, design D7).
+    /// If the folder cannot be created, the setup runs without <c>/LOG</c>.
+    /// </summary>
+    public static string InstallerArgumentsFor(bool silent)
+    {
+        string? logsDirectory = null;
+        try
+        {
+            logsDirectory = DatabaseManager.LogsDirectory;
+            Directory.CreateDirectory(logsDirectory);
+        }
+        catch (Exception ex)
+        {
+            _logger.Warning(ex, "The setup log folder is not available; the setup runs without /LOG");
+            logsDirectory = null;
+        }
+        return InstallerArguments.Build(silent, logsDirectory, DateTime.Now);
     }
 
     /// <summary>

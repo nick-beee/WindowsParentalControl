@@ -33,6 +33,7 @@ builder.Services.AddHostedService<StartupWorker>();
 builder.Services.AddHostedService<UsageMonitorWorker>();
 builder.Services.AddHostedService<TelegramWorker>();
 builder.Services.AddHostedService<WebServerHost>();
+builder.Services.AddHostedService<WebView2RuntimeMonitor>();
 if (WindowsServiceHelpers.IsWindowsService())
 {
     builder.Services.AddSingleton<IHostLifetime>(sp =>
