@@ -262,6 +262,11 @@ Time in sleep or hibernation SHALL NOT count toward the 30 seconds of the watchd
 - **AND** no Category Usage counts for the sleep time
 - **AND** the session is not locked
 
+#### Scenario: Line from before the sleep arrives after it
+- **WHEN** the Session Probe writes a sample line just before a sleep of 10 minutes, and the service reads it only after the resume
+- **THEN** that line adds no time
+- **AND** the next sample line adds only the time since the resume, not the sleep
+
 ### Requirement: Shadow mode for the probe locks
 The probe locks are the locks after blind samples, for a program that is never suspended, and for a full set of Foreground Window exes. The system SHALL apply them only while the setting `probe_locks_enforced` is on. It SHALL be off until the parent stores it in the web admin; an update SHALL keep it. While it is off, the system SHALL log each probe lock as "would lock", alert the parent once per day for each reason and for each exe that is never suspended, and still count and suspend.
 
