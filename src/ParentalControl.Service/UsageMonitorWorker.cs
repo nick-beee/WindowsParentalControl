@@ -365,7 +365,9 @@ public sealed class UsageMonitorWorker : BackgroundService
             var probeOk = _health.TryWrite(() => SettingsRepository.Set(KeyStorageProbe, DateTime.UtcNow.ToString("O")), "storage probe", _logger);
             var storeOk = _ledger.Store();
             var failures = _health.TakeFailures();
-            var tickFailed = readFailed || !probeOk || !storeOk || failures > 0;
+            // The retry of this tick decides the exit; the failures since the last tick count only for the entry.
+            var retrySucceeded = !readFailed && probeOk && storeOk;
+            var tickFailed = !retrySucceeded || failures > 0;
 
             long? free;
             try
@@ -378,9 +380,9 @@ public sealed class UsageMonitorWorker : BackgroundService
             }
 
             var today = ControlTime.Current.Today;
-            var outcome = _storageLockdown.ReportTick(tickFailed, _ledger.Pending.IsEmpty, free, today);
+            var outcome = _storageLockdown.ReportTick(tickFailed, retrySucceeded, _ledger.Pending.IsEmpty, free, today);
 
-            if (tickFailed && !outcome.Entered)
+            if (tickFailed && !outcome.Entered && !outcome.Left)
                 _logger.Warning("Database write failed in this tick ({Failures} failures, {InRow} failed ticks in a row, Storage Lockdown: {InLockdown}, free: {Free} bytes)",
                     failures, _storageLockdown.FailedTicksInRow, _storageLockdown.InLockdown, free);
 

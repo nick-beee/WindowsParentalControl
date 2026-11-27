@@ -7,9 +7,10 @@ public readonly record struct StorageTickOutcome(bool Entered, bool Left, bool A
 
 /// <summary>
 /// The state of the Storage Lockdown (storage-failure, design D8). It counts the failed ticks in a row and enters the
-/// Storage Lockdown at <see cref="FailedTicksToEnter"/>. It leaves only after a successful tick (probe write and store
-/// of the Pending Usage) with no Pending Usage left and at least <see cref="MinFreeBytes"/> free. It alerts the
-/// parent at the first entry of each day of the Control Time Zone. The state is in memory only.
+/// Storage Lockdown at <see cref="FailedTicksToEnter"/>. It leaves when the retry of a tick (probe write and store of
+/// the Pending Usage) succeeds with no Pending Usage left and at least <see cref="MinFreeBytes"/> free. A write that
+/// failed between two ticks, before the space was free, does not keep the lockdown. It alerts the parent at the first
+/// entry of each day of the Control Time Zone. The state is in memory only.
 /// </summary>
 public sealed class StorageLockdownState
 {
@@ -23,29 +24,30 @@ public sealed class StorageLockdownState
 
     public int FailedTicksInRow { get; private set; }
 
-    /// <param name="tickFailed">A write of the tick failed, or a read for a limit check failed.</param>
+    /// <param name="tickFailed">A write since the last tick failed, or a read for a limit check failed.</param>
+    /// <param name="retrySucceeded">The probe write and the store of the Pending Usage of this tick succeeded, and no
+    /// read for a limit check failed. In the Storage Lockdown, only this retry decides the exit.</param>
     /// <param name="pendingEmpty">The Pending Usage is empty after the store of the tick.</param>
     /// <param name="freeBytes">The free space of the volume of the data folder, or null if it is not known.</param>
-    public StorageTickOutcome ReportTick(bool tickFailed, bool pendingEmpty, long? freeBytes, DateOnly controlDay)
+    public StorageTickOutcome ReportTick(bool tickFailed, bool retrySucceeded, bool pendingEmpty, long? freeBytes, DateOnly controlDay)
     {
         lock (_gate)
         {
-            if (tickFailed)
-            {
-                FailedTicksInRow++;
-                if (InLockdown || FailedTicksInRow < FailedTicksToEnter)
-                    return default;
-                InLockdown = true;
-                return new StorageTickOutcome(Entered: true, Left: false, Alert: _alerts.TryTake(controlDay));
-            }
+            FailedTicksInRow = tickFailed ? FailedTicksInRow + 1 : 0;
 
-            FailedTicksInRow = 0;
-            if (InLockdown && pendingEmpty && freeBytes is { } free && free >= MinFreeBytes)
+            if (InLockdown)
             {
+                if (!retrySucceeded || !pendingEmpty || freeBytes is not { } free || free < MinFreeBytes)
+                    return default;
                 InLockdown = false;
+                FailedTicksInRow = 0;
                 return new StorageTickOutcome(Entered: false, Left: true, Alert: false);
             }
-            return default;
+
+            if (FailedTicksInRow < FailedTicksToEnter)
+                return default;
+            InLockdown = true;
+            return new StorageTickOutcome(Entered: true, Left: false, Alert: _alerts.TryTake(controlDay));
         }
     }
 }

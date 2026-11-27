@@ -9,10 +9,10 @@ public class StorageLockdownStateTests
     private const long FiftyMb = 50L * 1024 * 1024;
 
     private static StorageTickOutcome Fail(StorageLockdownState s, DateOnly? day = null) =>
-        s.ReportTick(true, false, 0, day ?? Day);
+        s.ReportTick(true, false, false, 0, day ?? Day);
 
     private static StorageTickOutcome Ok(StorageLockdownState s, long free = FiveGb, bool pendingEmpty = true) =>
-        s.ReportTick(false, pendingEmpty, free, Day);
+        s.ReportTick(false, true, pendingEmpty, free, Day);
 
     [Fact]
     public void TwoFailedTicksDoNotEnter()
@@ -63,11 +63,41 @@ public class StorageLockdownStateTests
     }
 
     [Fact]
+    public void FailuresBeforeTheFreeDoNotDelayTheExit()
+    {
+        // The lock loop writes a lock event that fails between two ticks; then the parent frees space. The retry of the
+        // next tick works: the lockdown ends in that tick (spec "Parent frees space": within 60 seconds).
+        var s = Entered();
+        var outcome = s.ReportTick(tickFailed: true, retrySucceeded: true, pendingEmpty: true, FiveGb, Day);
+        Assert.True(outcome.Left);
+        Assert.False(s.InLockdown);
+        Assert.Equal(0, s.FailedTicksInRow);
+    }
+
+    [Fact]
+    public void FailedRetryStaysInWithFreeSpace()
+    {
+        var s = Entered();
+        Assert.False(s.ReportTick(tickFailed: true, retrySucceeded: false, pendingEmpty: true, FiveGb, Day).Left);
+        Assert.True(s.InLockdown);
+    }
+
+    [Fact]
+    public void FailuresAfterTheExitCountFromZero()
+    {
+        var s = Entered();
+        s.ReportTick(tickFailed: true, retrySucceeded: true, pendingEmpty: true, FiveGb, Day);
+        Assert.False(Fail(s).Entered);
+        Assert.False(Fail(s).Entered);
+        Assert.True(Fail(s).Entered);
+    }
+
+    [Fact]
     public void PendingUsageLeftOrUnknownFreeSpaceStaysIn()
     {
         var s = Entered();
         Assert.False(Ok(s, pendingEmpty: false).Left);
-        Assert.False(s.ReportTick(false, true, null, Day).Left);
+        Assert.False(s.ReportTick(false, true, true, null, Day).Left);
         Assert.True(s.InLockdown);
     }
 
