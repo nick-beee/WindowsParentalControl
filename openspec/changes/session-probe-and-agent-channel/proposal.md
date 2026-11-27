@@ -70,7 +70,7 @@ The child runs the Session Agent under its own account. So the child can read th
 - `src/ParentalControl.Service/ParentalControlServiceLifetime.cs`: the power events also reach `SessionProbeHost` (the watchdog and the outage timer at sleep and resume).
 - `src/ParentalControl.Domain`: pure classes for the sample counting, the counted processes (with the trusted WebView2 path, its creator, and the prompt exemption of the agent), the blind-sample budget, the probe outage and restarts, the shadow mode gate, the channel messages and limits, and the agent launch record; the cap of `ForegroundHistory` rises to 60,000. New xUnit tests.
 - `installer/ParentalControl.iss`: the probe files; the `Run` key goes; the uninstall stops the probe.
-- `src/ParentalControl.Core/Data/SettingsRepository.cs`: the setting `probe_locks_enforced` (off by default). `web/admin`: a switch for it on the settings page, with German texts. New `EventType` values `PROBE_OUTAGE`, `PROBE_BLIND`, `PROBE_RESTART` and `PROBE_WOULD_LOCK`.
+- `src/ParentalControl.Core/Data/SettingsRepository.cs`: the setting `probe_locks_enforced` (off by default). `web/admin`: a switch for it on the settings page, with German texts. New `EventType` values `PROBE_OUTAGE`, `PROBE_BLIND`, `PROBE_RESTART`, `PROBE_GAP` and `PROBE_WOULD_LOCK`.
 - `GLOSSARY.md`: new terms Session Probe, Agent Channel, Blind Sample, Budget Item, Counted Process, Probe Lock and Shadow Mode; Category Usage and Session End Hold change.
 - `docs/adr/0011-session-probe-and-agent-channel.md`: replaces point 1 of ADR 0002.
 - No new table and no new column.

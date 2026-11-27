@@ -5,7 +5,8 @@
 #                              C:\Program Files\ProbeSpike) and restarts the service ProbeSpike. Never use it for the
 #                              child's PC (task 9.1): that build has no -p:VmTest=true and no SpikeKid, SpikeHook or TestGame
 #   spike.sh conf k=v ...      writes C:\ProgramData\probespike\host.conf and restarts the service (the service creates
-#                              the folder with an admin-only ACL; it refuses a folder that an older build left behind)
+#                              the folder with an admin-only ACL; it refuses a folder that an older build left behind:
+#                              delete the old C:\ProgramData\probespike on VM 102 once as an administrator)
 #   spike.sh kid <args>        runs C:\Users\Public\spike\bin\SpikeKid.exe <args> as Kid in the console session
 #   spike.sh kidcmd <cmdline>  runs a command line as Kid in the console session (scheduled task /ru Kid /it)
 #   spike.sh log [n]           prints the last n lines of the service log

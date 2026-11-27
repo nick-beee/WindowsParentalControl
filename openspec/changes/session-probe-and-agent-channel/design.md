@@ -108,7 +108,7 @@ How a probe ends:
 
 Why 90 seconds: the measured sign-out took about 7 seconds, and the first end came 6 seconds before the notification. A sign-out can take much longer if a program asks to save ("apps prevent sign-out"): the child can then wait before it clicks "Sign out anyway" or Cancel. 90 seconds covers a slow sign-out with a large margin. The end wait does not delay the restart, so a longer wait costs no sample time; it only delays the event and the budget item of a real crash. The service lifetime (`ParentalControlServiceLifetime`) handles only the session and the power events today. So task 4.2 makes sure that the service sees a shutdown (the shutdown control, and the preshutdown control if the order needs it) and records its order against the end of the probe. The service logs the exit code of each end of a probe.
 
-The cost: a probe that the service restarts in an ending session can start and end again before `WTS_SESSION_LOGOFF`. Spike 1.4 showed one such probe; Windows ended it, and the sign-out completed. Each of these ends is a session-end end. The delays of 1, 2 and 5 seconds bound the number of starts in one sign-out. Tasks 4.2 and 9.1 check a sign-out with unsaved work in Notepad.
+The cost: a probe that the service restarts in an ending session can start and end again before `WTS_SESSION_LOGOFF`. Spike 1.4 showed one such probe; Windows ended it, and the sign-out completed. Each of these ends is a session-end end. The delays of 1, 2 and 5 seconds bound the number of starts in one sign-out. Tasks 4.2 and 9.1 check a sign-out with unsaved work in Notepad. A risk is not measured yet: if Windows also ends each new probe while it shows that apps prevent the sign-out, a long wait at that screen followed by Cancel gives several ends that become unexpected ends, and from the 3rd ones budget items. This is a named gate of task 4.2: more than 2 probe ends during that screen is a failed check, and `/opsx:update` must decide a rule before task 4.5 or 4.7 can turn the probe locks on.
 
 Rejected alternatives:
 - **The exit code 0x40010004 as the sign of a sign-out.** The docs do not name it as the code of a sign-out, and the code alone does not show that the session ends.
@@ -533,7 +533,7 @@ Rejected alternatives:
 Mitigation of the parent:
 - For classes 2, 4 and 5 when the script host draws: a file App Rule that moves `powershell.exe`, `pwsh.exe`, `mshta.exe`, `wscript.exe` and `cscript.exe` out of System. Then the script host counts when it is in a sample, and because the Windows folder is never suspended, the rule of a program that is never suspended locks the session when that category is exhausted.
 - For classes 1, 3 and 4 when the script or tool has no window in a sample: the App Rule does not help. Third-party script and injection tools (AutoHotkey, AutoIt, a DLL injector) are outside the Windows folder, so the parent can make them Blocked Programs; the service closes them at their start. A block of the Windows script hosts needs a Windows policy (AppLocker or Windows Defender Application Control on editions that have them), which is outside this product.
-- The alerts (`PROBE_BLIND`, `PROBE_RESTART`, `PROBE_WOULD_LOCK`) and the admin page (App Usage, live activity) show unusual use to the parent.
+- The alerts (`PROBE_BLIND`, `PROBE_RESTART`, `PROBE_GAP`, `PROBE_WOULD_LOCK`) and the admin page (App Usage, live activity) show unusual use to the parent.
 - Code signing, rules by hash or signature, and a block of the Windows script hosts are later changes.
 
 **Other risks:**
