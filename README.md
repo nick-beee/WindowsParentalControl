@@ -161,7 +161,7 @@ An enhanced screen time, application telemetry, and schedule curfew management s
 
 | Layer | Technologies & Frameworks | Description |
 | :--- | :--- | :--- |
-| **Language & Runtime** | **C# 12**, **.NET 8.0 Windows** (`net8.0-windows`) | High-performance modern managed runtime targeting Windows 10/11 x64 with full native API access. |
+| **Language & Runtime** | **C# 14**, **.NET 10 Windows** (`net10.0-windows`) | High-performance modern managed runtime targeting Windows 10/11 x64 with full native API access. |
 | **Windows Service** | **Microsoft.Extensions.Hosting**, `BackgroundService` | Session 0 background daemon running as `NT AUTHORITY\LocalSystem` with resilient worker loops. |
 | **Web Server & API** | **ASP.NET Core Kestrel** (Embedded) | In-process HTTP server on `0.0.0.0:5050`, serving responsive HTML5 dashboards, REST endpoints, and SSE/polling. |
 | **Desktop Admin UI** | **WPF (Windows Presentation Foundation)**, MVVM, XAML | Modern desktop management console with data-binding, responsive custom controls, and live telemetry cards. |
@@ -184,7 +184,7 @@ An enhanced screen time, application telemetry, and schedule curfew management s
 
 ### For Developers Running from Source
 - **OS**: Windows 10 or Windows 11 (x64).
-- **.NET SDK**: .NET 8.0 or .NET 9.0 SDK (supports automatic major roll-forward).
+- **.NET SDK**: .NET 10 SDK or later.
 - **Inno Setup 6**: Optional, only required to generate the setup installer via `build.ps1`.
 
 ---
