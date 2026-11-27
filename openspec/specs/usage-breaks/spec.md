@@ -77,7 +77,7 @@ The system SHALL send a session message to the child when 5 minutes and when 1 m
 - **THEN** the child gets no break warning
 
 ### Requirement: Start a Break with the Enforced Workstation Lock
-When Continuous Use reaches N minutes, the system SHALL start a Break within 60 seconds. It SHALL send a session message that says the length of the Break and the time of its end in the Control Time Zone, and then lock the session with the Enforced Workstation Lock. A failed write of the break state or of an event SHALL not stop the lock. The system SHALL NOT close, kill or suspend a program because of a Break.
+When Continuous Use reaches N minutes, the system SHALL start a Break within 60 seconds. It SHALL send a session message that says the length of the Break and the time of its end in the Control Time Zone, and then lock the session with the Enforced Workstation Lock. A failed write of the break state or of an event SHALL not stop the lock. The system SHALL NOT close, kill or suspend a program because of a Break. A Lock Deferral delays this lock (capability session-lock).
 
 #### Scenario: Break after 45 minutes
 - **WHEN** the Break Rule is "45 minutes of use, 10 minutes of break" and Continuous Use reaches 45 minutes at 15:00
@@ -97,7 +97,7 @@ When Continuous Use reaches N minutes, the system SHALL start a Break within 60 
 - **THEN** the session is locked in the same tick
 
 ### Requirement: Keep the session locked during a Break
-Until a Break ends, the system SHALL lock the session again after each unlock and after each sign-in of the Restricted User. It SHALL first send a message with the end of the Break in the Control Time Zone and the remaining minutes, at most one time in 10 seconds. It SHALL NOT sign the child out. It SHALL also lock the session within 60 seconds if a tick finds the session unlocked during a Break.
+Until a Break ends, the system SHALL lock the session again after each unlock and after each sign-in of the Restricted User. It SHALL first send a message with the end of the Break in the Control Time Zone and the remaining minutes, at most one time in 10 seconds. It SHALL NOT sign the child out. It SHALL also lock the session within 60 seconds if a tick finds the session unlocked during a Break. A Lock Deferral delays this lock (capability session-lock).
 
 #### Scenario: Unlock during a Break
 - **WHEN** a Break runs until 15:10 and the child unlocks the session at 15:04

@@ -122,7 +122,7 @@ If a recorded process runs again (for example, the child resumes it with a tool)
 - **THEN** the system suspends Chrome again within 70 seconds
 
 ### Requirement: Fallback when a process cannot be suspended
-If the system cannot suspend a process that it must suspend (for example, anti-cheat software blocks it), it SHALL lock the session with the Enforced Workstation Lock and SHALL notify the parent through the Alert Channel. It SHALL NOT close or kill the process.
+If the system cannot suspend a process that it must suspend (for example, anti-cheat software blocks it), it SHALL lock the session with the Enforced Workstation Lock and SHALL notify the parent through the Alert Channel. It SHALL NOT close or kill the process. A Lock Deferral delays this lock (capability session-lock).
 
 #### Scenario: Suspension refused
 - **WHEN** Games is exhausted and the system gets "access denied" when it tries to suspend a game process
