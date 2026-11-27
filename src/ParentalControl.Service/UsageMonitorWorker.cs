@@ -24,7 +24,10 @@ public sealed class UsageMonitorWorker : BackgroundService
     private readonly BreakEnforcer _breakEnforcer;
     private readonly ControlTimeService _controlTime;
     private readonly ParentAlertOutbox _alerts;
+    private readonly SessionLocker _locker;
     private readonly Serilog.ILogger _logger;
+    // Released at the end of a Lock Deferral that owes a lock: the next tick runs at once (design D5).
+    private readonly SemaphoreSlim _wake = new(0, 1);
     private readonly ServiceStartup _startup;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly StorageHealth _health = StorageHealth.Shared;
@@ -39,9 +42,11 @@ public sealed class UsageMonitorWorker : BackgroundService
     private CancellationTokenSource? _lockLoop;
 
     public UsageMonitorWorker(SessionTracker sessionTracker, CategoryEnforcer categoryEnforcer, BreakEnforcer breakEnforcer,
-        ControlTimeService controlTime, ParentAlertOutbox alerts, Serilog.ILogger logger,
+        ControlTimeService controlTime, ParentAlertOutbox alerts, SessionLocker locker, Serilog.ILogger logger,
         ServiceStartup startup, IHostApplicationLifetime lifetime)
     {
+        _locker = locker;
+        _locker.OwedLockDue += OnOwedLockDue;
         _startup = startup;
         _lifetime = lifetime;
         _sessionTracker = sessionTracker;
@@ -50,6 +55,29 @@ public sealed class UsageMonitorWorker : BackgroundService
         _controlTime = controlTime;
         _alerts = alerts;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// A Lock Deferral that owed a lock ended while its session still exists. The next tick runs at once and checks the
+    /// Allowance Time, the Schedule Window, the Breaks and the suspensions with the current state.
+    /// </summary>
+    private void OnOwedLockDue(int sessionId)
+    {
+        _logger.Information("Owed lock of session {SessionId}: running the usage check now", sessionId);
+        try
+        {
+            _wake.Release();
+        }
+        catch (SemaphoreFullException)
+        {
+            // A tick is already requested.
+        }
+    }
+
+    public override void Dispose()
+    {
+        _locker.OwedLockDue -= OnOwedLockDue;
+        base.Dispose();
     }
 
     /// <summary>On a service stop, resume every process that the Category enforcer suspended.</summary>
@@ -106,7 +134,8 @@ public sealed class UsageMonitorWorker : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            await Task.Delay(TickInterval, stoppingToken);
+            // The tick interval, or earlier at the end of a Lock Deferral that owes a lock.
+            await _wake.WaitAsync(TickInterval, stoppingToken);
 
             if (!_sessionTracker.IsAwake)
                 continue;
@@ -306,10 +335,15 @@ public sealed class UsageMonitorWorker : BackgroundService
         // Check hard expirations first
         if (used >= totalAllowed)
         {
+            // A Lock Deferral (the session ends): no event, no message, no lock now. The tick at its end checks again.
+            if (_locker.ShouldDefer(sessionId, "Daily limit reached"))
+                return;
+
             _logger.Information("Daily limit reached for {Username} ({MinutesUsed}/{DailyMinutes} min, bonus: {Bonus} min)",
                 session.Username, used, limit.DailyMinutes, usage?.BonusMinutes ?? 0);
             NotificationManager.SendMessage(sessionId, "Parental Control", SettingsRepository.GetMessage(SettingsRepository.KeyMsgLimitReached), isWarning: true, timeoutSeconds: 5, wait: true);
-            SessionManager.LockSession(sessionId);
+            if (!_locker.Lock(sessionId, "Daily limit reached"))
+                return;
             _sessionTracker.OnSessionLock(sessionId, "Daily limit reached - workstation locked");
             _sentAlerts.TryRemove(sessionId, out _);
             _health.TryWrite(() => EventRepository.LogEvent(session.UserSid, EventType.LIMIT_REACHED,
@@ -320,10 +354,14 @@ public sealed class UsageMonitorWorker : BackgroundService
 
         if (now < limit.ScheduleStart || now >= limit.ScheduleEnd)
         {
+            if (_locker.ShouldDefer(sessionId, "Outside allowed schedule"))
+                return;
+
             _logger.Information("Outside allowed schedule for {Username} (allowed {Start}-{End})",
                 session.Username, limit.ScheduleStart, limit.ScheduleEnd);
             NotificationManager.SendMessage(sessionId, "Parental Control", SettingsRepository.GetMessage(SettingsRepository.KeyMsgCurfewReached), isWarning: true, timeoutSeconds: 5, wait: true);
-            SessionManager.LockSession(sessionId);
+            if (!_locker.Lock(sessionId, "Outside allowed schedule"))
+                return;
             _sessionTracker.OnSessionLock(sessionId, "Outside allowed schedule - workstation locked");
             _sentAlerts.TryRemove(sessionId, out _);
             return;
@@ -424,7 +462,9 @@ public sealed class UsageMonitorWorker : BackgroundService
 
     /// <summary>
     /// The lock loop of the Storage Lockdown: the Enforced Workstation Lock on each active session of a user who is not
-    /// an administrator, every 2 seconds. It never closes or kills a program.
+    /// an administrator, every 2 seconds. It never closes or kills a program. Each lock goes through
+    /// <see cref="SessionLocker"/>: a lock in the first seconds of a sign-out would make Windows end a program before it
+    /// can ask to save, so a Lock Deferral delays it, and the loop locks the session within 2 seconds after its end.
     /// </summary>
     private void StartLockLoop()
     {
@@ -437,7 +477,7 @@ public sealed class UsageMonitorWorker : BackgroundService
             {
                 try
                 {
-                    var locked = DataFolderLockdown.LockSessions();
+                    var locked = DataFolderLockdown.LockSessions(id => _locker.Lock(id, "Storage Lockdown"));
                     if (locked.Count > 0)
                         _logger.Information("Storage Lockdown: locked session(s) {Sessions}", string.Join(", ", locked));
                 }

@@ -13,7 +13,8 @@ namespace ParentalControl.Service;
 /// that has no time left, keeps them suspended and resumes them when time is available again.
 /// It also suspends a Blocked Program that runs, and gives each Blocked Start of the tick to
 /// <see cref="BlockEnforcer"/>, the only code that closes a process.
-/// It never closes or kills a process itself. If Windows refuses a suspension, it locks the session (fallback).
+/// It never closes or kills a process itself. If Windows refuses a suspension, it locks the session (fallback) through
+/// <see cref="SessionLocker"/>, so a Lock Deferral can delay the lock.
 /// Each suspension (also a blocked one) starts as a Pending Suspension: the Session Agent minimizes the windows of the
 /// process, and the enforcer suspends it <see cref="PendingSuspensions.Delay"/> later. During a Session End Hold of a
 /// session, it suspends no process of that session. After a refused hold, a Session End Guard keeps the processes
@@ -41,6 +42,7 @@ public sealed class CategoryEnforcer : IDisposable
     private readonly string? _testSuspendFailExe;
     private readonly BlockEnforcer _blockEnforcer;
     private readonly StorageHealth _health = StorageHealth.Shared;
+    private readonly SessionLocker _locker;
 
     private readonly object _gate = new();
     private bool _stopped;
@@ -54,9 +56,15 @@ public sealed class CategoryEnforcer : IDisposable
     // A copy of the Pending Suspensions for the status route, which reads it without the lock.
     private volatile IReadOnlyList<SuspendAction> _pendingSnapshot = [];
 
+    /// <summary>For a test: a locker of its own, without a Lock Deferral from the web routes.</summary>
     public CategoryEnforcer(SessionTracker sessionTracker, ForegroundHistory foregroundHistory, TelegramBotService telegram, Serilog.ILogger logger)
+        : this(sessionTracker, foregroundHistory, telegram, new SessionLocker(logger), logger) { }
+
+    public CategoryEnforcer(SessionTracker sessionTracker, ForegroundHistory foregroundHistory, TelegramBotService telegram,
+        SessionLocker locker, Serilog.ILogger logger)
     {
         _sessionTracker = sessionTracker;
+        _locker = locker;
         _foregroundHistory = foregroundHistory;
         _telegram = telegram;
         _logger = logger;
@@ -463,18 +471,35 @@ public sealed class CategoryEnforcer : IDisposable
         }
     }
 
-    /// <summary>The suspension failed: lock the session and tell the parent (one alert per exe and day).</summary>
+    /// <summary>
+    /// The suspension failed: lock the session and tell the parent (one alert per exe and day). During a Lock Deferral
+    /// (the session ends) it neither locks nor alerts: the tick at the end of the deferral tries the suspension again.
+    /// </summary>
     private void Fallback(SuspendAction action, User? user, string username, string reason)
     {
         var sessionId = action.Process.SessionId;
+        var alreadyLocked = _sessionTracker.ActiveSessions.TryGetValue(sessionId, out var session) && session.IsLocked;
+        var lockReason = $"{action.Category} program cannot be paused";
+
+        // Check the deferral before the alert: the alert says "locked", and its daily marker would hide the alert of the
+        // real lock later.
+        if (!alreadyLocked && _locker.ShouldDefer(sessionId, lockReason))
+        {
+            _logger.Warning("Could not suspend {Exe} (pid {Pid}) of {Username}: {Reason}. The lock of session {SessionId} is deferred",
+                action.ExePath, action.Process.Pid, username, reason, sessionId);
+            return;
+        }
+
         _logger.Warning("Could not suspend {Exe} (pid {Pid}) of {Username}: {Reason}. Locking session {SessionId}",
             action.ExePath, action.Process.Pid, username, reason, sessionId);
 
-        // The lock first, then the writes (storage-failure).
-        if (!(_sessionTracker.ActiveSessions.TryGetValue(sessionId, out var session) && session.IsLocked))
+        // The lock first, then the writes (storage-failure). A sign-out that starts between the check above and this
+        // call still defers the lock: then no alert either, and the next tick tries the suspension again.
+        if (!alreadyLocked)
         {
-            SessionManager.LockSession(sessionId);
-            _sessionTracker.OnSessionLock(sessionId, $"{action.Category} program cannot be paused - workstation locked");
+            if (!_locker.Lock(sessionId, lockReason))
+                return;
+            _sessionTracker.OnSessionLock(sessionId, $"{lockReason} - workstation locked");
         }
 
         if (_sentToday.Add($"alert:{action.UserId}:{action.ExePath}"))

@@ -1733,6 +1733,67 @@ Debug.Assert(BreakRepository.GetState(user.Id).BreakEndsUtc is null, "A reset st
 Debug.Assert(SettingsRepository.IsTelegramNotifyBreakEnabled() == false, "telegram_notify_break should be off by default");
 Console.WriteLine("✅ Break Repository Passed.");
 
+// defer-lock-during-session-end (review of PR #51): a deferred unlock check tracks the session as unlocked, so the
+// ticks count the time of the deferral as used time and the tick at its end locks the session. The deferral uses the
+// clock of the locker (monotonic), and a delayed lock of the parent waits for the end of the deferral.
+Console.WriteLine("\nTesting Lock Deferral in the tracker...");
+{
+    var deferLogger = new Serilog.LoggerConfiguration().CreateLogger();
+    var deferClock = DateTime.MinValue.AddMinutes(3);
+    using var deferLocker = new ParentalControl.Service.SessionLocker(deferLogger, () => deferClock);
+    var deferTracker = new ParentalControl.Service.SessionTracker(null, null, deferLocker, deferLogger);
+    const int deferSession = 9871;
+    const string deferSid = "S-1-5-21-999999999-999999999-999999999-9971";
+    var deferUser = UserRepository.Upsert(deferSid, "DeferChild", true);
+    var deferToday = ParentalControl.Core.ControlTime.Current.Today;
+    try
+    {
+        LimitRepository.Upsert(new LimitConfig { UserId = deferUser.Id, DailyMinutes = 30, ScheduleStart = TimeOnly.MinValue, ScheduleEnd = TimeOnly.MaxValue });
+        UsageRepository.SetUsage(deferUser.Id, deferToday, 30);
+        var lockedAtUtc = DateTime.UtcNow.AddMinutes(-20);
+        var lockedAtMono = Environment.TickCount64 - (long)TimeSpan.FromMinutes(20).TotalMilliseconds;
+        deferTracker.TrackForTest(new ParentalControl.Service.ActiveSession(deferSession, deferSid, "DeferChild", lockedAtUtc, lockedAtMono, IsLocked: true));
+
+        Debug.Assert(deferLocker.OnSessionEnding(deferSession, deferUser.Id, "DeferChild", trusted: false, "test")
+            == ParentalControl.Domain.Sessions.DeferralRequestResult.Granted, "The first session-end request should start a Lock Deferral");
+        // The Allowance Time is used up: the unlock check wants to lock, and the deferral stops it.
+        deferTracker.OnSessionUnlock(deferSession);
+        var afterUnlock = deferTracker.ActiveSessions[deferSession];
+        Debug.Assert(!afterUnlock.IsLocked, "A deferred unlock check should track the session as unlocked, so that the ticks count it");
+        Debug.Assert(afterUnlock.LastTickUtc > lockedAtUtc.AddMinutes(19) && afterUnlock.LastTickMono > lockedAtMono + (long)TimeSpan.FromMinutes(19).TotalMilliseconds,
+            "The used time should count from the unlock, not from the lock");
+
+        // The end of the deferral by the clock of the locker: the owed lock is due, and the next request is refused.
+        var owedSessions = new List<int>();
+        deferLocker.OwedLockDue += id => owedSessions.Add(id);
+        deferClock = deferClock.AddSeconds(74);
+        deferLocker.OnTimer();
+        Debug.Assert(owedSessions.Count == 0, "The deferral should not end before 75 s of the locker clock");
+        Debug.Assert(deferLocker.ShouldDefer(deferSession, "test"), "The deferral should still stop a lock after 74 s");
+        deferClock = deferClock.AddSeconds(1);
+        deferLocker.OnTimer();
+        Debug.Assert(owedSessions.SequenceEqual(new[] { deferSession }), "The end of an owed deferral should ask for the owed lock");
+        Debug.Assert(deferLocker.OnSessionEnding(deferSession, deferUser.Id, "DeferChild", trusted: false, "test")
+            == ParentalControl.Domain.Sessions.DeferralRequestResult.Refused, "A request after an unconfirmed owed deferral should be refused");
+
+        // The delayed lock of the parent during a deferral waits for its end. A session that ended needs no lock.
+        var waits = new List<TimeSpan>();
+        Task FakeWait(TimeSpan d) { waits.Add(d); deferClock += d; return Task.CompletedTask; }
+        Debug.Assert(deferLocker.OnSessionEnding(deferSession, deferUser.Id, "DeferChild", trusted: true, "forced logoff")
+            == ParentalControl.Domain.Sessions.DeferralRequestResult.Granted, "A trusted request should never be refused");
+        deferClock = deferClock.AddSeconds(5);
+        var parentLocked = await deferLocker.LockForParentAsync(deferSession, "test parent lock", () => false, FakeWait);
+        Debug.Assert(!parentLocked && waits.Count == 1, "A parent lock should wait once and then stop for an ended session");
+        Debug.Assert(Math.Abs(waits[0].TotalSeconds - 70.5) < 0.01, $"The parent lock should wait until 0.5 s after the end of the deferral, not {waits[0].TotalSeconds} s");
+    }
+    finally
+    {
+        LimitRepository.Delete(deferUser.Id);
+        UserRepository.DeleteBySid(deferSid);
+    }
+}
+Console.WriteLine("✅ Lock Deferral in the tracker Passed.");
+
 BlockedProgramChecks.RunData();
 
 // harden-clock-and-disk: the write switch, the usage ledger, the Control Time Zone.

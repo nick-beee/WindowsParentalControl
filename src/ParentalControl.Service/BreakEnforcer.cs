@@ -19,6 +19,7 @@ public sealed class BreakEnforcer
     private readonly object _gate = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<int, DateTime> _lastRunningMessage = new();
     private readonly TelegramBotService? _telegram;
+    private readonly SessionLocker _locker;
     private readonly Serilog.ILogger _logger;
     private readonly StorageHealth _health = StorageHealth.Shared;
 
@@ -26,11 +27,12 @@ public sealed class BreakEnforcer
     // failed write never loses Continuous Use and never ends a running Break. In memory only.
     private readonly Dictionary<int, BreakState> _unsaved = new();
 
-    public BreakEnforcer(Serilog.ILogger logger) : this(null, logger) { }
+    public BreakEnforcer(Serilog.ILogger logger) : this(null, new SessionLocker(logger), logger) { }
 
-    public BreakEnforcer(TelegramBotService? telegram, Serilog.ILogger logger)
+    public BreakEnforcer(TelegramBotService? telegram, SessionLocker locker, Serilog.ILogger logger)
     {
         _telegram = telegram;
+        _locker = locker;
         _logger = logger;
     }
 
@@ -181,8 +183,8 @@ public sealed class BreakEnforcer
                     {
                         _logger.Information("Session {SessionId} ({Username}) shows as unlocked during a Break; locking again",
                             sessionId, user.Username);
-                        LockForRunningBreak(sessionId, again.EndsUtc);
-                        tracker.OnSessionLock(sessionId, "Break running - workstation locked again");
+                        if (LockForRunningBreak(sessionId, again.EndsUtc))
+                            tracker.OnSessionLock(sessionId, "Break running - workstation locked again");
                     }
                     break;
             }
@@ -249,9 +251,14 @@ public sealed class BreakEnforcer
             BreakTexts.StartValues(start.StartUtc, start.EndsUtc, zone));
         foreach (var sessionId in sessions)
         {
+            // A Lock Deferral (the session ends): no message and no lock now. The session stays unlocked in the
+            // tracker, so the tick at the end of the deferral locks it again (LockAgain) while the Break runs.
+            var reason = $"Break until {endText}";
+            if (_locker.ShouldDefer(sessionId, reason))
+                continue;
             NotificationManager.SendMessage(sessionId, title, message, isWarning: true, timeoutSeconds: 5, wait: true);
-            SessionManager.LockSession(sessionId);
-            tracker.OnSessionLock(sessionId, $"Break until {endText} - workstation locked");
+            if (_locker.Lock(sessionId, reason))
+                tracker.OnSessionLock(sessionId, $"{reason} - workstation locked");
         }
 
         // The event after the lock: a failed write never stops the lock (storage-failure).
@@ -262,10 +269,15 @@ public sealed class BreakEnforcer
     /// <summary>
     /// Locks a session again during a Break: first the message with the end time and the remaining minutes
     /// (at most one time in 10 seconds per session), then the Enforced Workstation Lock. It never signs the child out.
-    /// The caller updates the lock state of <see cref="SessionTracker"/>.
+    /// During a Lock Deferral it sends no message and does not lock; then it returns false. The caller updates the lock
+    /// state of <see cref="SessionTracker"/> only for true.
     /// </summary>
-    public void LockForRunningBreak(int sessionId, DateTime endsUtc)
+    public bool LockForRunningBreak(int sessionId, DateTime endsUtc)
     {
+        const string reason = "Break running";
+        if (_locker.ShouldDefer(sessionId, reason))
+            return false;
+
         var now = DateTime.UtcNow;
         var notify = !_lastRunningMessage.TryGetValue(sessionId, out var last) || now - last > TimeSpan.FromSeconds(10);
         if (notify)
@@ -278,8 +290,8 @@ public sealed class BreakEnforcer
             NotificationManager.SendMessage(sessionId, title, message, isWarning: true, timeoutSeconds: 5, wait: true);
         }
 
-        // A session that is already disconnected stays as it is; the result does not matter.
-        SessionManager.LockSession(sessionId);
+        // A session that is already disconnected stays as it is; the result of the WinAPI call does not matter.
+        return _locker.Lock(sessionId, reason);
     }
 
     // --- Core ---
