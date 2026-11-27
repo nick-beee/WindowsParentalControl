@@ -46,6 +46,7 @@ python3 scripts/vm/typekeys.py < "$SECRET_FILE" | ssh root@192.168.1.98 "sh -s"
 
 | `ProbeSpike` | The spike of the Session Probe (design D2–D4 of `session-probe-and-agent-channel`): a Windows service as LocalSystem that starts the sampler as SYSTEM in the session of `Kid`, reads its lines and reads each entry as D3b states, and a client for the Agent Channel test. Config and log: see `Host.cs`. |
 | `SpikeKid` | Helpers that run as `Kid` for the same spike: decoy, hung and long-title windows, `SetParent`, `WS_EX_NOACTIVATE`, desktops, a DACL on a process, CPU load, mouse input, a non-activating widget, a WebView2 app. The usage is at the top of `Program.cs`. |
+| `ChannelAttack` | As `Kid`: a test client of the Agent Channel (tasks 5.3 and 6.4 of `session-probe-and-agent-channel`). It copies the channel handle of the agent with `DuplicateHandle`, suspends the agent and sends hostile frames: `status [user]`, `prompt <id>`, `sessionend <sessionId> [count] [gap]`, `huge`, `noread [seconds]`, `resume`. Log: `C:\Users\Public\channel-attack.log`. |
 | `SpikeHook` | A startup hook DLL that writes a line when a process loads it (task 1.3). |
 | `SpikeWinHook` | A native hook DLL and a program that sets a global `WH_GETMESSAGE` and `WH_CBT` hook with it (task 1.3). Build it on the VM with `zig cc` (see the top of each file). |
 
