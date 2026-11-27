@@ -75,6 +75,14 @@ switch (cmd)
             if (args.Length < 2 || e.EventType.ToString() == args[1])
                 Console.WriteLine($"{e.Timestamp:HH:mm:ss} {e.Username} {e.EventType} {e.Details}");
         break;
+    case "prompt":
+    {
+        // prompt <user> <text>: an Interactive Session Prompt of the parent, as the admin page sends it.
+        var user = UserRepository.GetByUsername(args[1])!;
+        var id = SessionPromptRepository.Create(user.Sid, user.Username, args[2]);
+        Console.WriteLine($"prompt {id} for {user.Username}");
+        break;
+    }
     case "records":
         foreach (var r in SuspensionRepository.GetAll()) Console.WriteLine(r);
         break;
