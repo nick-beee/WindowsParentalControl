@@ -1,6 +1,5 @@
-using System.Net.Http;
 using System.Drawing;
-using System.Net.Http.Json;
+using System.Text.Json;
 using System.Windows.Threading;
 using ParentalControl.Domain.Messages;
 
@@ -31,13 +30,22 @@ public sealed record AgentStatusResponse(
     List<AgentAppDto>? suspendedApps = null,
     List<AgentAppDto>? pendingApps = null);
 
-public sealed class AgentController : IDisposable
+/// <summary>The answer of the service to a <c>status</c> request on the Agent Channel.</summary>
+public sealed record AgentStatusAnswer(long id, string? type, bool ok, AgentStatusResponse? status);
+
+internal sealed class AgentController : IDisposable
 {
     private readonly System.Windows.Application _app;
     private readonly System.Windows.Forms.NotifyIcon _notifyIcon;
+    private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan CaptureTimeout = TimeSpan.FromSeconds(10);
+    // The mute of the Suspended Apps: at each change of the set, and else every 20 seconds (as the old activity timer).
+    private static readonly TimeSpan MuteInterval = TimeSpan.FromSeconds(20);
+
     private readonly DispatcherTimer _statusTimer;
-    private readonly DispatcherTimer _activityTimer;
-    private readonly HttpClient _httpClient = AgentHttp.Create(TimeSpan.FromSeconds(3));
+    private readonly AgentChannelClient _channel;
+    private long _lastMuteMs = long.MinValue;
+    private string _lastMuteKey = "";
     private readonly WidgetWindow _widgetWindow;
     private DispatcherTimer? _watchTimer;
     private int _currentWatchInterval;
@@ -56,12 +64,13 @@ public sealed class AgentController : IDisposable
     private System.Windows.Forms.ToolStripMenuItem? _requestItem;
     private RequestWindow? _requestWindow;
 
-    public AgentController(System.Windows.Application app)
+    public AgentController(System.Windows.Application app, AgentChannelClient channel)
     {
         _app = app;
+        _channel = channel;
         _widgetWindow = new WidgetWindow();
         _widgetWindow.RequestClicked += OpenRequestWindow;
-        _sessionEndWatcher = new SessionEndWatcher(() => _suspendedApps);
+        _sessionEndWatcher = new SessionEndWatcher(() => _suspendedApps, channel);
 
         _notifyIcon = new System.Windows.Forms.NotifyIcon
         {
@@ -79,14 +88,7 @@ public sealed class AgentController : IDisposable
         };
         _statusTimer.Tick += async (s, e) => await PollStatusAsync();
         _statusTimer.Start();
-
-        // 2. Foreground Activity Reporting Timer (every 20 seconds)
-        _activityTimer = new DispatcherTimer
-        {
-            Interval = TimeSpan.FromSeconds(20)
-        };
-        _activityTimer.Tick += async (s, e) => await ActivityTracker.ReportActivityAsync(Environment.UserName);
-        _activityTimer.Start();
+        // The agent samples no Foreground Window: the Session Probe of the service does (design D1, D10).
 
         // Initial immediate poll
         _ = PollStatusAsync();
@@ -110,8 +112,8 @@ public sealed class AgentController : IDisposable
             }
             else
             {
+                // The widget never takes the activation (design D5, B6).
                 _widgetWindow.Show();
-                _widgetWindow.Activate();
             }
         });
         menu.Items.Add(toggleWidgetItem);
@@ -141,10 +143,9 @@ public sealed class AgentController : IDisposable
     {
         try
         {
-            var username = Uri.EscapeDataString(Environment.UserName);
-            var status = await _httpClient.GetFromJsonAsync<AgentStatusResponse>(
-                $"http://127.0.0.1:5050/api/agent/status?user={username}");
-
+            var answer = await _channel.RequestAsync(id => new { type = "status", id }, RequestTimeout);
+            if (answer is null) return;
+            var status = JsonSerializer.Deserialize<AgentStatusAnswer>(answer.Json, JsonSerializerOptions.Web)?.status;
             if (status == null) return;
 
             ApplyLanguage(status.language);
@@ -171,14 +172,15 @@ public sealed class AgentController : IDisposable
                         {
                             try
                             {
-                                var payload = new
+                                await _channel.RequestAsync(id => new
                                 {
+                                    type = "promptAnswer",
+                                    id,
                                     promptId = prompt.id,
                                     response = resp,
                                     reason,
                                     turnaroundSeconds = elapsed
-                                };
-                                await _httpClient.PostAsJsonAsync("http://127.0.0.1:5050/api/agent/prompt/respond", payload);
+                                }, RequestTimeout);
                             }
                             catch { }
                         });
@@ -187,6 +189,7 @@ public sealed class AgentController : IDisposable
             }
 
             _suspendedApps = status.suspendedApps ?? [];
+            await MuteSuspendedAppsAsync(_suspendedApps);
             var pendingApps = status.pendingApps ?? [];
             if (pendingApps.Count > 0)
             {
@@ -273,6 +276,21 @@ public sealed class AgentController : IDisposable
     }
 
     /// <summary>
+    /// Mutes the audio of the Suspended Apps and restores the audio of a process that is not suspended any more
+    /// (only the child's own processes). It runs at each change of the set, and else every 20 seconds.
+    /// </summary>
+    private async Task MuteSuspendedAppsAsync(IReadOnlyList<AgentAppDto> apps)
+    {
+        var pids = apps.Select(a => a.pid).Distinct().OrderBy(p => p).ToArray();
+        var key = string.Join(",", pids);
+        var now = Environment.TickCount64;
+        if (key == _lastMuteKey && now - _lastMuteMs < MuteInterval.TotalMilliseconds) return;
+        _lastMuteKey = key;
+        _lastMuteMs = now;
+        await Task.Run(() => SuspendedAppMuter.Apply(pids));
+    }
+
+    /// <summary>
     /// Opens the Request Window, or brings the open one to the front (request-window). Only for a Restricted User
     /// according to the last status. The agent never starts a browser for the request page.
     /// </summary>
@@ -324,14 +342,8 @@ public sealed class AgentController : IDisposable
             var bytes = ScreenCaptureHelper.CaptureScreenJpeg(1920, 70L, out var width, out var height);
             if (bytes == null || bytes.Length == 0) return;
 
-            using var content = new ByteArrayContent(bytes);
-            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/jpeg");
-            content.Headers.Add("X-User", Environment.UserName);
-            content.Headers.Add("X-Trigger", trigger);
-            content.Headers.Add("X-Width", width.ToString());
-            content.Headers.Add("X-Height", height.ToString());
-
-            await _httpClient.PostAsync("http://127.0.0.1:5050/api/agent/capture", content);
+            // The JSON frame, then the JPEG as a second frame (design D7). No user name: the service knows the user.
+            await _channel.RequestAsync(id => new { type = "capture", id, trigger, width, height }, CaptureTimeout, bytes);
         }
         catch
         {
@@ -351,12 +363,10 @@ public sealed class AgentController : IDisposable
         _disposed = true;
 
         _statusTimer?.Stop();
-        _activityTimer?.Stop();
         _watchTimer?.Stop();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         _sessionEndWatcher.Dispose();
-        _httpClient.Dispose();
         try
         {
             _requestWindow?.Close();
