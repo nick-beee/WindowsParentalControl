@@ -54,7 +54,7 @@ Then add the folder rule `C:\Games\` → Games in the web admin.
 
 ## A typical run
 
-1. Roll back to `test-base`. Run `scripts/vm-test.sh` to copy the tree.
+1. Roll back to `test-base-net10`. Run `scripts/vm-test.sh` to copy the tree.
 2. Run `deploy.ps1`, then `VmTool restrict Kid 300`. Run `VmTool totp setup` if the test needs the web admin: without the setup, each admin route gives 401.
 3. Log on as `Kid` with `qm sendkey` and `typekeys.py`. Check the screen with `shot.sh`.
 4. Run `kid-run.sh kidstart.ps1`.

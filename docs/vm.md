@@ -13,17 +13,18 @@ The rules for tests on the VM are in `CLAUDE.md` ("Test VM"). This file has the 
 
 - SSH: `ssh winvm`. The user is `nick` (an administrator) with the key `~/.ssh/id_ed25519_winvm`. Commands run in `cmd`.
 - The VM has no Git. `scripts/vm-test.sh` copies the working tree with `tar`.
-- The VM has the .NET SDK 8.0.428 and Node 24.22.3 (npm 11.19.1).
+- The VM has the .NET SDK 10.0.404 (runtimes 10.0.15) and the .NET SDK 8.0.428 (runtimes 8.0.34), both in `C:\Program Files\dotnet`, and Node 24.22.3 (npm 11.19.1). The snapshot `test-base` has only the .NET SDK 8.0.428.
 - The guest agent runs. From pve2: `qm guest exec 102 -- <command>`.
 
 ## Snapshots
 
 | Snapshot | Content |
 |---|---|
-| `test-base` (2026-11-26, recreated) | Windows, OpenSSH, .NET SDK 8.0.428, Node 24.22.3 (for the web admin build, ADR 0009), `Kid`. No Parental Control. Use this one for tests. |
+| `test-base-net10` (2026-11-27) | `test-base` plus the .NET SDK 10.0.404 (runtimes 10.0.15, installed machine-wide with the official installer). The .NET SDK 8.0.428 stays. No Parental Control. Made with the VM stopped, no RAM state. Use this one for tests: all projects target .NET 10. |
+| `test-base` (2026-11-26, recreated) | Windows, OpenSSH, .NET SDK 8.0.428, Node 24.22.3 (for the web admin build, ADR 0009), `Kid`. No Parental Control. No RAM state. It stays until #43 merges (its spike tools target `net8.0-windows`). |
 | `clean-before-parental` | Windows only: no OpenSSH, no SDK, no `Kid`. After a rollback to it, SSH does not work. |
 
-Roll back: `ssh root@192.168.1.98 "qm rollback 102 test-base"`.
+Roll back: `ssh root@192.168.1.98 "qm rollback 102 test-base-net10"`. The snapshots have no RAM state, so the VM is stopped after a rollback. Start it with `qm start 102`; SSH works again after about one minute.
 
 Make sure that you know what a snapshot contains before you roll back to it.
 
@@ -63,4 +64,4 @@ These are the VM steps of the change `harden-clock-and-disk` (group 6 of its tas
 - Read the registry values: `reg query HKLM\SOFTWARE\ParentalControl`. It shows `ControlTimeZone` and `LastSystemTimeZone`.
 - Read the Windows events of the service: `powershell -NoProfile -Command "Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1015,1016,1017,1018} -MaxEvents 20 | Format-List TimeCreated,Id,Message"`.
 - Fill the disk as `Kid`: read the free bytes with `fsutil volume diskfree C:`, then `fsutil file createnew %USERPROFILE%\fill.bin <free bytes>`. Free it as `nick`: `del C:\Users\Kid\fill.bin`.
-- Do not fill the disk of the snapshot `test-base`. Roll back to `test-base` after the tests.
+- Do not fill the disk of a snapshot. Roll back to `test-base-net10` after the tests.
