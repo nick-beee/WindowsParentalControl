@@ -38,6 +38,9 @@ public sealed class SessionProbeHost : BackgroundService
     /// <summary>Test hook: "1" stops each probe start (task 4.4, the outage).</summary>
     public const string TestProbeNoStartEnv = "PARENTAL_CONTROL_TEST_PROBE_NO_START";
 
+    /// <summary>Test hook: "1" writes one log line for each sample (the entries, the counted processes, the time).</summary>
+    public const string TestProbeTraceEnv = "PARENTAL_CONTROL_TEST_PROBE_TRACE";
+
     public static readonly TimeSpan WatchdogTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan EnsureInterval = TimeSpan.FromSeconds(60);
@@ -59,6 +62,7 @@ public sealed class SessionProbeHost : BackgroundService
     private readonly ProtectedPrograms _protected = CategoryRepository.LocalProtectedPrograms();
     private readonly string _testArgs;
     private readonly bool _testNoStart;
+    private readonly bool _trace;
 
     private readonly Lock _gate = new();
     private readonly Dictionary<int, ProbeRun> _runs = new();
@@ -100,6 +104,7 @@ public sealed class SessionProbeHost : BackgroundService
         _testArgs = string.Join(' ', (Environment.GetEnvironmentVariable(TestProbeArgsEnv) ?? "")
             .Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(a => TestSwitch.IsMatch(a)));
         _testNoStart = Environment.GetEnvironmentVariable(TestProbeNoStartEnv) == "1";
+        _trace = Environment.GetEnvironmentVariable(TestProbeTraceEnv) == "1";
         _locker.OwedLockDue += OnOwedLockDue;
     }
 
@@ -146,7 +151,7 @@ public sealed class SessionProbeHost : BackgroundService
             _ready = true;
         }
         _logger.Information("Session Probe host started (probe locks {State}){Test}", enforced ? "on" : "off (shadow mode)",
-            _testArgs.Length > 0 || _testNoStart ? $" with test hooks [{_testArgs}] noStart={_testNoStart}" : "");
+            _testArgs.Length > 0 || _testNoStart || _trace ? $" with test hooks [{_testArgs}] noStart={_testNoStart} trace={_trace}" : "");
 
         EndLeftovers();
 
@@ -597,6 +602,10 @@ public sealed class SessionProbeHost : BackgroundService
         _lastForeground[sessionId] = selection.NextLastForeground;
 
         var credit = _counter.Accept(sessionId, sample.T, sample.Duration, receiptTick, unbiased, selection.Blind, selection.Counted);
+        if (_trace) Trace(run, sample, reading, selection, credit, receiptTick);
+        if (reading.Hung is { } hungEntry && LogOnce($"ghost:{sessionId}:{hungEntry.Process.Pid}"))
+            _logger.Information("Session Probe of session {SessionId}: ghost window in front, hung window of {Exe} (pid {Pid}, {Outcome})",
+                sessionId, hungEntry.ExePath ?? "-", hungEntry.Process.Pid, hungEntry.Outcome);
 
         // The locked state comes from Windows (D4): a locked session counts nothing and gives no item.
         if (locked || _sleeping)
@@ -972,6 +981,20 @@ public sealed class SessionProbeHost : BackgroundService
     private void LogOnce(string key, Action log)
     {
         if (_loggedOnce.Add(key)) log();
+    }
+
+    private bool LogOnce(string key) => _loggedOnce.Add(key);
+
+    private void Trace(ProbeRun run, ProbeSample sample, SampleReading reading, SampleSelection selection, SampleCredit credit, long receiptTick)
+    {
+        static string Entry(SampleEntry e) => $"{e.Role}:{(e.Outcome == EntryOutcome.Read ? WindowsPath.GetFileName(e.ExePath ?? "?") : e.Outcome.ToString())}";
+        var entries = string.Join(" ", reading.Entries.Select(Entry));
+        if (reading.Hung is { } hung) entries += " hung:" + Entry(hung);
+        var counted = string.Join(" ", selection.Counted.Select(c => $"{WindowsPath.GetFileName(c.ExePath)}={c.Category}/{c.Role}"));
+        _logger.Information("Probe trace s{SessionId} t={T} delay={Delay}ms dur={Dur}ms kind={Kind}{Blind} desk={Desk} [{Entries}] noAct={NoAct} counted=[{Counted}] add={Add:0.0}s gap={Gap:0.0}s item={Item} longGap={LongGap} blind={IsBlind} ended={Ended}",
+            run.SessionId, sample.T, receiptTick - sample.T, (long)sample.Duration.TotalMilliseconds, sample.Kind,
+            sample.BlindReason is { } r ? $"({r})" : "", sample.Desktop ?? "", entries, reading.CursorNoActivate, counted,
+            credit.Time.TotalSeconds, credit.Gap.TotalSeconds, credit.GapItem, credit.LongGap, selection.Blind, selection.EndedItem);
     }
 
     private void Guard(string what, Action action)
