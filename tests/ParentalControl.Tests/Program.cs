@@ -9,6 +9,8 @@ using ParentalControl.Domain.Categories;
 using ParentalControl.Domain.Messages;
 using ParentalControl.Domain.AdminAccess;
 
+if (SessionProbePlatformChecks.HandleMode(args)) return;
+
 Console.WriteLine("=== Running ParentalControl Self-Checks ===");
 
 // 1. Test TOTP service
@@ -1808,6 +1810,9 @@ BlockedProgramChecks.RunData();
 
 // harden-clock-and-disk: the write switch, the usage ledger, the Control Time Zone.
 ClockAndStorageChecks.Run(user);
+
+// session-probe-and-agent-channel, tasks 3.1 and 3.3: runs as SYSTEM through a scheduled task.
+SessionProbePlatformChecks.Run();
 
 // Cleanup test user
 UserRepository.DeleteBySid(testSid);

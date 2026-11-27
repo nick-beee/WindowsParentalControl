@@ -614,14 +614,15 @@ public sealed class SessionTracker
                     pid, sessionId, imagePath ?? "path not readable");
             }
 
-            var launched = SessionManager.LaunchProcessInSession(sessionId, agentPath);
-            if (launched)
+            // The handle is not kept yet: the Agent Channel (task 5.1) keeps it in the launch record.
+            using var launched = SessionManager.LaunchProcessInSession(sessionId, agentPath, null, IntPtr.Zero, out var error);
+            if (launched is not null)
             {
-                _logger.Information("Successfully launched Agent in session {SessionId} ({Path})", sessionId, agentPath);
+                _logger.Information("Successfully launched Agent in session {SessionId} ({Path}, pid {Pid})", sessionId, agentPath, launched.Pid);
             }
             else
             {
-                _logger.Warning("Failed to launch Agent in session {SessionId}", sessionId);
+                _logger.Warning("Failed to launch Agent in session {SessionId}: {Error}", sessionId, error);
             }
         }
         catch (Exception ex)

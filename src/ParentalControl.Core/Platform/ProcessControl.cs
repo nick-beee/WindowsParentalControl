@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using ParentalControl.Domain.Categories;
+using ParentalControl.Domain.Sessions;
 
 namespace ParentalControl.Core.Platform;
 
@@ -21,8 +22,135 @@ public enum ProcessOpResult
 /// It closes a process only in <see cref="Terminate"/>, and only the block enforcer calls that method,
 /// for a Blocked Start. A limit, a break or a schedule end never closes a program.
 /// </summary>
+/// <summary>The read of one entry of a Session Probe sample (session-probe-and-agent-channel, design D3b).</summary>
+/// <param name="StartAfterSample">The start time is more than 1 s after the converted sample time: only a sign of a
+/// clock step for one log line, never a change of the outcome (S14).</param>
+public sealed record SampleEntryRead(EntryOutcome Outcome, ProcessIdentity Process, string? ExePath, string Detail, bool StartAfterSample = false);
+
 public static class ProcessControl
 {
+    /// <summary>The most parent steps from a trusted WebView2 process to its creator (design D5, S16).</summary>
+    public const int MaxCreatorSteps = 4;
+
+    /// <summary>
+    /// Enables <c>SeDebugPrivilege</c> in the token of the service (design D3b). With it, <c>OpenProcess</c> and
+    /// <c>OpenThread</c> grant the access regardless of the DACL that the child sets on its own process. Returns false
+    /// with the error if the enable fails.
+    /// </summary>
+    public static bool EnableDebugPrivilege(out string? error)
+    {
+        error = null;
+        if (!LaunchNative.OpenProcessToken(LaunchNative.GetCurrentProcess(), LaunchNative.TOKEN_ADJUST_PRIVILEGES | LaunchNative.TOKEN_QUERY, out var token))
+        {
+            error = $"OpenProcessToken: {Marshal.GetLastWin32Error()}";
+            return false;
+        }
+        try
+        {
+            if (!LaunchNative.LookupPrivilegeValueW(null, "SeDebugPrivilege", out var luid))
+            {
+                error = $"LookupPrivilegeValueW: {Marshal.GetLastWin32Error()}";
+                return false;
+            }
+            var state = new LaunchNative.TOKEN_PRIVILEGES_ONE { PrivilegeCount = 1, Luid = luid, Attributes = LaunchNative.SE_PRIVILEGE_ENABLED };
+            var ok = LaunchNative.AdjustTokenPrivileges(token, false, ref state, 0, IntPtr.Zero, IntPtr.Zero);
+            var code = Marshal.GetLastWin32Error();
+            if (!ok || code == LaunchNative.ERROR_NOT_ALL_ASSIGNED)
+            {
+                error = $"AdjustTokenPrivileges: {code}";
+                return false;
+            }
+            return true;
+        }
+        finally
+        {
+            NativeMethods.CloseHandle(token);
+        }
+    }
+
+    /// <summary>
+    /// Reads one entry of a Session Probe sample (design D3b, S14): the thread <paramref name="tid"/> must belong to
+    /// <paramref name="pid"/>, and the process must run in <paramref name="sessionId"/>.
+    /// <list type="bullet">
+    /// <item>Read: the exe path and the start time.</item>
+    /// <item>Ended: the thread or the process does not exist (<c>ERROR_INVALID_PARAMETER</c>), or the thread belongs
+    /// to another process.</item>
+    /// <item>Unreadable: access denied, a process of another session, or no path or start time.</item>
+    /// </list>
+    /// No start-time test decides the outcome.
+    /// </summary>
+    /// <param name="sampleUtc">The sample time converted to UTC, for the clock-step sign only; null for none.</param>
+    public static SampleEntryRead ReadSampleEntry(int pid, int tid, int sessionId, DateTime? sampleUtc = null)
+    {
+        var thread = LaunchNative.OpenThread(LaunchNative.THREAD_QUERY_LIMITED_INFORMATION, false, tid);
+        if (thread == IntPtr.Zero)
+        {
+            var error = Marshal.GetLastWin32Error();
+            return new SampleEntryRead(error == ErrorInvalidParameter ? EntryOutcome.Ended : EntryOutcome.Unreadable, default, null, $"OpenThread {error}");
+        }
+        int owner;
+        try { owner = LaunchNative.GetProcessIdOfThread(thread); }
+        finally { NativeMethods.CloseHandle(thread); }
+        if (owner != pid)
+            return new SampleEntryRead(EntryOutcome.Ended, default, null, $"thread {tid} belongs to process {owner}");
+
+        var handle = NativeMethods.OpenProcess(NativeMethods.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (handle == IntPtr.Zero)
+        {
+            var error = Marshal.GetLastWin32Error();
+            return new SampleEntryRead(error == ErrorInvalidParameter ? EntryOutcome.Ended : EntryOutcome.Unreadable, default, null, $"OpenProcess {error}");
+        }
+        try
+        {
+            if (!LaunchNative.ProcessIdToSessionId(pid, out var processSession))
+                return new SampleEntryRead(EntryOutcome.Unreadable, default, null, $"ProcessIdToSessionId {Marshal.GetLastWin32Error()}");
+            if (processSession != sessionId)
+                return new SampleEntryRead(EntryOutcome.Unreadable, default, null, $"process of session {processSession}");
+            var path = QueryPath(handle);
+            var start = QueryStart(handle);
+            if (path is null || start is null)
+                return new SampleEntryRead(EntryOutcome.Unreadable, default, null, "no path or start time");
+            var late = sampleUtc is { } sample && start.Value > sample.AddSeconds(1);
+            return new SampleEntryRead(EntryOutcome.Read, new ProcessIdentity(pid, start.Value), path, "", late);
+        }
+        finally
+        {
+            NativeMethods.CloseHandle(handle);
+        }
+    }
+
+    /// <summary>
+    /// The creator of a trusted WebView2 process (design D5, S16, S21): the first process of its parent chain that is
+    /// not a trusted WebView2, at most <see cref="MaxCreatorSteps"/> steps. Each parent must run, must have started
+    /// before its child (else the pid was reused), and must run in the same session. Else the creator is not
+    /// attributed; there is no Ended outcome.
+    /// </summary>
+    /// <param name="isTrustedWebView2">The path test of <see cref="TrustedWebView2"/>.</param>
+    public static WebView2Creator ResolveWebView2Creator(int pid, Func<string, bool> isTrustedWebView2)
+    {
+        var (childPath, childStart) = QueryPathAndStart(pid);
+        if (childPath is null || childStart is null || !LaunchNative.ProcessIdToSessionId(pid, out var session))
+            return WebView2Creator.NotAttributed;
+
+        var current = pid;
+        var currentStart = childStart.Value;
+        for (var step = 0; step < MaxCreatorSteps; step++)
+        {
+            if (QueryParentPid(current) is not { } parent || parent <= 4)
+                return WebView2Creator.NotAttributed;
+            var (path, start) = QueryPathAndStart(parent);
+            if (path is null || start is null || start.Value > currentStart)
+                return WebView2Creator.NotAttributed;
+            if (!LaunchNative.ProcessIdToSessionId(parent, out var parentSession) || parentSession != session)
+                return WebView2Creator.NotAttributed;
+            if (!isTrustedWebView2(path))
+                return new WebView2Creator(CreatorOutcome.Read, new ProcessIdentity(parent, start.Value), path);
+            current = parent;
+            currentStart = start.Value;
+        }
+        return WebView2Creator.NotAttributed;
+    }
+
     private const int ErrorAccessDenied = 5;
     private const int ErrorInvalidParameter = 87;
     private const int StatusAccessDenied = unchecked((int)0xC0000022);

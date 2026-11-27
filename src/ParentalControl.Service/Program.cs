@@ -29,6 +29,7 @@ builder.Services.AddSingleton<BreakEnforcer>();
 builder.Services.AddSingleton<SessionTracker>();
 builder.Services.AddSingleton<ParentalControl.Domain.Categories.ForegroundHistory>();
 builder.Services.AddSingleton<CategoryEnforcer>();
+builder.Services.AddHostedService<DebugPrivilegeMonitor>();
 builder.Services.AddHostedService<StartupWorker>();
 builder.Services.AddHostedService<UsageMonitorWorker>();
 builder.Services.AddHostedService<TelegramWorker>();
