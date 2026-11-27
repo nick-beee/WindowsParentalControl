@@ -163,9 +163,13 @@ export interface Settings {
   msgProgramBlocked: string
   /** One Telegram notice per blocked program, child and day. */
   notifyBlockedTelegram: boolean
+  /** The probe locks of the Session Probe (shadow mode while off). Default off. */
+  probeLocksEnforced: boolean
+  /** The number of "would lock" events of the last 7 days (read only). */
+  probeWouldLockEvents: number
 }
 
-export type SettingsSave = Omit<Settings, 'telegramConfigured'>
+export type SettingsSave = Omit<Settings, 'telegramConfigured' | 'probeWouldLockEvents'>
 
 /** The ranges of a Break Rule (BreakRule in the Domain). The PUT route refuses other values with 400. */
 export const BREAK_USE_MINUTES = { min: 10, max: 240 } as const

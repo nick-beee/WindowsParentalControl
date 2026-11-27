@@ -1874,7 +1874,11 @@ public sealed class WebServerHost : BackgroundService
                 msgBreakStart = SettingsRepository.GetMessage(SettingsRepository.KeyMsgBreakStart),
                 msgBreakRunning = SettingsRepository.GetMessage(SettingsRepository.KeyMsgBreakRunning),
                 msgProgramBlocked = SettingsRepository.GetMessage(SettingsRepository.KeyMsgProgramBlocked),
-                notifyBlockedTelegram = SettingsRepository.IsNotifyBlockedTelegramEnabled()
+                notifyBlockedTelegram = SettingsRepository.IsNotifyBlockedTelegramEnabled(),
+                // session-probe-and-agent-channel D12: the switch of the probe locks and the "would lock" events of 7 days.
+                probeLocksEnforced = SettingsRepository.IsProbeLocksEnforced(),
+                probeWouldLockEvents = EventRepository.GetEvents(from: DateTime.Now.AddDays(-7))
+                    .Count(e => e.EventType == EventType.PROBE_WOULD_LOCK)
             });
         });
 
@@ -1933,6 +1937,15 @@ public sealed class WebServerHost : BackgroundService
                 if (doc.RootElement.TryGetProperty("notifyBlockedTelegram", out var nbt))
                 {
                     SettingsRepository.Set(SettingsRepository.KeyNotifyBlockedTelegram, nbt.GetBoolean() ? "1" : "0");
+                }
+                // The probe locks (D12). The Session Probe host reads the value within 10 s; the switch to on clears the
+                // budget and the strike, so the switch itself never locks.
+                if (doc.RootElement.TryGetProperty("probeLocksEnforced", out var ple))
+                {
+                    var on = ple.GetBoolean();
+                    if (on != SettingsRepository.IsProbeLocksEnforced())
+                        _logger.Warning("Admin switched the probe locks {State}", on ? "on" : "off");
+                    SettingsRepository.Set(SettingsRepository.KeyProbeLocksEnforced, on ? "1" : "0");
                 }
 
                 return Results.Ok(new { success = true });

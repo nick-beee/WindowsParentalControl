@@ -337,6 +337,9 @@ export const de = {
   msgBreakRunningLabel: 'Nachricht, wenn das Kind den PC während der Pause entsperrt. Platzhalter: {minutes}, {break_end}',
   notifyBlockedTelegram: 'Nachricht, wenn das Kind ein gesperrtes Programm starten will (einmal pro Programm und Tag)',
   msgProgramBlockedLabel: 'Nachricht an das Kind, wenn ein gesperrtes Programm startet. Platzhalter: {name}',
+  probeLocksEnforced:
+    'Sperren der Fensterprüfung einschalten: Der PC sperrt, wenn der Dienst nicht sehen kann, welches Programm vorne ist. Aus: Der Dienst meldet nur, wann er sperren würde.',
+  probeWouldLockEvents: (count: number) => `Meldungen „würde sperren“ in den letzten 7 Tagen: ${count}`,
   settingsSaved: 'Die Einstellungen sind gespeichert.',
   settingsSaveFailed: 'Die Einstellungen sind nicht gespeichert.',
   settingsLoadFailed: 'Die Einstellungen sind nicht geladen.',
