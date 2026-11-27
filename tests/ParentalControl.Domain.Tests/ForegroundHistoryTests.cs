@@ -53,4 +53,15 @@ public class ForegroundHistoryTests
         Assert.True(history.Record(1, Today, @"C:\Fake\0.exe"));
         Assert.True(history.Record(2, Today, @"C:\Fake\one-more.exe"));
     }
+
+    [Fact]
+    public void Cap_is_60000_paths_and_Record_returns_false_at_the_cap()
+    {
+        Assert.Equal(60_000, ForegroundHistory.MaxPathsPerUser);
+        var history = new ForegroundHistory();
+        for (var i = 0; i < ForegroundHistory.MaxPathsPerUser; i++)
+            history.Record(1, Today, $@"C:\Probe\{i}.exe");
+        Assert.False(history.Record(1, Today, @"C:\Probe\extra.exe"));
+        Assert.False(history.WasForeground(1, Today, @"C:\Probe\extra.exe"));
+    }
 }
