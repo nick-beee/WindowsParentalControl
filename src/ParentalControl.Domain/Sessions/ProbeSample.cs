@@ -33,7 +33,8 @@ public enum ProbeBlindReason
 /// <summary>
 /// One sample line of the Session Probe (design D3). <see cref="T"/> is the <c>GetTickCount64</c> value of the probe
 /// at the sample, in milliseconds. The title and the desktop name come from programs of the child; they are only for
-/// the log and App Usage.
+/// the log and App Usage. <see cref="Duration"/> is the time that the probe took for the sample (<c>dur</c>, in
+/// milliseconds); the probe reads <c>t</c> after the read of <c>fg</c>.
 /// </summary>
 public sealed record ProbeSample(
     long T,
@@ -45,7 +46,8 @@ public sealed record ProbeSample(
     ProbeCursor? Cursor = null,
     ProbeWindow? Hung = null,
     string? Title = null,
-    string? Desktop = null)
+    string? Desktop = null,
+    TimeSpan? Duration = null)
 {
     public IReadOnlyList<ProbeWindow> ChildEntries => Children ?? [];
 }

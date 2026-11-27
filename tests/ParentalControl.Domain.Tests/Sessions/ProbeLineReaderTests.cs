@@ -170,4 +170,14 @@ public class ProbeLineReaderTests
         Assert.Equal("😀", ProbeLineReader.Clean("😀", 256));
         Assert.Equal("", ProbeLineReader.Clean("😀", 1));
     }
+
+    [Fact]
+    public void Sample_duration_in_milliseconds()
+    {
+        Assert.Equal(TimeSpan.FromMilliseconds(24200.5), One("""{"t":5,"window":false,"dur":24200.5}""").Duration);
+        var reader = new ProbeLineReader();
+        var sample = Assert.IsType<ProbeSample>(Assert.Single(Read(reader, """{"t":5,"blind":"desktop","dur":"x"}""")));
+        Assert.Null(sample.Duration);
+        Assert.Equal(1, reader.DroppedFields);
+    }
 }

@@ -128,6 +128,7 @@ public sealed class ProbeLineReader
 
             var sample = ParseSample(root, t);
             if (sample is null) return;
+            sample = sample with { Duration = OptionalDuration(root) };
             _lastT = t;
             output.Add(sample);
         }
@@ -173,6 +174,15 @@ public sealed class ProbeLineReader
             Hung: OptionalEntry(root, "hung"),
             Title: OptionalText(root, "title", MaxTitleChars),
             Desktop: OptionalText(root, "desktop", MaxDesktopChars));
+    }
+
+    private TimeSpan? OptionalDuration(JsonElement root)
+    {
+        if (!root.TryGetProperty("dur", out var element) || element.ValueKind == JsonValueKind.Null) return null;
+        if (element.ValueKind == JsonValueKind.Number && element.TryGetDouble(out var ms) && ms >= 0 && ms < 86_400_000)
+            return TimeSpan.FromMilliseconds(ms);
+        DropField("dur");
+        return null;
     }
 
     private ProbeWindow? OptionalEntry(JsonElement root, string name)
