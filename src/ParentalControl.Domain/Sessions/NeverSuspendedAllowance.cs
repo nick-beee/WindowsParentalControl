@@ -29,8 +29,15 @@ public sealed class NeverSuspendedAllowance
     public NeverSuspendedAllowance(Func<string, bool> neverSuspended) => _neverSuspended = neverSuspended;
 
     /// <summary>
-    /// Adds the interval of one sample and returns each exe that is over the allowance now.
+    /// Adds the interval of one sample and returns each exe of this sample that is over the allowance now.
     /// </summary>
+    /// <remarks>
+    /// Only an exe that is a counted process of this sample, in an exhausted category, can be in the result (review
+    /// S3). An exe that the child closed or left is not in it, also if its time of the last 10 minutes is over the
+    /// allowance: its time stays in the window, so a return to it within the window gives the fallback at once. Each
+    /// exe adds the interval once per sample, also if two of its processes are counted. A sample of a locked or
+    /// disconnected session adds nothing and returns nothing.
+    /// </remarks>
     /// <param name="unlockedNow">The unlocked clock of the user at the sample.</param>
     /// <param name="unlocked">The session is unlocked and connected. Else the sample adds nothing.</param>
     /// <param name="selection">The counted processes of the sample.</param>
@@ -45,32 +52,44 @@ public sealed class NeverSuspendedAllowance
         Func<AppCategory, bool> isExhausted,
         TimeSpan agentExempt = default)
     {
-        if (unlocked && interval > TimeSpan.Zero)
+        // The exes of this sample that the rule covers, each once, with the time that the sample adds for it.
+        var current = new List<string>();
+        var times = new Dictionary<string, TimeSpan>(StringComparer.OrdinalIgnoreCase);
+        if (unlocked)
         {
             foreach (var process in selection.Counted)
             {
                 if (process.Category == AppCategory.System || !isExhausted(process.Category)) continue;
                 if (!process.IsAgent && !_neverSuspended(process.ExePath)) continue;
                 var time = process.IsAgent ? interval - agentExempt : interval;
-                if (time <= TimeSpan.Zero) continue;
-                if (!_byExe.TryGetValue(process.ExePath, out var queue))
-                    _byExe[process.ExePath] = queue = new Queue<(TimeSpan, TimeSpan)>();
-                queue.Enqueue((unlockedNow, time));
+                if (times.TryGetValue(process.ExePath, out var known))
+                {
+                    if (time > known) times[process.ExePath] = time;
+                    continue;
+                }
+                times[process.ExePath] = time;
+                current.Add(process.ExePath);
             }
         }
 
-        var over = new List<string>();
+        foreach (var exe in current)
+        {
+            var time = times[exe];
+            if (time <= TimeSpan.Zero) continue;
+            if (!_byExe.TryGetValue(exe, out var queue))
+                _byExe[exe] = queue = new Queue<(TimeSpan, TimeSpan)>();
+            queue.Enqueue((unlockedNow, time));
+        }
+
         foreach (var (exe, queue) in _byExe.ToList())
         {
             while (queue.Count > 0 && unlockedNow - queue.Peek().At >= TimeSpan.FromSeconds(WindowSeconds))
                 queue.Dequeue();
-            if (queue.Count == 0)
-            {
-                _byExe.Remove(exe);
-                continue;
-            }
-            if (queue.Sum(e => e.Time.TotalSeconds) > AllowedSeconds) over.Add(exe);
+            if (queue.Count == 0) _byExe.Remove(exe);
         }
-        return over;
+
+        return current
+            .Where(exe => _byExe.TryGetValue(exe, out var queue) && queue.Sum(e => e.Time.TotalSeconds) > AllowedSeconds)
+            .ToList();
     }
 }

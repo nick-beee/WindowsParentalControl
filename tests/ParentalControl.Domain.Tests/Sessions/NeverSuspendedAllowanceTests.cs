@@ -114,4 +114,46 @@ public class NeverSuspendedAllowanceTests
         Assert.Empty(Run(New(), Sel(P(Notepad, AppCategory.System)), 0, 300));
         Assert.Empty(Run(New(), Sel(P(Notepad, AppCategory.Study)), 0, 300, exhausted: c => c != AppCategory.Study));
     }
+
+    // ---------- review S3: only exes of this sample ----------
+
+    [Fact]
+    public void Switch_to_another_program_after_the_lock_returns_no_old_exe()
+    {
+        var allowance = New();
+        Assert.Equal([Notepad], Run(allowance, Sel(P(Notepad, AppCategory.Unknown)), 0, 65));
+        Assert.Empty(allowance.Sample(S(70), true, Sel(P(Game, AppCategory.Games)), S(5), _ => true));
+        Assert.Empty(allowance.Sample(S(75), true, Sel(P(FakeWebView2, AppCategory.Unknown)), S(5), _ => true));
+        Assert.Empty(allowance.Sample(S(80), true, Sel(), S(5), _ => true));
+        // Its time stays in the window: a return to it gives the fallback at once.
+        Assert.Equal([Notepad], allowance.Sample(S(85), true, Sel(P(Notepad, AppCategory.Unknown)), S(5), _ => true));
+    }
+
+    [Fact]
+    public void Exe_whose_category_has_time_again_is_not_returned()
+    {
+        var allowance = New();
+        Assert.Equal([Notepad], Run(allowance, Sel(P(Notepad, AppCategory.Unknown)), 0, 65));
+        Assert.Empty(allowance.Sample(S(70), true, Sel(P(Notepad, AppCategory.Unknown)), S(5), _ => false));
+    }
+
+    [Fact]
+    public void Locked_sample_returns_nothing_also_over_the_allowance()
+    {
+        var allowance = New();
+        Assert.Equal([Notepad], Run(allowance, Sel(P(Notepad, AppCategory.Unknown)), 0, 65));
+        Assert.Empty(allowance.Sample(S(70), false, Sel(P(Notepad, AppCategory.Unknown)), S(5), _ => true));
+    }
+
+    [Fact]
+    public void Two_processes_of_one_exe_add_the_interval_once()
+    {
+        var two = Sel(
+            new CountedProcess(new ProcessIdentity(1, T0), Notepad, AppCategory.Unknown, ProbeRole.Foreground, false),
+            new CountedProcess(new ProcessIdentity(2, T0), Notepad.ToUpperInvariant(), AppCategory.Unknown, ProbeRole.Focus, false));
+        var allowance = New();
+        Assert.Empty(Run(allowance, two, 0, 60));
+        var over = allowance.Sample(S(65), true, two, S(5), _ => true);
+        Assert.Single(over);
+    }
 }
