@@ -83,6 +83,27 @@ The child controls its Session Agent, so a session-end request through the Agent
 - **WHEN** the child signs out with a suspended game, signs in again, and signs out again 5 minutes later with a suspended game
 - **THEN** the system grants the second hold, because the first hold ended with a sign-out
 
+### Requirement: Limit the Session End Guard
+A Session End Guard SHALL cover only an eligible process. A covered process SHALL NOT be eligible until the system suspends it again, or sees it suspended while no guard covers it. A request without an eligible process SHALL NOT start a guard. A request during an active guard of the session SHALL NOT extend it. A guard SHALL NOT stop a new suspension and SHALL NOT count against the limit of Session End Holds. The system SHALL log the start of each guard.
+
+#### Scenario: Fake request without a resume
+- **WHEN** Games is exhausted, the game is suspended, a hold was refused, and the child makes its Session Agent send the session-end request without a sign-out
+- **THEN** the game stays suspended
+
+#### Scenario: Fake request after a granted hold
+- **WHEN** the system resumed the game for a hold that ended without a sign-out, and the child makes its Session Agent send the session-end request during the Pending Suspension after the hold
+- **THEN** the system refuses the request and the guard does not cover the game
+- **AND** the system suspends the game at the end of the Pending Suspension
+
+#### Scenario: Fake request after a guard
+- **WHEN** a guard covered the game, the guard ended, and the child makes its Session Agent send the session-end request again during the Pending Suspension of the game
+- **THEN** no new guard starts
+- **AND** the system suspends the game at the end of the Pending Suspension
+
+#### Scenario: Request without an eligible process
+- **WHEN** a hold was refused and no process was eligible, Games then runs out and the system suspends a game, and the child signs out 30 seconds after the request
+- **THEN** the system starts a guard that covers the game
+
 ## ADDED Requirements
 
 ### Requirement: The counted processes of a sample
@@ -148,17 +169,17 @@ A `msedgewebview2.exe` below `Microsoft\EdgeWebView\Application` in a Program Fi
 - **AND** the session is locked within 2 minutes
 
 ### Requirement: A program that is never suspended still has a limit
-The system SHALL count the Session Agent in Unknown as the Foreground Window, focus or child window process, whatever the App Rules say, but not while the parent has an active prompt for that user. If the category of a counted exe that the system never suspends and that is not in System is exhausted, and that exe counts for more than 60 seconds within 10 minutes of unlocked time, the system SHALL apply the fallback when a process cannot be suspended, as a probe lock.
+The system SHALL count the Session Agent in Unknown as the Foreground Window, focus or child process, whatever the App Rules say, but not during an active prompt of the parent. If the category of a counted exe that the system never suspends and that is not in System is exhausted, and that exe counts for more than 60 seconds in 10 minutes of unlocked time, the system SHALL apply the suspension fallback as a probe lock. Time that the Agent Window Budget exempts SHALL NOT count.
 
 #### Scenario: Game drawn in the agent window
 - **WHEN** the probe locks are on and Unknown is exhausted and the child plays a game that its code draws in the window of the Session Agent
-- **THEN** the session is locked within 2 minutes
+- **THEN** the session is locked within 2 minutes after the Agent Window Budget is used up
 - **AND** the parent gets an alert
 - **AND** the Session Agent still runs
 
 #### Scenario: Agent window moved into Notepad
 - **WHEN** the probe locks are on and Unknown is exhausted and a script of the child puts the window of the Session Agent, with a game drawn in it, into a window of `notepad.exe`
-- **THEN** the session is locked within 2 minutes
+- **THEN** the session is locked within 2 minutes after the Agent Window Budget is used up
 
 #### Scenario: Child reads a prompt
 - **WHEN** the probe locks are on and Unknown is exhausted and the prompt of the parent stays in front for 3 minutes before the child answers it
@@ -189,3 +210,31 @@ The system SHALL keep at least 60,000 exes per Restricted User and day in the se
 #### Scenario: Normal day
 - **WHEN** the child uses 500 different programs on one day
 - **THEN** each of them is a suspend candidate when its category is exhausted
+
+### Requirement: Agent Window Budget
+In a sample of the Session Probe, the system SHALL exempt the Session Agent as a counted process, also as the creator of a trusted WebView2 process, for at most 5 minutes in any 60 minutes of unlocked time. Exempt time SHALL add no Category Usage for the Session Agent and SHALL NOT count toward the lock of a program that is never suspended. The system SHALL NOT start, extend or end the budget because of data that the Session Agent sends.
+
+#### Scenario: Request while Unknown is exhausted
+- **WHEN** the probe locks are on, the Session Probe counts the Session Agent in Unknown, Unknown is exhausted, and the child types a request in the Request Window for 3 minutes
+- **THEN** the session is not locked
+- **AND** Category Usage for Unknown does not increase
+
+#### Scenario: Budget used up
+- **WHEN** the probe locks are on, the Session Probe counts the Session Agent in Unknown, Unknown is exhausted, and the Session Agent is the counted process for 7 minutes within 60 minutes of unlocked time
+- **THEN** the last 2 minutes count under the rules of `category-limits`
+
+#### Scenario: Sliding window
+- **WHEN** the probe locks are on, the Session Agent was exempt for 5 minutes from 10:00, and the session stays unlocked
+- **THEN** the Session Agent is not exempt again before 11:00
+- **AND** from 11:05 at the latest the budget has 5 minutes again
+
+### Requirement: The Agent Window Budget exempts only the Session Agent
+The Agent Window Budget SHALL exempt only the time that the Session Agent itself adds. If another counted process of the same sample is in the same App Category, that category SHALL still get the interval of the sample. The budget SHALL NOT change the Allowance Time, Continuous Use, a Break or the Schedule Window.
+
+#### Scenario: Game moved into the agent window
+- **WHEN** the probe locks are on and the Session Agent and a game in Unknown are both counted processes of the same Session Probe samples for 3 minutes
+- **THEN** Category Usage for Unknown increases by 3 minutes
+
+#### Scenario: Allowance Time
+- **WHEN** the probe locks are on and the child types a request in the Request Window for 3 minutes while the Agent Window Budget exempts the Session Agent
+- **THEN** the 3 minutes count against the Allowance Time of the child

@@ -18,11 +18,15 @@ When the service starts the Session Agent in a session, it SHALL give that agent
 - **THEN** the agent exits and shows nothing
 
 ### Requirement: The service starts the agent without runtime variables of the child
-The service SHALL start the Session Agent without each environment variable whose name starts with `DOTNET_`, `COMPlus_` or `CORECLR_`, also if the Restricted User set it.
+The service SHALL start the Session Agent without each environment variable whose name starts with `DOTNET_`, `COMPlus_`, `CORECLR_` or `WEBVIEW2_`, also if the Restricted User set it.
 
 #### Scenario: Startup hook for the agent
 - **WHEN** the child sets the user environment variable `DOTNET_STARTUP_HOOKS` to its own file and the service starts the Session Agent
 - **THEN** the environment of the agent has no `DOTNET_STARTUP_HOOKS`
+
+#### Scenario: WebView2 arguments of the child
+- **WHEN** the child sets the user environment variable `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` to `--remote-debugging-port=9222` and the service starts the Session Agent
+- **THEN** the environment of the agent has no `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`
 
 ### Requirement: The Agent Channel resists a flood or a stall
 The service SHALL check the length of each Agent Channel frame before it reads the frame, and SHALL close the channel for a frame over the limit. It SHALL read and write the channel without a blocked thread, close it after a stall of 10 seconds, and limit the messages per channel. A flood or a stall on one channel SHALL NOT delay another channel or a limit.

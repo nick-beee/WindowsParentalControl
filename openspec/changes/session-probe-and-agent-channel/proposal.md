@@ -20,12 +20,14 @@ The child runs the Session Agent under its own account. So the child can read th
 - A blind sample is a sample that the service cannot attribute to an exe: the input desktop is not readable (the child can create a desktop that denies SYSTEM), the Foreground Window gives no thread, the service is denied a sampled process, or more than 8 other processes have windows in the Foreground Window. A counted process that ended before the service read it, and the unexpected ends of the probe above, also count toward the budget, but they never lock at once after the first lock of the day. At the 6th item within 10 minutes of unlocked time, the service applies the Enforced Workstation Lock and alerts the parent. After that lock, each blind sample of the day locks again. It closes no program.
 - **Shadow mode** (new): the locks of this change (after blind samples, for a program that is never suspended, for a full set of exes) start off. While they are off, the service logs and reports each lock as "would lock" and still counts and suspends. It alerts the parent once per day for each reason, and once per day for each exe of a program that is never suspended, with its path. The parent switches them on in the web admin after some days on the child's PC without a false "would lock".
 - **Agent Channel** (new): the service starts the Session Agent with one end of a pipe that the service created. No other process can open this pipe by name. The agent uses only this channel: the status poll, the prompt answer, the screen capture upload and the session-end request.
-- The service treats the Agent Channel as hostile input: it checks the length of a frame before it reads it, uses asynchronous reads and writes with timeouts, and limits the messages per channel. It starts the agent without the variables `DOTNET_*`, `COMPlus_*` and `CORECLR_*`.
+- The service treats the Agent Channel as hostile input: it checks the length of a frame before it reads it, uses asynchronous reads and writes with timeouts, and limits the messages per channel. It starts the agent without the variables `DOTNET_*`, `COMPlus_*`, `CORECLR_*` and `WEBVIEW2_*`.
 - The service takes the user and the session of each agent message from the agent that it started, never from a field in the message. A prompt answer must name an active prompt of that user. A status poll shows only the prompts and the capture requests of that user.
 - **BREAKING**: the routes `GET /api/agent/status`, `POST /api/agent/activity`, `POST /api/agent/prompt/respond`, `POST /api/agent/session-ending` and `POST /api/agent/capture` go away in the same release. The installer ships the agent and the service together. `/`, `/request`, `/api/request` and the web admin stay on HTTP.
 - **Single instance** (#32): the agent no longer uses a named mutex. The service starts one agent per session and keeps its process handle. It starts a new agent only after that process ended. An agent that the service did not start has no channel and exits at once. The installer removes the `Run` key that starts the agent at sign-in.
 - The Session Agent stops the Foreground Window sampling. It gets the pids to mute from the status poll.
-- The rate limit of the Session End Hold stays. The child controls its own agent, so a session-end request through the channel is still a claim of the child.
+- The rate limit of the Session End Hold stays. The child controls its own agent, so a session-end request through the channel is still a claim of the child. The request starts the Lock Deferral and the hold or the Session End Guard, as on main.
+- **Agent Window Budget** (from #54): the agent windows, such as the Request Window, are exempt for at most 5 minutes in any 60 minutes of unlocked time, from probe facts only. The two budget requirements move from `request-window` into `category-limits`.
+- The probe locks go through the Lock Deferral, never stop for a failed write, and take each day from the Control Time Zone (design D14).
 
 ## Out of scope
 
@@ -52,6 +54,9 @@ The child runs the Session Agent under its own account. So the child can read th
 - `app-categories`: the untrusted exe data comes from the Session Probe.
 - `admin-access`: the capture quota applies to the Agent Channel; `/api/agent/*` is no longer a child-facing route.
 - `child-messages`: the service sends the Language Preset in the status of the Agent Channel.
+- `session-lock`: the limit of the Lock Deferral names the session-end request of the Agent Channel; the old route gives no deferral.
+- `storage-failure`: the Pending Usage scenario uses a Session Probe sample.
+- `request-window`: the two Agent Window Budget requirements move to `category-limits` (once #54 is on main).
 
 ## Impact
 

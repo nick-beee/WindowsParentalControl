@@ -225,3 +225,22 @@ The probe locks are the locks after blind samples, for a program that is never s
 - **WHEN** the parent switches the setting on during a day with "would lock" events
 - **THEN** the session is not locked at the switch
 - **AND** a later 6th blind sample within 10 minutes locks the session
+
+### Requirement: Probe locks follow the Lock Deferral, the storage rules and the Control Time Zone
+Each probe lock SHALL go through the Lock Deferral (capability session-lock) like the other locks of the limits. A probe lock that a deferral owes SHALL run within 10 seconds after the end of the deferral if it is still due. A failed write of an event, a log line or an alert SHALL NOT stop a probe lock. The day of the strike, of each daily alert and of the set of Foreground Window exes SHALL be the day of the Control Time Zone.
+
+#### Scenario: Blind samples during a sign-out
+- **WHEN** the probe locks are on, the child signs out, and the 6th blind sample within 10 minutes comes during the Lock Deferral
+- **THEN** the system does not lock the session during the deferral
+
+#### Scenario: Owed probe lock
+- **WHEN** the probe locks are on, a lock after blind samples was owed, and the child cancels the sign-out while the strike of the day is set
+- **THEN** the system locks the session within 10 seconds after the end of the deferral
+
+#### Scenario: Blind samples on a full disk
+- **WHEN** the probe locks are on and the 6th blind sample within 10 minutes comes while the database cannot write
+- **THEN** the system locks the session
+
+#### Scenario: Time zone change after the first lock
+- **WHEN** the probe locks are on, blind samples locked the session today, and the child sets a system time zone in which the local date is the next day
+- **THEN** the strike stays set, and the next blind sample locks the session
