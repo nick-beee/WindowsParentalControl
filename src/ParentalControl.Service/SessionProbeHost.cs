@@ -747,6 +747,8 @@ public sealed class SessionProbeHost : BackgroundService
             // The unlocked clock of each Restricted User.
             foreach (var (sessionId, session) in _tracker.ActiveSessions)
             {
+                // A signed-out session that the tracker still lists must not start the unlocked clock again (S5).
+                if (!_monitor.MayStart(sessionId, _logonKeys.GetValueOrDefault(sessionId))) continue;
                 var user = Safe(() => UserRepository.GetBySid(session.UserSid), null);
                 if (user is { IsRestricted: true }) _monitor.Observe(user.Id, now, !session.IsLocked && !_sleeping);
             }
