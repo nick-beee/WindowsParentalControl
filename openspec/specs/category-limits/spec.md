@@ -135,7 +135,7 @@ If the system cannot suspend a process that it must suspend (for example, anti-c
 - **THEN** the system tries the suspension again and locks the session again if it fails
 
 ### Requirement: Tell the child about a suspension
-When the system suspends a program because its exe has no time left, it SHALL send one session message per limit and day: one for each Category Limit and one for each App Limit. The message SHALL name the limit that suspends the program: the app for an App Limit, as the App Limit warning does, and the category for a Category Limit. The message SHALL say that the programs are paused, not closed, and continue tomorrow or after Bonus Minutes. One text serves both limits: its placeholder `{name}` is the app or the category, and `{category}` is always the category. The parent SHALL be able to change the text.
+When the system suspends a program because its exe has no time left, it SHALL send one session message per limit and day. The message SHALL name the limit: the app for an App Limit, the category for a Category Limit. It SHALL say that the programs are paused, not closed, and continue tomorrow or after Bonus Minutes. In the one text that the parent can change, `{name}` is the app or the category and `{category}` is the category.
 
 #### Scenario: Message on suspension
 - **WHEN** the system suspends the Games programs for the first time today because of the Games Category Limit
