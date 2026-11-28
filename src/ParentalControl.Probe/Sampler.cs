@@ -14,17 +14,18 @@ internal readonly record struct Entry(IntPtr Hwnd, int Tid, int Pid);
 /// <summary>
 /// The sampler of the Session Probe (design D4). It runs on one MTA thread at <c>THREAD_PRIORITY_TIME_CRITICAL</c> and
 /// creates no window and no hook. Before each sample it waits 0.2 seconds plus an exponential random time with a mean of
-/// 4.8 seconds, at most 10 seconds in total. Each sample reads the input desktop:
+/// 4.8 seconds, at most 10 seconds minus the duration of the last sample (at least 0), so two samples are at most about
+/// 10 seconds apart. Each sample reads the input desktop:
 /// <list type="number">
 /// <item><c>OpenInputDesktop</c>; a failure is <c>{ "blind": "desktop" }</c>.</item>
 /// <item><c>SetThreadDesktop</c> to it; a failure is <c>{ "blind": "desktop" }</c>.</item>
-/// <item><c>GetForegroundWindow</c>, then <c>t</c>; NULL is <c>{ "window": false }</c>; no thread after one retry is
-/// <c>{ "blind": "window" }</c>; a ghost window (class <c>Ghost</c>) gives <c>hung</c>.</item>
+/// <item><c>GetForegroundWindow</c>, then <c>t</c>; NULL is <c>{ "window": false }</c> with step 6 only; no thread after
+/// one retry is <c>{ "blind": "window" }</c>; a ghost window (class <c>Ghost</c>) gives <c>hung</c>.</item>
 /// <item>The focus window of the foreground thread, if another process owns it.</item>
 /// <item>One visible child window of each other process below <c>fg</c>; more than 8 processes or 4096 windows is
 /// <c>{ "blind": "children" }</c>.</item>
-/// <item>The window under the cursor and its parent chain (at most 32 steps, 8 processes), with
-/// <c>WS_EX_NOACTIVATE</c> of the top-level window.</item>
+/// <item>The window under the cursor and its parent chain up to the top-level window (at most 32 steps, 8 processes),
+/// with <c>WS_EX_NOACTIVATE</c> of the top-level window. The desktop window is never on the chain.</item>
 /// <item>The title of <c>fg</c>.</item>
 /// <item>The restore of the thread desktop, then <c>CloseDesktop</c>. A failed restore ends the probe.</item>
 /// </list>
@@ -69,10 +70,13 @@ internal sealed class Sampler
         var started = Stopwatch.StartNew();
         long count = 0;
 #endif
+        var lastSampleSeconds = 0.0;
         while (true)
         {
+            // The cap counts the time of the last sample, so two samples are at most about 10 seconds apart (D4).
             var wait = MinWaitSeconds + Exponential(MeanRandomSeconds);
-            if (wait > MaxWaitSeconds) wait = MaxWaitSeconds;
+            var cap = Math.Max(0, MaxWaitSeconds - lastSampleSeconds);
+            if (wait > cap) wait = cap;
 #if VM_TEST
             if (_switches.GapSeconds is { } gap && count > 0 && count % 10 == 0) wait += gap;
 #endif
@@ -92,7 +96,9 @@ internal sealed class Sampler
 #else
             const int stall = 0;
 #endif
+            var sampleWatch = Stopwatch.StartNew();
             var line = Sample(original, stall);
+            lastSampleSeconds = sampleWatch.Elapsed.TotalSeconds;
             if (!_output.Write(line))
                 Environment.Exit(4); // the pipe broke: the service ended or closed it
         }
@@ -156,7 +162,7 @@ internal sealed class Sampler
         sample.T = (long)GetTickCount64();
         if (fg == IntPtr.Zero)
         {
-            sample.NoWindow = true;
+            NoWindow(sample);
             return;
         }
         var tid = GetWindowThreadProcessId(fg, out var pid);
@@ -166,7 +172,7 @@ internal sealed class Sampler
             sample.T = (long)GetTickCount64();
             if (fg == IntPtr.Zero)
             {
-                sample.NoWindow = true;
+                NoWindow(sample);
                 return;
             }
             tid = GetWindowThreadProcessId(fg, out pid);
@@ -245,41 +251,56 @@ internal sealed class Sampler
         seen.UnionWith(childPids);
 
         // Step 6: the window under the cursor and its parent chain.
-        if (GetCursorPos(out var point))
-        {
-            var hit = WindowFromPoint(point);
-            if (hit != IntPtr.Zero)
-            {
-                var root = GetAncestor(hit, GA_ROOT);
-                if (root == IntPtr.Zero) root = hit;
-                var chain = new List<IntPtr> { hit };
-                if (root != hit) chain.Add(root);
-                var current = hit;
-                for (var steps = 0; steps < MaxCursorSteps; steps++)
-                {
-                    current = GetAncestor(current, GA_PARENT);
-                    if (current == IntPtr.Zero || current == root) break;
-                    chain.Add(current);
-                }
-                var entries = new List<Entry>();
-                foreach (var window in chain)
-                {
-                    if (entries.Count >= MaxCursorEntries) break;
-                    var windowTid = GetWindowThreadProcessId(window, out var windowPid);
-                    if (windowTid == 0 || !seen.Add(windowPid)) continue;
-                    entries.Add(new Entry(window, windowTid, windowPid));
-                }
-                if (entries.Count > 0)
-                {
-                    sample.CursorEntries = entries;
-                    sample.CursorNoActivate = ((long)GetWindowLongPtrW(root, GWL_EXSTYLE) & WS_EX_NOACTIVATE) != 0;
-                }
-            }
-        }
+        Cursor(sample, seen);
 
         // Step 7: the stored caption of fg (no message to a window of another process).
         var length = GetWindowTextW(fg, _text, _text.Length);
         sample.Title = Clean(new string(_text, 0, Math.Max(0, length)), MaxTitleChars);
+    }
+
+    // No Foreground Window: the sample is { "window": false } with step 6. A game with WS_EX_NOACTIVATE that the child
+    // plays with the mouse can leave the Foreground Window NULL (final review, item 5).
+    private static void NoWindow(SampleBuilder sample)
+    {
+        sample.NoWindow = true;
+        Cursor(sample, []);
+    }
+
+    // Step 6: the window under the cursor and its parent chain up to the top-level window, one entry for each process
+    // that is not in `seen`, at most 8.
+    private static void Cursor(SampleBuilder sample, HashSet<int> seen)
+    {
+        if (!GetCursorPos(out var point)) return;
+        var hit = WindowFromPoint(point);
+        if (hit == IntPtr.Zero) return;
+        var root = GetAncestor(hit, GA_ROOT);
+        if (root == IntPtr.Zero) root = hit;
+        var chain = new List<IntPtr> { hit };
+        if (root != hit)
+        {
+            chain.Add(root);
+            // Walk up to the top-level window, never past it: GA_PARENT of a top-level window gives the desktop window.
+            var current = hit;
+            for (var steps = 0; steps < MaxCursorSteps; steps++)
+            {
+                current = GetAncestor(current, GA_PARENT);
+                if (current == IntPtr.Zero || current == root) break;
+                chain.Add(current);
+            }
+        }
+        var entries = new List<Entry>();
+        foreach (var window in chain)
+        {
+            if (entries.Count >= MaxCursorEntries) break;
+            var windowTid = GetWindowThreadProcessId(window, out var windowPid);
+            if (windowTid == 0 || !seen.Add(windowPid)) continue;
+            entries.Add(new Entry(window, windowTid, windowPid));
+        }
+        if (entries.Count > 0)
+        {
+            sample.CursorEntries = entries;
+            sample.CursorNoActivate = ((long)GetWindowLongPtrW(root, GWL_EXSTYLE) & WS_EX_NOACTIVATE) != 0;
+        }
     }
 
     private string DesktopName(IntPtr desktop)
@@ -347,7 +368,10 @@ internal sealed class SampleBuilder
             if (Blind is not null)
                 json.WriteString("blind", Blind);
             else if (NoWindow)
+            {
                 json.WriteBoolean("window", false);
+                WriteCursor(json);
+            }
             else if (Foreground is { } fg)
             {
                 WriteEntry(json, "fg", fg);
@@ -359,21 +383,24 @@ internal sealed class SampleBuilder
                     json.WriteEndArray();
                 }
                 if (Hung is { } hung) WriteEntry(json, "hung", hung);
-                if (CursorEntries is { Count: > 0 })
-                {
-                    json.WriteStartObject("cursor");
-                    json.WriteBoolean("noActivate", CursorNoActivate);
-                    json.WriteStartArray("entries");
-                    foreach (var entry in CursorEntries) WriteEntry(json, null, entry);
-                    json.WriteEndArray();
-                    json.WriteEndObject();
-                }
+                WriteCursor(json);
                 if (Title is not null) json.WriteString("title", Title);
             }
             if (Desktop is not null) json.WriteString("desktop", Desktop);
             json.WriteEndObject();
         }
         return buffer.WrittenSpan.ToArray();
+    }
+
+    private void WriteCursor(Utf8JsonWriter json)
+    {
+        if (CursorEntries is not { Count: > 0 }) return;
+        json.WriteStartObject("cursor");
+        json.WriteBoolean("noActivate", CursorNoActivate);
+        json.WriteStartArray("entries");
+        foreach (var entry in CursorEntries) WriteEntry(json, null, entry);
+        json.WriteEndArray();
+        json.WriteEndObject();
     }
 
     private static void WriteEntry(Utf8JsonWriter json, string? name, Entry entry)
