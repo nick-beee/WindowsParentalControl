@@ -289,11 +289,15 @@ internal static class SessionProbePlatformChecks
         Check(session > 0, "the console session exists", session.ToString());
         Environment.SetEnvironmentVariable("DOTNET_STARTUP_HOOKS", @"C:\Users\Kid\hook.dll");
 
+        var hostErrorMode = TestProbeNative.GetErrorMode();
         using var pipe = new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.None);
         using var child = SessionSystemProcess.Start(session, Path.Combine(AppContext.BaseDirectory, "ParentalControl.Tests.exe"), ChildMode + " {handle}",
             pipe.ClientSafePipeHandle.DangerousGetHandle());
         pipe.DisposeLocalCopyOfClientHandle();
         Check(child.UserSid == SessionSystemProcess.SystemSid, "the launch record has the SID of SYSTEM", child.UserSid);
+        // Code review of group 4: the launch sets the error mode only for the probe and restores the mode of the service.
+        Check(TestProbeNative.GetErrorMode() == hostErrorMode, "the launch restores the error mode of the service",
+            $"0x{TestProbeNative.GetErrorMode():X} vs 0x{hostErrorMode:X}");
 
         // The child writes its report and then waits 5 s, so the host can check the running process.
         var report = new Dictionary<string, string>();
@@ -323,12 +327,16 @@ internal static class SessionProbePlatformChecks
         report.TryGetValue("hooks", out var hooks);
         report.TryGetValue("diagnostics", out var diagnostics);
         report.TryGetValue("priority", out var childPriority);
+        report.TryGetValue("errormode", out var childErrorMode);
         Check(sid == SessionSystemProcess.SystemSid, "the child runs as S-1-5-18", sid ?? "no report");
         Check(childSession == session.ToString(), "the child runs in the console session", $"{childSession} vs {session}");
         Check(privileges == "SeChangeNotifyPrivilege", "the child has only SeChangeNotifyPrivilege", privileges ?? "");
         Check(hooks == "", "the child has no DOTNET_STARTUP_HOOKS", hooks ?? "no report");
         Check(diagnostics == "0", "the child has DOTNET_EnableDiagnostics=0", diagnostics ?? "");
         Check(childPriority == "High", "the child reads its own class as High", childPriority ?? "");
+        // SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX, inherited before the loader runs.
+        Check(uint.TryParse(childErrorMode, out var mode) && (mode & 0x8003) == 0x8003, "the child inherits the error mode without dialogs",
+            childErrorMode ?? "no report");
         TestProbeNative.WaitForSingleObject(child.Handle.DangerousGetHandle(), 10_000);
 
         // A start without an inherited handle (no attribute list) runs and exits with 0.
@@ -393,6 +401,7 @@ internal static class SessionProbePlatformChecks
         writer.WriteLine("hooks=" + Environment.GetEnvironmentVariable("DOTNET_STARTUP_HOOKS"));
         writer.WriteLine("diagnostics=" + Environment.GetEnvironmentVariable("DOTNET_EnableDiagnostics"));
         writer.WriteLine("priority=" + Process.GetCurrentProcess().PriorityClass);
+        writer.WriteLine("errormode=" + TestProbeNative.GetErrorMode().ToString(System.Globalization.CultureInfo.InvariantCulture));
         writer.WriteLine("end=1");
         writer.Flush();
         Thread.Sleep(5000);
@@ -409,6 +418,9 @@ internal static class TestProbeNative
 
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern uint GetPriorityClass(IntPtr process);
+
+    [DllImport("kernel32.dll")]
+    public static extern uint GetErrorMode();
 
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
