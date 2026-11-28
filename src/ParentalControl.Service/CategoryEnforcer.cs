@@ -222,7 +222,7 @@ public sealed class CategoryEnforcer : IDisposable
                     action.ExePath, action.Process.Pid, action.Category, action.IsRecorded ? " again" : "", PendingSuspensions.Delay.TotalSeconds);
 
             foreach (var action in step.Ready)
-                Suspend(action, users);
+                Suspend(action, users, dayLimits, config.Resolver);
 
             PublishAndSchedule();
         }
@@ -411,7 +411,8 @@ public sealed class CategoryEnforcer : IDisposable
         }
     }
 
-    private void Suspend(SuspendAction action, IReadOnlyDictionary<int, User> users)
+    private void Suspend(SuspendAction action, IReadOnlyDictionary<int, User> users,
+        IReadOnlyDictionary<int, DayLimits> dayLimits, CategoryResolver resolver)
     {
         var p = action.Process;
         var record = new SuspensionRecord(p.Pid, p.StartTimeUtc, p.SessionId, action.UserId, action.Category, action.ExePath, action.Reason);
@@ -448,13 +449,22 @@ public sealed class CategoryEnforcer : IDisposable
                     if (!action.IsRecorded && user is not null)
                         _blockEnforcer.OnBlockedSuspended(p.Pid, action.ExePath, user);
                 }
-                else if (!action.IsRecorded && user is not null && _sentToday.Add($"suspended:{action.UserId}:{action.Category}"))
+                else if (!action.IsRecorded && user is not null)
                 {
-                    _health.TryWrite(() => EventRepository.LogEvent(user.Sid, EventType.LIMIT_REACHED, $"{action.Category} limit reached: programs paused"),
-                        "category limit event", _logger);
-                    var categoryName = CategoryNames.For(action.Category, SettingsRepository.GetLanguagePreset());
-                    SendToUser(action.UserId, SettingsRepository.GetMessage(SettingsRepository.KeyMsgCategorySuspended,
-                        new Dictionary<string, string> { ["name"] = categoryName, ["category"] = categoryName }));
+                    // One message per limit and day. An App Limit names the app, a Category Limit names the category.
+                    var limit = dayLimits.GetValueOrDefault(action.UserId)?.LimitFor(resolver.Resolve(action.ExePath));
+                    var notice = SuspensionNotice.For(action.Category,
+                        limit, CategoryNames.For(action.Category, SettingsRepository.GetLanguagePreset()));
+                    if (_sentToday.Add($"suspended:{action.UserId}:{notice.Key}"))
+                    {
+                        var eventText = notice.IsAppLimit
+                            ? $"{notice.Name} App Limit reached ({action.Category}): programs paused"
+                            : $"{action.Category} limit reached: programs paused";
+                        _health.TryWrite(() => EventRepository.LogEvent(user.Sid, EventType.LIMIT_REACHED, eventText),
+                            "category limit event", _logger);
+                        SendToUser(action.UserId, SettingsRepository.GetMessage(SettingsRepository.KeyMsgCategorySuspended,
+                            new Dictionary<string, string> { ["name"] = notice.Name, ["category"] = notice.CategoryName }));
+                    }
                 }
                 break;
 
@@ -543,7 +553,7 @@ public sealed class CategoryEnforcer : IDisposable
 
                 // A category message names the category in the language of the preset. An App Limit names the app.
                 var categoryName = CategoryNames.For(status.Category, SettingsRepository.GetLanguagePreset());
-                var name = status.Rule is null ? categoryName : AppName(status.Rule);
+                var name = status.Rule?.DisplayName ?? categoryName;
                 var message = SettingsRepository.GetMessage(SettingsRepository.KeyMsgCategoryWarn, new Dictionary<string, string>
                 {
                     ["name"] = name,
@@ -632,13 +642,5 @@ public sealed class CategoryEnforcer : IDisposable
             var ok = await _telegram.SendTextMessageAsync(chatId, escaped);
             _logger.Information("Parent alert to Telegram: {Result}", ok ? "sent" : "failed");
         });
-    }
-
-    /// <summary>The display name of the app of an App Limit: the file name without ".exe", or the last folder name.</summary>
-    private static string AppName(AppRule rule)
-    {
-        var text = rule.Pattern.TrimEnd('\\');
-        var name = WindowsPath.GetFileName(text);
-        return name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? name[..^4] : name;
     }
 }
