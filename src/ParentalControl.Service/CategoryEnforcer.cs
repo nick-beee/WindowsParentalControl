@@ -284,7 +284,7 @@ public sealed class CategoryEnforcer : IDisposable
         var resumed = plan.ToSuspend.Where(a => a.IsRecorded)
             .Select(a => new ResumedProcess(a.Process.Pid, a.Process.StartTimeUtc, a.UserId, a.ExePath, a.Process.CpuTime));
         var check = _resumes.Check(resumed, SessionLocker.MonotonicNow(), today, userId => Bonus(userId, today));
-        // The thread check sees these processes running, but they used no CPU time to speak of: no Child Resume (D10).
+        // The thread check sees these processes running, but they used less than 50 ms of CPU time: no Child Resume (D10).
         foreach (var u in check.Unproven)
             _logger.Information("No Child Resume: {Exe} (pid {Pid}) of {Username} looks resumed, but {Evidence} (CPU time +{Growth} ms, at least {Min} ms needed); suspended again",
                 WindowsPath.GetFileName(u.Process.ExePath), u.Process.Pid, Name(u.Process.UserId), u.Evidence,
