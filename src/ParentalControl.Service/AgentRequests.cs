@@ -26,18 +26,20 @@ public sealed class AgentRequests
 
     private readonly SessionTracker _sessionTracker;
     private readonly CategoryEnforcer _categoryEnforcer;
+    private readonly BreakEnforcer _breakEnforcer;
     private readonly SessionLocker _sessionLocker;
     private readonly TelegramBotService? _telegramBotService;
     private readonly Serilog.ILogger _logger;
     private readonly Dictionary<int, (int Files, long Bytes)> _captureReservations = new();
     private readonly CaptureRefusalLog _captureRefusals = new();
 
-    public AgentRequests(SessionTracker sessionTracker, CategoryEnforcer categoryEnforcer, SessionLocker sessionLocker,
-        TelegramBotService? telegramBotService, Serilog.ILogger logger, RequestTokenStore requestTokens)
+    public AgentRequests(SessionTracker sessionTracker, CategoryEnforcer categoryEnforcer, BreakEnforcer breakEnforcer,
+        SessionLocker sessionLocker, TelegramBotService? telegramBotService, Serilog.ILogger logger, RequestTokenStore requestTokens)
     {
         RequestTokens = requestTokens;
         _sessionTracker = sessionTracker;
         _categoryEnforcer = categoryEnforcer;
+        _breakEnforcer = breakEnforcer;
         _sessionLocker = sessionLocker;
         _telegramBotService = telegramBotService;
         _logger = logger;
@@ -109,15 +111,25 @@ public sealed class AgentRequests
 
         var nowTime = moment.TimeOfDay.ToTimeSpan();
         var curfewSec = int.MaxValue;
+        var outsideScheduleWindow = false;
         if (limit != null)
         {
             var startSpan = limit.ScheduleStart.ToTimeSpan();
             var endSpan = limit.ScheduleEnd.ToTimeSpan();
-            curfewSec = nowTime < startSpan || nowTime >= endSpan ? 0 : Math.Max(0, (int)(endSpan - nowTime).TotalSeconds);
+            outsideScheduleWindow = nowTime < startSpan || nowTime >= endSpan;
+            curfewSec = outsideScheduleWindow ? 0 : Math.Max(0, (int)(endSpan - nowTime).TotalSeconds);
         }
 
         var remainingSeconds = Math.Min(dailySec, curfewSec);
         var isCurfewClamped = curfewSec < dailySec;
+
+        // The Lock Reason from the state now, not from the state at the lock (issue #44): a Break that ended at the
+        // Schedule Window end gives the Schedule Window reason. Only the service state decides it, no agent data.
+        var lockReason = LockReasons.Resolve(
+            isLocked,
+            outsideScheduleWindow,
+            allowanceUsedUp: limit is not null && remMinutes == 0,
+            breakRunning: isLocked && _breakEnforcer.GetRunningBreakEnd(user.Id) is not null);
 
         var latestReq = GraceRequestRepository.GetLatestRequest(user.Id);
         int? lastDeclinedId = null;
@@ -169,7 +181,8 @@ public sealed class AgentRequests
             suspendedApps: suspended.Apps,
             suspendedAppsTotal: suspended.Total,
             pendingApps: pending.Apps,
-            pendingAppsTotal: pending.Total);
+            pendingAppsTotal: pending.Total,
+            lockReason: LockReasons.ToWire(lockReason));
     }
 
     /// <summary>Gives a capture request back after its status answer did not reach the agent.</summary>

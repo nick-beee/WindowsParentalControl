@@ -138,7 +138,10 @@ public static class BreakPlanner
             return new BreakResult(settled, list);
         }
 
-        if (!rule.Enabled || !tick.SessionUnlocked || tick.OtherLockInThisTick)
+        // No Break starts when the Allowance Time or the Schedule Window already ended, also if a Lock Deferral keeps
+        // the session unlocked for a short time (widget-shows-schedule-lock-after-break, design D3). The lock of the
+        // day applies instead, and a Break would only run past the Schedule Window end.
+        if (!rule.Enabled || !tick.SessionUnlocked || tick.OtherLockInThisTick || tick.MinutesUntilOtherLock is 0)
             return new BreakResult(settled, list);
 
         var minutesLeft = rule.UseMinutes - settled.ContinuousUseMinutes;

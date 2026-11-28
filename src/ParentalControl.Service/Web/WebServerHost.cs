@@ -84,7 +84,7 @@ public sealed class WebServerHost : BackgroundService
         _sessionLocker = sessionLocker ?? new SessionLocker(logger);
         // Without the AgentRequests of the service (a test) the store has no running agent, so it refuses each Request
         // Token (request-identity-from-launch, design D4: fail closed).
-        _agentRequests = agentRequests ?? new AgentRequests(sessionTracker, categoryEnforcer, _sessionLocker, telegramBotService, logger,
+        _agentRequests = agentRequests ?? new AgentRequests(sessionTracker, categoryEnforcer, breakEnforcer, _sessionLocker, telegramBotService, logger,
             new ParentalControl.Domain.Requests.RequestTokenStore(new ParentalControl.Domain.Sessions.AgentLaunchRegistry()));
         _startup = startup;
         _sessionTracker = sessionTracker;

@@ -15,7 +15,7 @@ public class BlockedSuspensionPlannerTests
     private const string OwnTool = @"C:\Program Files\ParentalControl\service\tool.exe";
     private static readonly DateOnly Tuesday = new(2026, 11, 24);
     private static readonly DateTime T0 = new(2026, 11, 24, 8, 0, 0, DateTimeKind.Utc);
-    private static readonly ProtectedPrograms Protected = new(@"C:\Windows", [@"C:\Program Files\ParentalControl"]);
+    private static readonly ProtectedPrograms Protected = new(@"C:\Windows", [@"C:\Program Files\ParentalControl"], new TrustedWebView2(@"C:\Program Files (x86)", @"C:\Program Files"));
     private static readonly Dictionary<int, int> KidSessions = new() { [KidSession] = KidUser };
 
     private static List<AppRule> Rules(bool chromeBlocked = true) =>
@@ -50,7 +50,8 @@ public class BlockedSuspensionPlannerTests
         IEnumerable<SuspensionRecord>? records = null, Func<int, string, bool>? seen = null, Func<SessionProcess, bool>? pendingClose = null,
         ProtectedPrograms? protectedPrograms = null, IReadOnlySet<int>? held = null) =>
         SuspensionPlanner.Plan(new PlannerInput(processes.ToList(), KidSessions, verdict, seen ?? ((_, _) => false),
-            (records ?? []).ToList(), Agent, @"C:\Windows", held, pendingClose, protectedPrograms ?? Protected));
+            (records ?? []).ToList(), Agent, @"C:\Windows", (protectedPrograms ?? Protected).TrustedWebView2, held, pendingClose,
+            protectedPrograms ?? Protected));
 
     [Fact]
     public void Blocked_process_is_suspended_without_a_Foreground_Window()

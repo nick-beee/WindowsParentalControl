@@ -1044,9 +1044,10 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
     gateAgents.Record(gateAgent);
     var gateTokens = new ParentalControl.Domain.Requests.RequestTokenStore(gateAgents);
     var gateLocker = new ParentalControl.Service.SessionLocker(gateLogger);
-    var gateRequests = new ParentalControl.Service.AgentRequests(gateTracker, gateEnforcer, gateLocker, gateTelegram, gateLogger, gateTokens);
+    var gateBreaks = new ParentalControl.Service.BreakEnforcer(gateLogger);
+    var gateRequests = new ParentalControl.Service.AgentRequests(gateTracker, gateEnforcer, gateBreaks, gateLocker, gateTelegram, gateLogger, gateTokens);
     var webHost = new ParentalControl.Service.Web.WebServerHost(gateTracker, gateTelegram, gateLogger, gateHistory, gateEnforcer,
-        new ParentalControl.Service.BreakEnforcer(gateLogger), sessionLocker: gateLocker, agentRequests: gateRequests);
+        gateBreaks, sessionLocker: gateLocker, agentRequests: gateRequests);
     var webBuilder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder();
     Microsoft.AspNetCore.Hosting.HostingAbstractionsWebHostBuilderExtensions.UseUrls(webBuilder.WebHost, "http://127.0.0.1:0");
     var webApp = webBuilder.Build();
@@ -1695,7 +1696,7 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
         Console.WriteLine("✅ Web Server Bind Retry Passed.");
 
         // CB1 d: the capture quota of the agent captures, now on the Agent Channel (session-probe-and-agent-channel D8).
-        var captureRequests = new ParentalControl.Service.AgentRequests(svcTracker, svcEnforcer, new ParentalControl.Service.SessionLocker(svcLogger), null, svcLogger,
+        var captureRequests = new ParentalControl.Service.AgentRequests(svcTracker, svcEnforcer, new ParentalControl.Service.BreakEnforcer(svcLogger), new ParentalControl.Service.SessionLocker(svcLogger), null, svcLogger,
             new ParentalControl.Domain.Requests.RequestTokenStore(new ParentalControl.Domain.Sessions.AgentLaunchRegistry()));
         var captureRecord = new ParentalControl.Domain.Sessions.AgentLaunchRecord(1, new ParentalControl.Domain.Sessions.ProcessIdentity(4242, DateTime.UtcNow), user.Sid);
         Task<int> Upload(int bytes)

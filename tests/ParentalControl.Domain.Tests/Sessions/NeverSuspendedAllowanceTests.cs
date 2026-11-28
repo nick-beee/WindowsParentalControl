@@ -11,7 +11,7 @@ public class NeverSuspendedAllowanceTests
     private const string Agent = @"C:\Program Files\ParentalControl\ParentalControl.Agent.exe";
     private const string Game = @"C:\Games\game.exe";
 
-    private static readonly ProtectedPrograms Protected = new(@"C:\Windows", [@"C:\Program Files\ParentalControl"]);
+    private static readonly ProtectedPrograms Protected = new(@"C:\Windows", [@"C:\Program Files\ParentalControl"], new TrustedWebView2(@"C:\Program Files (x86)", @"C:\Program Files"));
 
     private static NeverSuspendedAllowance New() => new(Protected.IsProtected);
 
@@ -36,21 +36,24 @@ public class NeverSuspendedAllowanceTests
     [Fact]
     public void Thirty_seconds_give_no_fallback()
     {
-        Assert.Empty(Run(New(), Sel(P(FakeWebView2, AppCategory.Unknown)), 0, 30));
+        Assert.Empty(Run(New(), Sel(P(Notepad, AppCategory.Unknown)), 0, 30));
     }
 
     [Fact]
     public void Sixty_one_seconds_give_the_fallback()
     {
         var allowance = New();
-        Assert.Empty(Run(allowance, Sel(P(FakeWebView2, AppCategory.Unknown)), 0, 60));
-        Assert.Equal([FakeWebView2], allowance.Sample(S(61), true, Sel(P(FakeWebView2, AppCategory.Unknown)), S(1), _ => true));
+        Assert.Empty(Run(allowance, Sel(P(Notepad, AppCategory.Unknown)), 0, 60));
+        Assert.Equal([Notepad], allowance.Sample(S(61), true, Sel(P(Notepad, AppCategory.Unknown)), S(1), _ => true));
     }
 
     [Fact]
-    public void WebView2_name_in_Downloads_in_an_exhausted_Unknown_gives_the_fallback()
+    public void WebView2_name_in_Downloads_in_an_exhausted_Unknown_gives_no_fallback()
     {
-        Assert.Equal([FakeWebView2], Run(New(), Sel(P(FakeWebView2, AppCategory.Unknown)), 0, 65));
+        // suspend-untrusted-webview2 (#48): the copy is an ordinary exe. SuspensionPlanner suspends it
+        // (SuspensionPlannerTests.Untrusted_WebView2_copy_is_suspended_and_not_protected), so this rule does not
+        // apply to it and it gives no lock.
+        Assert.Empty(Run(New(), Sel(P(FakeWebView2, AppCategory.Unknown)), 0, 300));
     }
 
     [Fact]

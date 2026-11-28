@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Windows.Threading;
 using ParentalControl.Domain.Messages;
 using ParentalControl.Domain.Requests;
+using ParentalControl.Domain.Sessions;
 
 namespace ParentalControl.Agent;
 
@@ -29,7 +30,8 @@ public sealed record AgentStatusResponse(
     ActivePromptDto? activePrompt = null,
     string? language = null,
     List<AgentAppDto>? suspendedApps = null,
-    List<AgentAppDto>? pendingApps = null);
+    List<AgentAppDto>? pendingApps = null,
+    string? lockReason = null);
 
 /// <summary>The answer of the service to a <c>status</c> request on the Agent Channel.</summary>
 public sealed record AgentStatusAnswer(long id, string? type, bool ok, AgentStatusResponse? status);
@@ -220,7 +222,7 @@ internal sealed class AgentController : IDisposable
             _widgetWindow.UpdateData(
                 status.remainingSeconds,
                 status.curfew ?? _texts["widget_curfew_empty"],
-                status.isLocked,
+                LockReasons.FromWire(status.isLocked, status.lockReason),
                 status.username ?? Environment.UserName,
                 status.isCurfewClamped);
 
@@ -236,7 +238,7 @@ internal sealed class AgentController : IDisposable
             string tooltip;
             if (status.isLocked)
             {
-                tooltip = _texts["tray_locked"];
+                tooltip = _texts[LockReasons.TrayTextKey(LockReasons.FromWire(true, status.lockReason))];
             }
             else
             {

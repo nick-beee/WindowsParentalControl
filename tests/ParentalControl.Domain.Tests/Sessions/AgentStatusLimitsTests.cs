@@ -58,7 +58,8 @@ public class AgentStatusLimitsTests
             suspendedApps: suspended.Apps,
             suspendedAppsTotal: suspended.Total,
             pendingApps: pending.Apps,
-            pendingAppsTotal: pending.Total);
+            pendingAppsTotal: pending.Total,
+            lockReason: "allowance");
 
         // The same envelope and serializer as AgentChannelHost.StatusAnswer.
         var json = JsonSerializer.SerializeToUtf8Bytes(new { id = long.MaxValue, type = "status", ok = true, status });

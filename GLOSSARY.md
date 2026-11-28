@@ -58,10 +58,13 @@ A short time (60 seconds) after the service refused a Session End Hold. The Sess
 A time (75 seconds) after the Session Agent reported that the session of a Restricted User ends, or before a Forced Logoff. During the deferral the service does not apply the Enforced Workstation Lock of a limit, a Break, a Schedule Window end or a suspension fallback to that session, because a lock in the first seconds of a sign-out makes Windows end a program before it can ask to save. A lock that becomes due in this time is owed: at the end, if the session still exists, the service checks the session again at once and locks it if a lock is still due. The deferral ends when the session ends or when its time is over. A request during a deferral does not extend it. The child controls the Session Agent that sends the request, so after a deferral that owed a lock and ended while the session still existed, the user gets no deferral for 15 minutes; a Forced Logoff is never refused. The delayed lock of the parent from the admin page waits for the end of the deferral; the lock from Telegram does not wait. The deferral uses a monotonic time, not the wall clock.
 
 ## Blocked Program
-An exe whose App Rule has the block on. The rule precedence of App Rules decides the block, so a file rule without the block allows an exe below a blocked folder. An exe below the Windows folder, an exe below the Parental Control install folder and `msedgewebview2.exe` are never a Blocked Program. The rule keeps its App Category and App Limit; they apply again when the parent removes the block.
+An exe whose App Rule has the block on. The rule precedence of App Rules decides the block, so a file rule without the block allows an exe below a blocked folder. An exe below the Windows folder, an exe below the Parental Control install folder and the Trusted WebView2 Runtime are never a Blocked Program. Each other `msedgewebview2.exe` can be a Blocked Program. The rule keeps its App Category and App Limit; they apply again when the parent removes the block.
 
 ## Blocked Start
 A process of a Blocked Program that started after the block took effect and after the service started, and that the service detects within 10 seconds after its creation. The service closes a Blocked Start at once. This is the only close of a program of a Restricted User. A process of a Blocked Program that is not a Blocked Start becomes a Suspended App.
+
+## Trusted WebView2 Runtime
+An exe with the file name `msedgewebview2.exe` below `Microsoft\EdgeWebView\Application\` in the Program Files (x86) folder or the Program Files folder. These are the folders of the Evergreen WebView2 Runtime, and only administrators can change them. The system never suspends it and a block never acts on it, and it counts as the program that started it. Each other `msedgewebview2.exe` is an ordinary exe, for example a copy of the child, a Fixed Version runtime of an app, or a per-user runtime. It counts as itself. The system suspends it when its category is exhausted, and a block can close it at its start. A blocked file rule for `msedgewebview2.exe` is still refused, because it matches the Trusted WebView2 Runtime too.
 
 ## Language Preset
 A named set of default child texts: "de" (German), "en" (English) or "id" (Indonesian). A new install uses "de". The preset sets the language of the service messages, the Session Agent and the child request page. It does not change the language of the admin UIs. A preset switch replaces only the texts that the parent did not edit.
@@ -89,6 +92,9 @@ A time without use: the session is locked or disconnected, the user is signed ou
 
 ## Break
 A time of M minutes after N minutes of Continuous Use. The service sends a message with the end time and locks the session with the Enforced Workstation Lock. It locks the session again after each unlock and each sign-in until the end. A Break never closes, kills or suspends a program, and it ends at the latest at the end of the Schedule Window. The parent can end a running Break.
+
+## Lock Reason
+Why the session of a Restricted User is locked now: outside the Schedule Window, no Allowance Time left, a running Break, or another lock. The service decides it from its own state for each status answer of the Agent Channel, in this priority, and the widget and the tray tooltip of the Session Agent show its text. Only the Break text says "Pause".
 
 ## Control Time Zone
 The Windows time zone that gives each day, weekday and time of day of a limit: the Allowance Time, the Schedule Window, the Category Limits, the Grace Requests, the capture quota and the end of a Break. Only an administrator can change it (registry value `HKLM\SOFTWARE\ParentalControl\ControlTimeZone`, set in the Admin app). A change of the Windows time zone by the Restricted User has no effect on a limit.
@@ -124,7 +130,7 @@ A named pipe that the service creates for each start of the Session Agent, with 
 A process of a Session Probe sample that adds Category Usage. These are the entries of a sample:
 - The Foreground Window, the focus window and each window of another process below the Foreground Window count, except an entry in System.
 - The window below the cursor counts only if it has `noActivate`, except in System. Without `noActivate` it counts no time, but its exe can be suspended.
-- A trusted WebView2 process (`msedgewebview2.exe` in a folder of the Evergreen WebView2 Runtime) counts in the same role as its creator: the first parent process that is not a trusted WebView2. Each other `msedgewebview2.exe` counts by its App Rule.
+- A process of the Trusted WebView2 Runtime counts in the same role as its creator: the first parent process that is not a process of the Trusted WebView2 Runtime. Each other `msedgewebview2.exe` counts as itself, by its App Rule.
 - The Session Agent counts in Unknown, except during an active Interactive Session Prompt of the user and within the Agent Window Budget. Below the cursor it counts nothing. Only the agent that the service started (its launch record) gets these exemptions; a copy of the agent exe that the child started is a normal Unknown exe.
 
 The service adds the time of a sample at most one time to each App Category of its Counted Processes.
