@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Count a Child Resume
-A Child Resume SHALL be a check that finds a recorded process running again that the system suspended or saw suspended, while its exe still has no time left or is still a Blocked Program, and that shows evidence of a run. A process that the system resumed itself, or that ran during a Session End Hold or under a Session End Guard, SHALL NOT count until the system suspends it again or sees it suspended outside a hold and a guard.
+A Child Resume SHALL be a check that finds evidence of a run of a recorded process that the system suspended or saw suspended, while its exe still has no time left or is still a Blocked Program. The check sees the process running again, or suspended again after a run. A process that the system resumed itself, or that ran during a Session End Hold or under a Session End Guard, SHALL NOT count until the system suspends it again or sees it suspended outside a hold and a guard.
 
 #### Scenario: Cancelled sign-outs do not count
 - **WHEN** a game is suspended and the child starts a sign-out and cancels it three times in 10 minutes, so that the system or the Session Agent resumes the game each time for the end of the session
@@ -12,7 +12,7 @@ A Child Resume SHALL be a check that finds a recorded process running again that
 - **THEN** the system counts no Child Resume
 
 ### Requirement: Require evidence of a run for a Child Resume
-The system SHALL count a Child Resume only with evidence that the process ran: its CPU time (user and kernel) grew by at least 50 ms since the system last saw it suspended. A process that the thread check sees running without this evidence, or whose CPU time the system cannot read, SHALL NOT count, and the system SHALL still suspend it again.
+The system SHALL count a Child Resume only with evidence that the process ran: its user-mode CPU time grew by at least 50 ms since the system last saw it suspended. A process that the thread check sees running without this evidence, or whose CPU time the system cannot read, SHALL NOT count, and the system SHALL still suspend it again.
 
 #### Scenario: A thread that keeps a kernel wait after the suspension does not count as a resume
 - **WHEN** Games is exhausted, the system suspended the game, no tool resumed it, and a later check sees a thread of the game outside the state Suspended, while the CPU time of the game grew less than 50 ms since the suspension
@@ -31,6 +31,18 @@ The system SHALL count a Child Resume only with evidence that the process ran: i
 #### Scenario: A new process with the same pid is not a resume
 - **WHEN** a suspended game ended, and a new process gets its pid with another start time
 - **THEN** the system does not count a Child Resume for the old record
+
+### Requirement: Count a run between two checks
+When a check sees a watched recorded process suspended, outside a Session End Hold and a Session End Guard, while its exe still has no time left or is still a Blocked Program, the system SHALL compare its user-mode CPU time with the CPU time of the last time that it saw the process suspended. A growth of at least 50 ms SHALL count a Child Resume. After the check, the CPU time of this check SHALL be the new baseline, except when the 30-second gap stopped the count.
+
+#### Scenario: A script suspends the game before each check
+- **WHEN** Games is exhausted, the system suspended the game, and a script of the child resumes the game a few seconds after each check and suspends it a few seconds before the next check
+- **THEN** each check sees the game suspended with more than 50 ms of new CPU time and counts a Child Resume
+- **AND** after the third Child Resume within 10 minutes the system starts a Resume Lock
+
+#### Scenario: A suspended game stays suspended
+- **WHEN** the system suspended the game and no tool resumed it, and each later check sees it suspended with less than 50 ms of new CPU time
+- **THEN** the system counts no Child Resume
 
 ### Requirement: Count many resumed processes as one Child Resume
 One check SHALL count at most one Child Resume per Restricted User, also if it finds many resumed processes. A check less than 30 seconds after the last counted Child Resume of the user SHALL NOT count.
@@ -81,7 +93,7 @@ The system SHALL send the child a session message before each lock of a Resume L
 - **THEN** Notepad still runs with its unsaved text after the next unlock
 
 ### Requirement: End of a Resume Lock
-A Resume Lock SHALL end at the first of these: the next day of the Control Time Zone; new Bonus Minutes of the user; no exe of the counted Child Resumes still has no time left or is still a Blocked Program. When it ends, the count of Child Resumes of the user SHALL start again at 0.
+A Resume Lock SHALL end at the first of these: the next day of the Control Time Zone; new Bonus Minutes of the user; no exe of the counted Child Resumes still has no time left or is still a Blocked Program. When it ends, the count of Child Resumes of the user SHALL start again at 0. A restart of the service or of Windows SHALL NOT end it: the system SHALL store it and SHALL apply it again after the restart. The count itself is not stored.
 
 #### Scenario: Bonus Minutes end the Resume Lock
 - **WHEN** a Resume Lock of the child runs and the parent approves 15 Bonus Minutes
@@ -94,6 +106,11 @@ A Resume Lock SHALL end at the first of these: the next day of the Control Time 
 #### Scenario: Next day
 - **WHEN** a Resume Lock of the child runs and the day of the Control Time Zone changes
 - **THEN** the Resume Lock ends
+
+#### Scenario: Restart during a Resume Lock
+- **WHEN** a Resume Lock of the child runs, Windows restarts on the same day, and the child signs in again
+- **THEN** the Resume Lock still runs, and the system locks the session within 70 seconds after the sign-in
+- **AND** the system writes no new event and sends the parent no new alert
 
 ## MODIFIED Requirements
 
