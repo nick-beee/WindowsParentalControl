@@ -33,7 +33,7 @@ public class ProbeCategoryTimeTests
         {
             var now = TimeSpan.FromSeconds(t);
             var agentCounted = selection.Counted.Any(c => c.IsAgent);
-            var exempt = TimeSpan.FromSeconds(budget.Sample(now, 5, agentCounted, unlocked: true));
+            var exempt = TimeSpan.FromSeconds(budget.Sample(now, TimeSpan.FromSeconds(5), 5, agentCounted, unlocked: true));
             var time = ProbeCategoryTime.PerCategory(selection, TimeSpan.FromSeconds(5), exempt);
             unknown += time.GetValueOrDefault(AppCategory.Unknown);
             study += time.GetValueOrDefault(AppCategory.Study);

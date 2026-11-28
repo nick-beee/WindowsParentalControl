@@ -98,6 +98,10 @@ public sealed class SessionProbeHost : BackgroundService
     private TimeSpan _lastSetting = TimeSpan.FromDays(-1);
     private readonly Dictionary<int, (IReadOnlyList<string> Exes, TimeSpan At)> _lastOver = new();
     private readonly Dictionary<int, (DateOnly Day, Dictionary<AppCategory, int> Usage)> _lastUsage = new();
+    // D14: the last good category config and the last good user of each SID, for a failed database read. A SID key
+    // never gives the user of an old session whose ID Windows reused.
+    private readonly LastGood<CategoryConfigCache.Snapshot> _config = new();
+    private readonly Dictionary<string, LastGood<User?>> _users = new(StringComparer.OrdinalIgnoreCase);
 
     public SessionProbeHost(SessionTracker tracker, CategoryEnforcer enforcer, SessionLocker locker, ForegroundHistory history,
         ServiceStartup startup, AgentLaunchRegistry agents, Serilog.ILogger logger)
@@ -141,6 +145,7 @@ public sealed class SessionProbeHost : BackgroundService
         public bool LoggedLate;
         public bool LoggedNotAttributed;
         public bool LoggedMissingDuration;
+        public bool LoggedSampleError;
     }
 
     // A wait on the process handle of the launch. The base constructor of WaitHandle creates no kernel object (unlike
@@ -171,6 +176,7 @@ public sealed class SessionProbeHost : BackgroundService
         var enforced = Safe(SettingsRepository.IsProbeLocksEnforced, false);
         lock (_gate)
         {
+            Config(); // the first good read, for a later failure
             _monitor.SetProbeLocksEnforced(enforced);
             _lockGate.SetEnforced(enforced);
             _ready = true;
@@ -342,7 +348,8 @@ public sealed class SessionProbeHost : BackgroundService
         if (!_ready || _stopping) return;
         if (_runs.TryGetValue(sessionId, out var existing) && !existing.Ended) return;
         if (!_tracker.ActiveSessions.TryGetValue(sessionId, out var session)) return;
-        var user = UserRepository.GetBySid(session.UserSid);
+        // A failed read gives the last good user of this SID: a restart after a crash then still starts (D14).
+        var user = UserBySid(session.UserSid);
         if (user is null || !user.IsRestricted) return;
         _sessionUsers[sessionId] = user.Id;
 
@@ -562,7 +569,13 @@ public sealed class SessionProbeHost : BackgroundService
                             }
                             catch (Exception ex)
                             {
-                                _logger.Error(ex, "Session Probe sample of session {SessionId} failed", run.SessionId);
+                                // One line per probe run: a fault that repeats at each sample must not flood the log.
+                                if (!run.LoggedSampleError)
+                                {
+                                    run.LoggedSampleError = true;
+                                    _logger.Error(ex, "Session Probe sample of session {SessionId} failed; further failures of this probe run are not logged",
+                                        run.SessionId);
+                                }
                             }
                             break;
                     }
@@ -583,23 +596,16 @@ public sealed class SessionProbeHost : BackgroundService
         var receiptUnbiased = SessionProbePlatform.UnbiasedNow();
         var sampleUtc = DateTime.UtcNow - TimeSpan.FromMilliseconds(Math.Max(0, receiptTick - sample.T));
 
-        // Read the entries at once, before the lock, so the windows have little time to go away (D3b, S9).
-        var entries = new List<SampleEntry>();
-        SampleEntry? hung = null;
-        if (sample.Kind == ProbeSampleKind.Window && sample.Foreground is { } fg)
-        {
-            entries.Add(Read(run, ProbeRole.Foreground, fg, sampleUtc));
-            if (sample.Focus is { } focus) entries.Add(Read(run, ProbeRole.Focus, focus, sampleUtc));
-            foreach (var child in sample.ChildEntries) entries.Add(Read(run, ProbeRole.Child, child, sampleUtc));
-            if (sample.Cursor is { } cursor)
-                foreach (var entry in cursor.Entries) entries.Add(Read(run, ProbeRole.Cursor, entry, sampleUtc));
-            if (sample.Hung is { } hungWindow) hung = Read(run, ProbeRole.Foreground, hungWindow, sampleUtc);
-        }
-        var reading = new SampleReading(entries, sample.Cursor?.NoActivate ?? false, hung, ProbeBlind: sample.Kind == ProbeSampleKind.Blind);
+        // Read the entries at once, before the lock, so the windows have little time to go away (D3b, S9). A
+        // window: false sample gives its noActivate chain under the cursor (final review, item 5).
+        var reading = SampleReading.From(sample, (role, window) => Read(run, role, window, sampleUtc));
 
         lock (_gate)
         {
-            if (!_ready || _stopping || run.Ended) return;
+            // A late sample of a run that the service ends (sign-out, service stop) or of a signed-out session counts
+            // nothing: it must not start the unlocked clock again after the sign-out (a false PROBE_OUTAGE) or put back
+            // the counter state and the last Foreground Window that OnLogoff removed.
+            if (!_ready || _stopping || run.Ended || run.AskedEnd || !_monitor.MayStart(run.SessionId, run.LogonKey)) return;
             run.LastLine = receiptUnbiased;
             Count(run, sample, reading, receiptTick, receiptUnbiased);
         }
@@ -627,7 +633,9 @@ public sealed class SessionProbeHost : BackgroundService
         var sessionId = run.SessionId;
         var userId = run.UserId;
         var today = ControlTime.Current.Today;
-        var config = CategoryConfigCache.Current;
+        // D14: a failed read (the cache is empty after an admin edit and the database fails) gives the last good config,
+        // so the blind samples, the strike, the budget lock and the lock of a program that is never suspended still apply.
+        var config = Config();
         var resolver = config.Resolver;
         var locked = IsLocked(sessionId);
 
@@ -675,12 +683,23 @@ public sealed class SessionProbeHost : BackgroundService
                 sessionId, selection.NotAttributed[0]);
         }
 
-        // The set of Foreground Window exes of the day (the suspend candidates). In memory only.
+        // The set of Foreground Window exes of the day (the suspend candidates). In memory only. A path that is not
+        // absolute is not a full set: such an exe is never suspended (ProtectedPrograms), so the rule of a program
+        // that is never suspended limits it (final review, item 8).
         var fullSet = false;
         foreach (var exe in selection.ExesToRecord)
         {
             var canonical = resolver.Resolve(exe).CanonicalPath ?? exe;
-            if (!_history.Record(userId, today, canonical)) fullSet = true;
+            switch (_history.Record(userId, today, canonical))
+            {
+                case ForegroundRecord.Full:
+                    fullSet = true;
+                    break;
+                case ForegroundRecord.InvalidPath when LogOnce($"invalid-path:{userId}:{today}"):
+                    _logger.Warning("Session Probe of session {SessionId}: the exe path {Exe} is not an absolute path; it is never suspended " +
+                                    "and counts under the rule of a program that is never suspended", sessionId, exe);
+                    break;
+            }
         }
 
         // Blind samples and budget items (D6a), with the session state queried at the item (N23).
@@ -694,11 +713,13 @@ public sealed class SessionProbeHost : BackgroundService
             ApplyBudgetDecision(sessionId, userId, run.UserSid, run.Username, decision, today);
 
         // The Agent Window Budget (D5, #54): only the entry of the agent takes the exempt part of the interval. One budget
-        // per Restricted User, so a new sign-in does not give a new budget.
+        // per Restricted User, so a new sign-in does not give a new budget. The window moves with the unlocked gap since
+        // the last sample (zero after an unlock, a resume or a planned start), also if the sample counts no time; the
+        // counted interval only caps the exempt seconds (final review, item 3).
         var agentCounted = selection.Counted.Any(c => c.IsAgent);
         var intervalSeconds = (int)Math.Round(credit.Time.TotalSeconds);
         if (!_agentBudgets.TryGetValue(userId, out var budget)) _agentBudgets[userId] = budget = new AgentWindowBudget();
-        var exemptSeconds = budget.Sample(TimeSpan.FromMilliseconds(sample.T), intervalSeconds, agentCounted, unlocked: true);
+        var exemptSeconds = budget.Sample(TimeSpan.FromMilliseconds(sample.T), credit.Gap, intervalSeconds, agentCounted, unlocked: true);
 
         var dayLimits = config.Calculator.Evaluate(today, CategoryUsageForLocks(userId, today),
             Safe(() => UsageRepository.GetUsage(userId, today)?.BonusMinutes ?? 0, 0));
@@ -835,7 +856,7 @@ public sealed class SessionProbeHost : BackgroundService
             {
                 // A signed-out session that the tracker still lists must not start the unlocked clock again (S5).
                 if (!_monitor.MayStart(sessionId, _logonKeys.GetValueOrDefault(sessionId))) continue;
-                var user = Safe(() => UserRepository.GetBySid(session.UserSid), null);
+                var user = UserBySid(session.UserSid);
                 if (user is { IsRestricted: true }) _monitor.Observe(user.Id, now, !session.IsLocked && !_sleep.IsSet);
             }
 
@@ -1043,7 +1064,7 @@ public sealed class SessionProbeHost : BackgroundService
             if (!_ready || !_owed.Remove(sessionId, out var kinds)) return;
             if (!_lockGate.Enforced || !_tracker.ActiveSessions.TryGetValue(sessionId, out var session)) return;
             // A failed user read does not stop an owed lock: the Restricted User of the session is known in memory.
-            var user = Safe(() => UserRepository.GetBySid(session.UserSid), null);
+            var user = UserBySid(session.UserSid);
             if (user is not null && !user.IsRestricted) return;
             if ((user?.Id ?? UserOf(sessionId)) is not { } userId) return;
             var username = user?.Username ?? $"user {userId}";
@@ -1060,7 +1081,7 @@ public sealed class SessionProbeHost : BackgroundService
             if (kinds.Contains(ProbeLockKind.NeverSuspended) && _lastOver.TryGetValue(userId, out var last)
                 && now - last.At <= TimeSpan.FromSeconds(15))
             {
-                var config = CategoryConfigCache.Current;
+                var config = Config();
                 var dayLimits = config.Calculator.Evaluate(today, CategoryUsageForLocks(userId, today),
                     Safe(() => UsageRepository.GetUsage(userId, today)?.BonusMinutes ?? 0, 0));
                 if (last.Exes.Any(exe => dayLimits.CategoryLimit(config.Resolver.Resolve(exe).Category)?.IsReached ?? false))
@@ -1100,7 +1121,7 @@ public sealed class SessionProbeHost : BackgroundService
     private void Observe(int sessionId, bool unlocked)
     {
         if (!_tracker.ActiveSessions.TryGetValue(sessionId, out var session)) return;
-        var user = Safe(() => UserRepository.GetBySid(session.UserSid), null);
+        var user = UserBySid(session.UserSid);
         if (user is { IsRestricted: true }) _monitor.Observe(user.Id, SessionProbePlatform.UnbiasedNow(), unlocked && !_sleep.IsSet);
     }
 
@@ -1147,6 +1168,27 @@ public sealed class SessionProbeHost : BackgroundService
         {
             _logger.Error(ex, "Session Probe host: error at {What}", what);
         }
+    }
+
+    // Under _gate. The category config with the last good snapshot for a failed read (D14).
+    private CategoryConfigCache.Snapshot Config()
+    {
+        var result = _config.Read(() => CategoryConfigCache.Current, CategoryConfigCache.Fallback);
+        if (result.Error is { } ex)
+            LogOnce("config-read:" + ex.GetType().Name, () => _logger.Warning(ex, _config.HasValue
+                ? "Session Probe host: the category config read failed; the last good config applies"
+                : "Session Probe host: the category config read failed and no good read exists; the default rules without limits apply"));
+        return result.Value;
+    }
+
+    // Under _gate. The user of a SID with the last good user of that SID for a failed read (D14).
+    private User? UserBySid(string sid)
+    {
+        if (!_users.TryGetValue(sid, out var last)) _users[sid] = last = new LastGood<User?>();
+        var result = last.Read(() => UserRepository.GetBySid(sid), () => null);
+        if (result.Error is { } ex)
+            LogOnce("user-read:" + ex.GetType().Name, () => _logger.Warning(ex, "Session Probe host: a user read failed; the last good user of the SID applies"));
+        return result.Value;
     }
 
     private T Safe<T>(Func<T> read, T fallback)

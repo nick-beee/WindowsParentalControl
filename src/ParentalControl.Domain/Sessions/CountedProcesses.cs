@@ -53,13 +53,46 @@ public sealed record ForegroundProcess(ProcessIdentity Process, string ExePath);
 /// <summary>
 /// The read entries of one sample. <see cref="Entries"/> has the <c>fg</c>, <c>focus</c>, <c>children</c> and
 /// <c>cursor</c> entries with their roles. <see cref="Hung"/> is the read <c>hung</c> entry, if the sample has one.
-/// <see cref="ProbeBlind"/> is true for a blind sample of the probe (<c>"blind"</c>).
+/// <see cref="ProbeBlind"/> is true for a blind sample of the probe (<c>"blind"</c>). <see cref="NoForegroundWindow"/>
+/// is true for a <c>window: false</c> sample: it has only <c>cursor</c> entries, and an Unreadable or Ended entry of it
+/// gives no blind sample and no budget item (final review, item 5).
 /// </summary>
 public sealed record SampleReading(
     IReadOnlyList<SampleEntry> Entries,
     bool CursorNoActivate = false,
     SampleEntry? Hung = null,
-    bool ProbeBlind = false);
+    bool ProbeBlind = false,
+    bool NoForegroundWindow = false)
+{
+    /// <summary>
+    /// The entries that the service reads for a sample (design D3b), each through <paramref name="read"/>. A window
+    /// sample gives <c>fg</c>, <c>focus</c>, <c>children</c>, <c>cursor</c> and <c>hung</c>. A <c>window: false</c>
+    /// sample gives its <c>cursor</c> entries only if the top-level window of the chain has <c>WS_EX_NOACTIVATE</c>: such
+    /// a window does not become the Foreground Window when the child clicks it, so a game in it can leave the
+    /// Foreground Window NULL (final review, item 5). A blind sample gives no entry.
+    /// </summary>
+    public static SampleReading From(ProbeSample sample, Func<ProbeRole, ProbeWindow, SampleEntry> read)
+    {
+        var entries = new List<SampleEntry>();
+        SampleEntry? hung = null;
+        switch (sample.Kind)
+        {
+            case ProbeSampleKind.Window when sample.Foreground is { } fg:
+                entries.Add(read(ProbeRole.Foreground, fg));
+                if (sample.Focus is { } focus) entries.Add(read(ProbeRole.Focus, focus));
+                foreach (var child in sample.ChildEntries) entries.Add(read(ProbeRole.Child, child));
+                if (sample.Cursor is { } cursor)
+                    foreach (var entry in cursor.Entries) entries.Add(read(ProbeRole.Cursor, entry));
+                if (sample.Hung is { } hungWindow) hung = read(ProbeRole.Foreground, hungWindow);
+                break;
+            case ProbeSampleKind.NoWindow when sample.Cursor is { NoActivate: true } noActivateCursor:
+                foreach (var entry in noActivateCursor.Entries) entries.Add(read(ProbeRole.Cursor, entry));
+                break;
+        }
+        return new SampleReading(entries, sample.Cursor?.NoActivate ?? false, hung,
+            ProbeBlind: sample.Kind == ProbeSampleKind.Blind, NoForegroundWindow: sample.Kind == ProbeSampleKind.NoWindow);
+    }
+}
 
 /// <summary>The facts of the service that the selection needs. None of them comes from the Session Agent.</summary>
 /// <param name="Categorize">The App Category of an exe path (<see cref="CategoryResolver"/>).</param>
@@ -156,6 +189,12 @@ public static class CountedProcesses
         {
             var entry = original;
             var counts = entry.Role != ProbeRole.Cursor || reading.CursorNoActivate;
+
+            // A window: false sample: only a Read cursor entry matters. No Foreground Window is a normal state for a
+            // moment (a window closes, the start menu opens), so an unreadable or ended window under the cursor adds
+            // no blind sample and no item (design D13: no new false-lock risk).
+            if (reading.NoForegroundWindow && (entry.Role != ProbeRole.Cursor || entry.Outcome != EntryOutcome.Read))
+                continue;
 
             if (entry.Outcome == EntryOutcome.Unreadable)
             {

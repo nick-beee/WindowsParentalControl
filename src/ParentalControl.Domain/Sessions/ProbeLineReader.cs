@@ -173,8 +173,10 @@ public sealed class ProbeLineReader
             return new ProbeSample(t, ProbeSampleKind.Blind, BlindReason: reason, Desktop: OptionalText(root, "desktop", MaxDesktopChars));
         }
 
+        // A window: false sample can have the chain under the cursor (final review, item 5).
         if (root.TryGetProperty("window", out var window) && window.ValueKind == JsonValueKind.False)
-            return new ProbeSample(t, ProbeSampleKind.NoWindow, Desktop: OptionalText(root, "desktop", MaxDesktopChars));
+            return new ProbeSample(t, ProbeSampleKind.NoWindow, Cursor: OptionalCursor(root),
+                Desktop: OptionalText(root, "desktop", MaxDesktopChars));
 
         if (!root.TryGetProperty("fg", out var fgElement) || TryEntry(fgElement) is not { } fg)
         {

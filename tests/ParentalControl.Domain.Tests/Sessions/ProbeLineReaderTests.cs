@@ -48,6 +48,16 @@ public class ProbeLineReaderTests
         Assert.Null(sample.Foreground);
     }
 
+    [Fact]
+    public void No_window_sample_with_the_chain_under_the_cursor()
+    {
+        var sample = One("""{"t":5,"dur":3,"window":false,"cursor":{"noActivate":true,"entries":[{"hwnd":10,"tid":11,"pid":12}]}}""");
+        Assert.Equal(ProbeSampleKind.NoWindow, sample.Kind);
+        Assert.Null(sample.Foreground);
+        Assert.True(sample.Cursor!.NoActivate);
+        Assert.Equal([new ProbeWindow(10, 11, 12)], sample.Cursor.Entries);
+    }
+
     [Theory]
     [InlineData("desktop", ProbeBlindReason.Desktop)]
     [InlineData("window", ProbeBlindReason.Window)]

@@ -57,6 +57,91 @@ public class CountedProcessesTests
 
     private static AppCategory[] Cats(SampleSelection s) => s.Categories.OrderBy(c => c).ToArray();
 
+    // ---- window: false samples with the chain under the cursor (final review, item 5)
+
+    private static readonly ProbeWindow GameWindow = new(1, 2, 10);
+    private static readonly ProbeWindow ExplorerWindow = new(3, 4, 40);
+
+    private static SampleEntry ReadFake(ProbeRole role, ProbeWindow window) => window.Pid switch
+    {
+        10 => E(role, GameP, Game),
+        40 => E(role, ExplorerP, Explorer),
+        _ => new SampleEntry(role, EntryOutcome.Unreadable),
+    };
+
+    [Fact]
+    public void No_window_sample_reads_the_cursor_entries_only_with_noActivate()
+    {
+        var with = SampleReading.From(new ProbeSample(5, ProbeSampleKind.NoWindow, Cursor: new ProbeCursor(true, [GameWindow])), ReadFake);
+        Assert.True(with.NoForegroundWindow);
+        Assert.True(with.CursorNoActivate);
+        var entry = Assert.Single(with.Entries);
+        Assert.Equal(ProbeRole.Cursor, entry.Role);
+        Assert.Equal(Game, entry.ExePath);
+
+        var without = SampleReading.From(new ProbeSample(5, ProbeSampleKind.NoWindow, Cursor: new ProbeCursor(false, [GameWindow])), ReadFake);
+        Assert.Empty(without.Entries);
+        Assert.Empty(SampleReading.From(new ProbeSample(5, ProbeSampleKind.NoWindow), ReadFake).Entries);
+    }
+
+    [Fact]
+    public void Window_sample_reads_each_role()
+    {
+        var sample = new ProbeSample(5, ProbeSampleKind.Window, Foreground: ExplorerWindow, Children: [GameWindow],
+            Cursor: new ProbeCursor(false, [GameWindow]));
+        var reading = SampleReading.From(sample, ReadFake);
+        Assert.False(reading.NoForegroundWindow);
+        Assert.Equal([ProbeRole.Foreground, ProbeRole.Child, ProbeRole.Cursor], reading.Entries.Select(e => e.Role));
+    }
+
+    [Fact]
+    public void Blind_sample_reads_no_entry()
+    {
+        var reading = SampleReading.From(new ProbeSample(5, ProbeSampleKind.Blind, ProbeBlindReason.Desktop), ReadFake);
+        Assert.Empty(reading.Entries);
+        Assert.True(reading.ProbeBlind);
+    }
+
+    [Fact]
+    public void NoActivate_game_under_the_cursor_counts_when_no_window_is_in_front()
+    {
+        var reading = SampleReading.From(new ProbeSample(5, ProbeSampleKind.NoWindow, Cursor: new ProbeCursor(true, [GameWindow])), ReadFake);
+        var s = Select(reading);
+        Assert.Equal([AppCategory.Games], Cats(s));
+        Assert.Equal(ProbeRole.Cursor, s.Counted[0].Role);
+        Assert.Contains(Game, s.ExesToRecord);
+        Assert.False(s.Blind);
+        Assert.Null(s.NextLastForeground);
+    }
+
+    [Fact]
+    public void Unreadable_or_ended_cursor_entry_of_a_no_window_sample_gives_no_blind_sample_and_no_item()
+    {
+        var reading = new SampleReading([
+            new SampleEntry(ProbeRole.Cursor, EntryOutcome.Unreadable),
+            new SampleEntry(ProbeRole.Cursor, EntryOutcome.Ended)], CursorNoActivate: true, NoForegroundWindow: true);
+        var s = Select(reading);
+        Assert.False(s.Blind);
+        Assert.False(s.EndedItem);
+        Assert.Empty(s.Counted);
+    }
+
+    [Fact]
+    public void Unreadable_cursor_entry_of_a_window_sample_is_still_blind()
+    {
+        var reading = new SampleReading([
+            E(ProbeRole.Foreground, ExplorerP, Explorer),
+            new SampleEntry(ProbeRole.Cursor, EntryOutcome.Unreadable)], CursorNoActivate: true);
+        Assert.True(Select(reading).Blind);
+    }
+
+    [Fact]
+    public void Launched_agent_under_the_cursor_of_a_no_window_sample_counts_nothing()
+    {
+        var reading = new SampleReading([E(ProbeRole.Cursor, AgentP, Agent)], CursorNoActivate: true, NoForegroundWindow: true);
+        Assert.Empty(Select(reading).Counted);
+    }
+
     [Fact]
     public void Game_child_in_a_System_window_with_the_focus_on_the_host_counts_in_Games()
     {
@@ -257,7 +342,7 @@ public class CountedProcessesTests
             Assert.Equal([AppCategory.Unknown], Cats(s));
             var agentCounted = s.Counted.Any(c => c.IsAgent);
             Assert.False(agentCounted);
-            var exempt = budget.Sample(TimeSpan.FromSeconds(seconds), 1, agentCounted, unlocked: true);
+            var exempt = budget.Sample(TimeSpan.FromSeconds(seconds), TimeSpan.FromSeconds(1), 1, agentCounted, unlocked: true);
             Assert.Equal(0, exempt);
             unlocked += TimeSpan.FromSeconds(1);
             seconds++;
@@ -294,7 +379,7 @@ public class CountedProcessesTests
             var s = CountedProcesses.Select(reading, context, Trusted);
             var agentCounted = s.Counted.Any(c => c.IsAgent);
             Assert.True(agentCounted);
-            var exempt = budget.Sample(TimeSpan.FromSeconds(seconds), 1, agentCounted, unlocked: true);
+            var exempt = budget.Sample(TimeSpan.FromSeconds(seconds), TimeSpan.FromSeconds(1), 1, agentCounted, unlocked: true);
             exemptTotal += exempt;
             unlocked += TimeSpan.FromSeconds(1);
             seconds++;

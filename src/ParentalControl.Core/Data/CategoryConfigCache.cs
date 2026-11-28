@@ -38,6 +38,18 @@ public static class CategoryConfigCache
         }
     }
 
+    /// <summary>
+    /// The snapshot for a reader that never got a good read of <see cref="Current"/> (a database failure since the
+    /// service start): the default rules of this computer and no limits. So System stays System, and no category or
+    /// app is exhausted, because its usage and its limit are unknown (session-probe-and-agent-channel, design D14).
+    /// </summary>
+    public static Snapshot Fallback()
+    {
+        var rules = CategoryDefaults.Rules(CategoryRepository.LocalDefaultRuleFolders());
+        var limits = new Dictionary<AppCategory, DailyLimit>();
+        return new Snapshot(limits, rules, new CategoryResolver(rules), new CategoryLimitCalculator(limits, rules), DateTime.UtcNow);
+    }
+
     /// <summary>Raised after a change of a Category Limit or an App Rule. The Category enforcer listens.</summary>
     public static event Action? Changed;
 

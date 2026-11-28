@@ -10,7 +10,7 @@ public class ForegroundHistoryTests
     public void Recorded_path_was_foreground_with_any_letter_case_and_form()
     {
         var history = new ForegroundHistory();
-        Assert.True(history.Record(1, Today, @"C:\Games\x.exe"));
+        Assert.Equal(ForegroundRecord.Recorded, history.Record(1, Today, @"C:\Games\x.exe"));
         Assert.True(history.WasForeground(1, Today, @"c:\games\X.EXE"));
         Assert.True(history.WasForeground(1, Today, @"C:\Games\sub\..\x.exe"));
     }
@@ -38,9 +38,19 @@ public class ForegroundHistoryTests
     public void Path_that_is_not_absolute_is_ignored()
     {
         var history = new ForegroundHistory();
-        Assert.False(history.Record(1, Today, "x.exe"));
-        Assert.False(history.Record(1, Today, null));
+        Assert.Equal(ForegroundRecord.InvalidPath, history.Record(1, Today, "x.exe"));
+        Assert.Equal(ForegroundRecord.InvalidPath, history.Record(1, Today, null));
+        Assert.Equal(ForegroundRecord.InvalidPath, history.Record(1, Today, @"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\game.exe"));
         Assert.False(history.WasForeground(1, Today, "x.exe"));
+    }
+
+    [Fact]
+    public void Invalid_path_at_a_full_set_is_still_InvalidPath_not_Full()
+    {
+        var history = new ForegroundHistory();
+        for (var i = 0; i < ForegroundHistory.MaxPathsPerUser; i++)
+            history.Record(1, Today, $@"C:\Fake\{i}.exe");
+        Assert.Equal(ForegroundRecord.InvalidPath, history.Record(1, Today, "game.exe"));
     }
 
     [Fact]
@@ -48,20 +58,20 @@ public class ForegroundHistoryTests
     {
         var history = new ForegroundHistory();
         for (var i = 0; i < ForegroundHistory.MaxPathsPerUser; i++)
-            Assert.True(history.Record(1, Today, $@"C:\Fake\{i}.exe"));
-        Assert.False(history.Record(1, Today, @"C:\Fake\one-more.exe"));
-        Assert.True(history.Record(1, Today, @"C:\Fake\0.exe"));
-        Assert.True(history.Record(2, Today, @"C:\Fake\one-more.exe"));
+            Assert.Equal(ForegroundRecord.Recorded, history.Record(1, Today, $@"C:\Fake\{i}.exe"));
+        Assert.Equal(ForegroundRecord.Full, history.Record(1, Today, @"C:\Fake\one-more.exe"));
+        Assert.Equal(ForegroundRecord.Recorded, history.Record(1, Today, @"C:\Fake\0.exe"));
+        Assert.Equal(ForegroundRecord.Recorded, history.Record(2, Today, @"C:\Fake\one-more.exe"));
     }
 
     [Fact]
-    public void Cap_is_60000_paths_and_Record_returns_false_at_the_cap()
+    public void Cap_is_60000_paths_and_Record_returns_Full_at_the_cap()
     {
         Assert.Equal(60_000, ForegroundHistory.MaxPathsPerUser);
         var history = new ForegroundHistory();
         for (var i = 0; i < ForegroundHistory.MaxPathsPerUser; i++)
             history.Record(1, Today, $@"C:\Probe\{i}.exe");
-        Assert.False(history.Record(1, Today, @"C:\Probe\extra.exe"));
+        Assert.Equal(ForegroundRecord.Full, history.Record(1, Today, @"C:\Probe\extra.exe"));
         Assert.False(history.WasForeground(1, Today, @"C:\Probe\extra.exe"));
     }
 }

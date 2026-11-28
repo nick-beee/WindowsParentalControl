@@ -54,6 +54,15 @@ public class NeverSuspendedAllowanceTests
     }
 
     [Fact]
+    public void Exe_with_a_path_that_is_not_absolute_gives_the_fallback()
+    {
+        // ForegroundHistory does not record such a path (ForegroundRecord.InvalidPath), so the exe is no suspend
+        // candidate. It is never suspended, so this rule limits it; no full-set lock applies (final review, item 8).
+        const string shadowCopy = @"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\Games\game.exe";
+        Assert.Equal([shadowCopy], Run(New(), Sel(P(shadowCopy, AppCategory.Unknown)), 0, 65));
+    }
+
+    [Fact]
     public void Exe_below_the_Windows_folder_without_a_System_rule_gives_the_fallback()
     {
         Assert.Equal([Notepad], Run(New(), Sel(P(Notepad, AppCategory.Unknown)), 0, 65));

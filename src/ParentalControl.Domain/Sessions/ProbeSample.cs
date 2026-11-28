@@ -13,7 +13,7 @@ public enum ProbeSampleKind
 {
     /// <summary>A window is in front: <see cref="ProbeSample.Foreground"/> is set.</summary>
     Window,
-    /// <summary><c>GetForegroundWindow</c> gave NULL (<c>"window": false</c>).</summary>
+    /// <summary><c>GetForegroundWindow</c> gave NULL (<c>"window": false</c>). <see cref="ProbeSample.Cursor"/> can be set.</summary>
     NoWindow,
     /// <summary>A blind sample of the probe (<c>"blind"</c>).</summary>
     Blind,
