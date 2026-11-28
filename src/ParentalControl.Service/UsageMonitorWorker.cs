@@ -22,6 +22,7 @@ public sealed class UsageMonitorWorker : BackgroundService
     /// <summary>The operations of the failures of the tick, for event 1015 and the alert (harden-storage-lockdown, D2).</summary>
     private const string CountOperation = "count of the session time";
     private const string CheckOperation = "limit check";
+    private const string CategoryCheckOperation = "category check";
     private const string ProbeOperation = "storage probe";
 
 #if VM_TEST
@@ -214,14 +215,17 @@ public sealed class UsageMonitorWorker : BackgroundService
                 _logger.Error(ex, "Error during the break check");
             }
 
-            // 4. App Categories: warnings, suspension and resume. An error here must not stop the session checks.
+            // 4. App Categories: warnings, suspension and resume. An error here must not stop the session checks. The
+            // check of a Category Limit is a limit check, so an error fails the tick (failed tick, review of PR #67).
             try
             {
                 _categoryEnforcer.Tick();
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Error during the category check");
+                readFailed = true;
+                var failure = _health.ReportFailure(CategoryCheckOperation, ex);
+                _logger.Error(ex, "Error during the category check ({Cause})", failure.Kind);
             }
         }
         finally

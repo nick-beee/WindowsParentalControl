@@ -89,15 +89,19 @@ In the Storage Lockdown, the system SHALL try a write to the database every minu
 - **THEN** the system stays in the Storage Lockdown
 
 ### Requirement: Report the Storage Lockdown
-The system SHALL write a Windows event log entry at each entry into and each exit from the Storage Lockdown. The entry and the alert SHALL name the failed operation and the cause of the last failure, and SHALL say that the disk is full only if the cause is a full disk. At the first entry on a day of the Control Time Zone, the system SHALL send a Telegram alert to the parent. The alert and its state SHALL not need a write to the database.
+The system SHALL write a Windows event log entry at each entry into and each exit from the Storage Lockdown. The entry and the alert SHALL name the failed operation and the cause of the last failure, and SHALL say that the disk is full only if the cause is a full disk. At the first entry on a day of the Control Time Zone, and at a later entry on that day with a known cause of another kind, the system SHALL send a Telegram alert to the parent. The alert and its state SHALL not need a write to the database.
 
 #### Scenario: First Storage Lockdown of the day
 - **WHEN** the system enters the Storage Lockdown for the first time today and Telegram is configured
 - **THEN** the parent gets one Telegram alert, and the event log shows the entry
 
 #### Scenario: Second Storage Lockdown on the same day
-- **WHEN** the system leaves the Storage Lockdown and enters it again on the same day
+- **WHEN** the system leaves the Storage Lockdown and enters it again on the same day with a cause of the same kind, or with an unknown cause
 - **THEN** the event log shows the second entry and the parent gets no second alert
+
+#### Scenario: Another cause on the same day
+- **WHEN** the first entry of the day had the cause "another program locks the database", and a later entry on the same day has the cause "the disk is full"
+- **THEN** the parent gets a second alert that says that the disk is full
 
 #### Scenario: No network at the entry
 - **WHEN** the Telegram send fails at the entry
@@ -106,6 +110,10 @@ The system SHALL write a Windows event log entry at each entry into and each exi
 #### Scenario: Disk full
 - **WHEN** the system enters the Storage Lockdown because SQLite reports a full disk
 - **THEN** the event and the alert say that the disk is full and tell the parent to free space as an administrator
+
+#### Scenario: Another cause with low free space
+- **WHEN** the system enters the Storage Lockdown with a cause that is not a full disk, and the volume of the data folder has less than 100 MB free space or the free space is not known
+- **THEN** the event and the alert tell the parent to free space to at least 100 MB, because the exit needs it, and do not say that the disk is full or that the cause is not a full disk
 
 #### Scenario: Error that is not a database error
 - **WHEN** the system enters the Storage Lockdown because the limit check throws an error that is not a database error
@@ -119,11 +127,15 @@ The system SHALL write a Windows event log entry at each entry into and each exi
 ## ADDED Requirements
 
 ### Requirement: Failed tick
-A tick SHALL count as a failed tick if a write to the database failed since the last tick, or if the count of the session time or a limit check of the tick could not run, for any reason. A successful tick SHALL not clear the failed ticks of the last 10 minutes. The exit from the Storage Lockdown SHALL clear them.
+A tick SHALL count as a failed tick if a write to the database failed since the last tick, or if the count of the session time or a limit check of the tick could not run, for any reason. A limit check is the check of the Allowance Time, the Schedule Window, a Category Limit or an App Limit. A successful tick SHALL not clear the failed ticks of the last 10 minutes. The exit from the Storage Lockdown SHALL clear them.
 
 #### Scenario: One good tick between failures
 - **WHEN** the writes fail in 2 ticks, succeed in the next tick, and fail again in the tick after it, all within 10 minutes
 - **THEN** the system enters the Storage Lockdown in the fourth tick
+
+#### Scenario: A failed category check counts
+- **WHEN** the check of the Category Limits throws an error in 3 ticks within 10 minutes, for example because a stored suspension record cannot be read
+- **THEN** the system enters the Storage Lockdown, and the event and the alert name the operation "category check"
 
 #### Scenario: Failures far apart
 - **WHEN** a write fails in one tick every 6 minutes

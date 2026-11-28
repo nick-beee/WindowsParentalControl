@@ -5,6 +5,8 @@ namespace ParentalControl.Domain.Tests.DataFolder;
 
 public class StorageFailureTests
 {
+    private const long FiveGb = 5L * 1024 * 1024 * 1024;
+
     private static StorageFailureKind Sqlite(int code) => Classify(new StorageFailureFacts(code, null, false, false));
 
     [Fact]
@@ -75,7 +77,7 @@ public class StorageFailureTests
     public void OtherCausesDoNotClaimAFullDisk(StorageFailureKind kind, string operation, string cause)
     {
         var failure = new StorageFailure(operation, kind, "InvalidOperationException");
-        foreach (var text in new[] { StorageLockdownTexts.EntryEvent(failure, 5L * 1024 * 1024 * 1024), StorageLockdownTexts.Alert("PC1", failure, null) })
+        foreach (var text in new[] { StorageLockdownTexts.EntryEvent(failure, FiveGb), StorageLockdownTexts.Alert("PC1", failure, FiveGb) })
         {
             Assert.DoesNotContain("disk is full", text, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("free space", text, StringComparison.OrdinalIgnoreCase);
@@ -84,7 +86,50 @@ public class StorageFailureTests
             Assert.Contains("InvalidOperationException", text);
             Assert.Contains("service log", text);
         }
-        Assert.Contains("event 1015", StorageLockdownTexts.Alert("PC1", failure, null));
+        Assert.Contains("event 1015", StorageLockdownTexts.Alert("PC1", failure, FiveGb));
+        Assert.Contains("not a full disk", StorageLockdownTexts.EntryEvent(failure, FiveGb));
+    }
+
+    // Review of PR #67, finding 2: the exit needs 100 MB free for each cause, so a text with less free space (or an
+    // unknown free space) asks the parent to free space, and does not say "not a full disk".
+    [Theory]
+    [InlineData(StorageFailureKind.DiskError, 0L)]
+    [InlineData(StorageFailureKind.Locked, 80L * 1024 * 1024)]
+    [InlineData(StorageFailureKind.Internal, null)]
+    public void OtherCauseWithLowSpaceAsksToFreeSpace(StorageFailureKind kind, long? free)
+    {
+        var failure = new StorageFailure("usage store", kind, "SqliteException");
+        foreach (var text in new[] { StorageLockdownTexts.EntryEvent(failure, free), StorageLockdownTexts.Alert("PC1", failure, free) })
+        {
+            Assert.Contains("free space on the disk, to at least 100 MB", text);
+            Assert.Contains("service log", text);
+            Assert.Contains(StorageLockdownTexts.Cause(kind), text);
+            Assert.DoesNotContain("not a full disk", text);
+            Assert.DoesNotContain("disk is full", text, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public void InternalErrorWithFiveGbFreeDoesNotAskToFreeSpace()
+    {
+        var failure = new StorageFailure("category check", StorageFailureKind.Internal, "InvalidOperationException");
+        var entry = StorageLockdownTexts.EntryEvent(failure, FiveGb);
+        var alert = StorageLockdownTexts.Alert("PC1", failure, FiveGb);
+        Assert.Contains("not a full disk", entry);
+        foreach (var text in new[] { entry, alert })
+        {
+            Assert.DoesNotContain("free space", text, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("category check", text);
+            Assert.Contains("5120 MB", text);
+        }
+    }
+
+    [Fact]
+    public void DiskFullTextAsksForTheExitMinimum()
+    {
+        var failure = new StorageFailure("usage store", StorageFailureKind.DiskFull, "SqliteException");
+        Assert.Contains("to at least 100 MB", StorageLockdownTexts.EntryEvent(failure, FiveGb));
+        Assert.Contains("to at least 100 MB", StorageLockdownTexts.Alert("PC1", failure, 0));
     }
 
     [Fact]
@@ -93,5 +138,6 @@ public class StorageFailureTests
         Assert.DoesNotContain("disk is full", StorageLockdownTexts.EntryEvent(null, null));
         Assert.Contains("unknown", StorageLockdownTexts.Alert("PC1", null, null));
         Assert.DoesNotContain("disk is full", StorageLockdownTexts.Alert("PC1", null, null));
+        Assert.Contains("to at least 100 MB", StorageLockdownTexts.Alert("PC1", null, null));
     }
 }

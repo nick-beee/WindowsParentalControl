@@ -1,5 +1,3 @@
-using ParentalControl.Domain.Time;
-
 namespace ParentalControl.Domain.DataFolder;
 
 /// <summary>What changed after one tick report.</summary>
@@ -13,8 +11,9 @@ public readonly record struct StorageTickOutcome(bool Entered, bool Left, bool A
 /// successful tick does not clear the earlier failed ticks. It leaves when the retry of a tick (probe write and store of
 /// the Pending Usage, no failed limit check) succeeds with no Pending Usage left and at least <see cref="MinFreeBytes"/>
 /// free; the exit clears the failed ticks. A write that failed between two ticks, before the space was free, does not
-/// keep the lockdown. It alerts the parent at the first entry of each day of the Control Time Zone. The state is in
-/// memory only.
+/// keep the lockdown. It alerts the parent at the first entry of each day of the Control Time Zone, and again on the
+/// same day at an entry with a known cause of another kind than the cause of the last alert. The state is in memory
+/// only.
 /// </summary>
 public sealed class StorageLockdownState
 {
@@ -22,7 +21,8 @@ public sealed class StorageLockdownState
     public const long MinFreeBytes = 100L * 1024 * 1024;
 
     private readonly object _gate = new();
-    private readonly OncePerDay _alerts = new();
+    private DateOnly? _alertDay;
+    private StorageFailureKind? _alertKind;
     private readonly FailedTickWindow _window = new();
 
     public bool InLockdown { get; private set; }
@@ -72,7 +72,21 @@ public sealed class StorageLockdownState
             if (!startProbeFailed && inWindow < FailedTicksToEnter)
                 return default;
             InLockdown = true;
-            return new StorageTickOutcome(Entered: true, Left: false, Alert: _alerts.TryTake(controlDay), LastFailure);
+            return new StorageTickOutcome(Entered: true, Left: false, Alert: TakeAlert(controlDay, LastFailure?.Kind), LastFailure);
         }
+    }
+
+    /// <summary>
+    /// True for the first entry of a day. On the same day, true only if the cause is known and its kind differs from the
+    /// kind of the last alert, so a parent who freed space for a full disk learns about a new cause (review of PR #67,
+    /// finding 5). An entry without a known cause does not alert again on the same day.
+    /// </summary>
+    private bool TakeAlert(DateOnly controlDay, StorageFailureKind? kind)
+    {
+        if (_alertDay == controlDay && (kind is null || kind == _alertKind))
+            return false;
+        _alertDay = controlDay;
+        _alertKind = kind;
+        return true;
     }
 }

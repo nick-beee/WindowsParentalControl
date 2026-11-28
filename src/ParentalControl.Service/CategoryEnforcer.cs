@@ -108,7 +108,9 @@ public sealed class CategoryEnforcer : IDisposable
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Error during the requested category check");
+                // A failed check of a Category Limit counts as a failure in the next tick (failed tick, review of PR #67).
+                var failure = _health.ReportFailure("category check", ex);
+                _logger.Error(ex, "Error during the requested category check ({Cause})", failure.Kind);
             }
         });
     }
@@ -433,7 +435,7 @@ public sealed class CategoryEnforcer : IDisposable
             catch (Exception ex)
             {
                 // The lock runs first in Fallback. A failed read of its alert must not stop the other suspensions of the tick.
-                _health.ReportFailure("suspension record", ex);
+                _health.ReportFailure("suspension fallback", ex);
                 _logger.Error(ex, "Error in the fallback for {Exe} after a failed suspension record", action.ExePath);
             }
             return;

@@ -219,6 +219,80 @@ public class StorageLockdownStateTests
         Assert.True(t.Fail(next).Alert);
     }
 
+    // Review of PR #67, finding 5: on the same day, an entry with a cause of another kind alerts again.
+    [Fact]
+    public void SameDayEntryWithAnotherKindAlertsAgain()
+    {
+        var t = new Ticks();
+        var locked = new StorageFailure("usage store", StorageFailureKind.Locked, "SqliteException");
+        var full = new StorageFailure("usage store", StorageFailureKind.DiskFull, "SqliteException");
+        t.Fail(failure: locked); t.Fail();
+        Assert.True(t.Fail().Alert);
+        t.Ok();
+        t.Fail(failure: full); t.Fail();
+        var second = t.Fail();
+        Assert.True(second.Entered);
+        Assert.True(second.Alert);
+        Assert.Equal(StorageFailureKind.DiskFull, second.Cause?.Kind);
+    }
+
+    [Fact]
+    public void SameDayEntryWithTheSameKindDoesNotAlertAgain()
+    {
+        var t = new Ticks();
+        var full = new StorageFailure("usage store", StorageFailureKind.DiskFull, "SqliteException");
+        t.Fail(failure: full); t.Fail();
+        Assert.True(t.Fail().Alert);
+        t.Ok();
+        t.Fail(failure: full with { Operation = "storage probe" }); t.Fail();
+        var second = t.Fail();
+        Assert.True(second.Entered);
+        Assert.False(second.Alert);
+    }
+
+    [Fact]
+    public void SameDayEntryWithoutACauseDoesNotAlertAgain()
+    {
+        var t = new Ticks();
+        t.Fail(failure: new StorageFailure("usage store", StorageFailureKind.DiskFull, "SqliteException")); t.Fail();
+        Assert.True(t.Fail().Alert);
+        t.Ok();
+        t.Fail(); t.Fail();
+        var second = t.Fail();
+        Assert.True(second.Entered);
+        Assert.Null(second.Cause);
+        Assert.False(second.Alert);
+    }
+
+    [Fact]
+    public void SameKindOnTheNextDayAlerts()
+    {
+        var t = new Ticks();
+        var full = new StorageFailure("usage store", StorageFailureKind.DiskFull, "SqliteException");
+        t.Fail(failure: full); t.Fail();
+        Assert.True(t.Fail().Alert);
+        t.Ok();
+        var next = Day.AddDays(1);
+        t.Fail(next, full); t.Fail(next);
+        Assert.True(t.Fail(next).Alert);
+    }
+
+    // Review of PR #67, finding 1: a failed category check is a failed tick, enters with its operation, and holds the
+    // Storage Lockdown while it fails (the retry of the tick fails).
+    [Fact]
+    public void FailedCategoryCheckEntersAndHolds()
+    {
+        var t = new Ticks();
+        var category = new StorageFailure("category check", StorageFailureKind.Internal, "SqliteException");
+        t.Report(tickFailed: true, retrySucceeded: false, pendingEmpty: true, FiveGb, failure: category);
+        t.Report(tickFailed: true, retrySucceeded: false, pendingEmpty: true, FiveGb, failure: category);
+        var outcome = t.Report(tickFailed: true, retrySucceeded: false, pendingEmpty: true, FiveGb, failure: category);
+        Assert.True(outcome.Entered);
+        Assert.Equal("category check", outcome.Cause?.Operation);
+        Assert.False(t.Report(tickFailed: true, retrySucceeded: false, pendingEmpty: true, FiveGb, failure: category).Left);
+        Assert.True(t.State.InLockdown);
+    }
+
     private static Ticks Entered()
     {
         var t = new Ticks();
