@@ -78,18 +78,10 @@ describe('RequestApp', () => {
     expect(screen.getByText('T:badge_custom')).toHaveClass('badge-tag', 'custom')
   })
 
-  it('shows the admin test banner with encoded switch links', () => {
-    const adminTest = { title: 'Mode', text: 'Status of {user}.', switchLabel: 'Switch:', users: ['Kid', 'A&B ?/x'] }
-    render(<RequestApp data={requestData({ adminTest })} />)
-    const banner = screen.getByText('Mode').closest('.banner')!
-    expect(banner).toHaveClass('banner-admin')
-    expect(banner).toHaveTextContent('🔧 Mode: Status of Kid.Switch: Kid | A&B ?/x')
-    expect(within(banner as HTMLElement).getByRole('link', { name: 'A&B ?/x' })).toHaveAttribute('href', '/request?user=A%26B%20%3F%2Fx')
-  })
-
-  it('shows no switch links for one user', () => {
-    render(<RequestApp data={requestData({ adminTest: { title: 'Mode', text: '{user}', switchLabel: 'Switch:', users: [] } })} />)
-    expect(screen.queryByText(/Switch:/)).toBeNull()
+  it('shows no admin test banner and no links to other users', () => {
+    const { container } = render(<RequestApp data={requestData()} />)
+    expect(container.querySelector('.banner-admin')).toBeNull()
+    expect(container.querySelector('a[href*="user="]')).toBeNull()
   })
 
   it('sends a request for more time and hides the forms', async () => {
@@ -100,7 +92,7 @@ describe('RequestApp', () => {
     await userEvent.click(screen.getByRole('button', { name: 'T:ext_submit' }))
 
     expect(await screen.findByRole('status')).toHaveTextContent('✅ Sent +30.')
-    expect(calls[0]?.body).toEqual({ requestType: 'extension', minutes: 30, reason: 'Homework', username: 'Kid' })
+    expect(calls[0]?.body).toEqual({ requestType: 'extension', minutes: 30, reason: 'Homework' })
     expect(extForm()).not.toBeVisible()
     expect(schedForm()).not.toBeVisible()
 
@@ -125,6 +117,14 @@ describe('RequestApp', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('❌ Max reached.')
     expect(screen.getByRole('button', { name: 'T:ext_submit' })).toBeEnabled()
     expect(extForm()).toBeVisible()
+  })
+
+  it('shows the text of the service for a request without a valid Request Token', async () => {
+    mockFetch({ 'POST /api/request': () => json({ error: 'Window expired.' }, 401) })
+    render(<RequestApp data={requestData()} />)
+    await userEvent.type(screen.getByLabelText('T:ext_reason_label'), 'x')
+    await userEvent.click(screen.getByRole('button', { name: 'T:ext_submit' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('❌ Window expired.')
   })
 
   it.each([
@@ -160,7 +160,6 @@ describe('RequestApp', () => {
       requestedStart: '08:00',
       requestedEnd: '21:00',
       reason: 'Holiday',
-      username: 'Kid',
     })
   })
 

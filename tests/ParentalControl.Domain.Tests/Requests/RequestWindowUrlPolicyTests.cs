@@ -53,10 +53,10 @@ public class RequestWindowUrlPolicyTests
     public void RefusesResourcesOfOtherOrigins(string url) => Assert.False(RequestWindowUrlPolicy.IsAllowedResource(url));
 
     [Fact]
-    public void PageUrlEscapesTheUserAndPassesTheFilter()
+    public void PageUrlHasNoUserAndPassesTheFilter()
     {
-        var url = RequestWindowUrlPolicy.PageUrl("Kid & Co");
-        Assert.Equal("http://127.0.0.1:5050/request?user=Kid%20%26%20Co", url);
-        Assert.True(RequestWindowUrlPolicy.IsAllowedDocument(url));
+        // request-identity-from-launch: the service takes the user from the Request Token, not from the URL.
+        Assert.Equal("http://127.0.0.1:5050/request", RequestWindowUrlPolicy.PageUrl);
+        Assert.True(RequestWindowUrlPolicy.IsAllowedDocument(RequestWindowUrlPolicy.PageUrl));
     }
 }

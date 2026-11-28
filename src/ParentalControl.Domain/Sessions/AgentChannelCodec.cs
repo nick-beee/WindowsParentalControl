@@ -56,6 +56,12 @@ public sealed record CaptureAdmission
 public sealed record AgentSessionEnding(long Id, string Reason) : AgentMessage(Id);
 
 /// <summary>
+/// The request for a Request Token (<c>requestToken</c>) at each open of the Request Window
+/// (request-identity-from-launch, design D4). It has no field: the token is for the launch record of the channel.
+/// </summary>
+public sealed record AgentRequestTokenRequest(long Id) : AgentMessage(Id);
+
+/// <summary>
 /// The framing of the Agent Channel (design D7, S7): each frame is a 4-byte little-endian length and the frame bytes.
 /// A JSON frame has at most <see cref="MaxJsonFrameBytes"/> bytes. The JPEG frame after a <c>capture</c> frame has at
 /// most <see cref="CaptureQuota.MaxBytesPerCapture"/> bytes. The decoder checks the length before it allocates the
@@ -224,6 +230,9 @@ public sealed class AgentChannelCodec
                 case "sessionEnding":
                     TryString(root, "reason", 32, out var endReason);
                     messages.Add(new AgentSessionEnding(id, endReason == "shutdown" ? "shutdown" : "logoff"));
+                    return true;
+                case "requestToken":
+                    messages.Add(new AgentRequestTokenRequest(id));
                     return true;
                 default:
                     return Fail("unknown frame type");

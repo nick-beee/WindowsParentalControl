@@ -19,15 +19,6 @@ export interface RequestOption {
   label: string
 }
 
-/** The banner for a parent who opens the page of a Restricted User. `text` has the placeholder `{user}`. */
-export interface AdminTest {
-  title: string
-  text: string
-  switchLabel: string
-  /** The users for the switch links. Empty if there is only one Restricted User. */
-  users: string[]
-}
-
 export type SessionState = 'inactive' | 'locked' | 'active'
 
 export interface RequestPageData {
@@ -45,7 +36,6 @@ export interface RequestPageData {
   latestStatus: string | null
   /** The reason of the parent for the last decline, else null. Text of the parent: show it as text only. */
   declineReason: string | null
-  adminTest: AdminTest | null
   sessionState: SessionState
   days: RequestDay[]
   extensionOptions: RequestOption[]

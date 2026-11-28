@@ -1,4 +1,4 @@
-import { Fragment, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { sendRequest, type ExtensionRequest, type ScheduleChangeRequest } from './api'
 import { Countdown } from './Countdown'
 import { translator, type RequestPageData, type Translate } from './data'
@@ -67,23 +67,6 @@ export function RequestApp({ data }: { data: RequestPageData }) {
       ) : null}
 
       {data.days.length > 0 ? <ScheduleStrip days={data.days} t={t} /> : null}
-
-      {data.adminTest ? (
-        <div className="banner banner-info banner-admin">
-          🔧 <strong>{data.adminTest.title}</strong>: {fillNodes(data.adminTest.text, { user: <strong>{data.username}</strong> })}
-          {data.adminTest.users.length > 0 ? (
-            <div className="admin-switch">
-              {data.adminTest.switchLabel}{' '}
-              {data.adminTest.users.map((user, i) => (
-                <Fragment key={user}>
-                  {i > 0 ? ' | ' : null}
-                  <a href={`/request?user=${encodeURIComponent(user)}`}>{user}</a>
-                </Fragment>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
 
       {data.isOffline ? <div className="banner banner-error">{t('offline')}</div> : null}
 
@@ -155,7 +138,7 @@ function ExtensionForm({ data, t, hidden, disabled, submit }: FormProps) {
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault()
     setSending(true)
-    const retry = await submit({ requestType: 'extension', minutes, reason, username: data.username }, 'ext_failed')
+    const retry = await submit({ requestType: 'extension', minutes, reason }, 'ext_failed')
     if (retry) setSending(false)
   }
 
@@ -219,7 +202,6 @@ function ScheduleForm({ data, t, hidden, disabled, submit }: FormProps) {
         requestedStart: start,
         requestedEnd: end,
         reason,
-        username: data.username,
       },
       'sched_failed',
     )

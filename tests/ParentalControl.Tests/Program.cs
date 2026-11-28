@@ -1052,9 +1052,17 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
     var gateTelegram = new TelegramBotService(gateLogger);
     var gateTracker = new ParentalControl.Service.SessionTracker(gateLogger);
     var gateHistory = new ForegroundHistory();
-    var webHost = new ParentalControl.Service.Web.WebServerHost(gateTracker, gateTelegram, gateLogger, gateHistory,
-        new ParentalControl.Service.CategoryEnforcer(gateTracker, gateHistory, gateTelegram, gateLogger),
-        new ParentalControl.Service.BreakEnforcer(gateLogger));
+    var gateEnforcer = new ParentalControl.Service.CategoryEnforcer(gateTracker, gateHistory, gateTelegram, gateLogger);
+    // request-identity-from-launch: the Request Tokens of a fake running agent of TestBrother in session 77.
+    var gateAgents = new ParentalControl.Domain.Sessions.AgentLaunchRegistry();
+    var gateAgent = new ParentalControl.Domain.Sessions.AgentLaunchRecord(77, new ParentalControl.Domain.Sessions.ProcessIdentity(7777, DateTime.UtcNow), user.Sid);
+    gateAgents.Record(gateAgent);
+    var gateTokens = new ParentalControl.Domain.Requests.RequestTokenStore(gateAgents);
+    var gateLocker = new ParentalControl.Service.SessionLocker(gateLogger);
+    var gateBreaks = new ParentalControl.Service.BreakEnforcer(gateLogger);
+    var gateRequests = new ParentalControl.Service.AgentRequests(gateTracker, gateEnforcer, gateBreaks, gateLocker, gateTelegram, gateLogger, gateTokens);
+    var webHost = new ParentalControl.Service.Web.WebServerHost(gateTracker, gateTelegram, gateLogger, gateHistory, gateEnforcer,
+        gateBreaks, sessionLocker: gateLocker, agentRequests: gateRequests);
     var webBuilder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder();
     Microsoft.AspNetCore.Hosting.HostingAbstractionsWebHostBuilderExtensions.UseUrls(webBuilder.WebHost, "http://127.0.0.1:0");
     var webApp = webBuilder.Build();
@@ -1159,9 +1167,68 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
         Debug.Assert(AppRuleRepository.GetById(gateRuleId)?.IsBlocked == true, "The block should not change without a session");
         AppRuleRepository.Delete(gateRuleId);
 
-        // Child-facing routes stay open.
-        var requestStatus = (int)(await Send(HttpMethod.Get, "/request")).StatusCode;
-        Debug.Assert(requestStatus != 401 && requestStatus != 403, "/request should work without a session");
+        // Child-facing routes need no Admin Session, but /request and /api/request need a Request Token
+        // (request-identity-from-launch, design D5).
+        // BreakChild (breakUser) is the other Restricted User of this test, BreakAdmin (adminUser) the Administrator.
+        var otherChild = breakUser;
+        var requestsBefore = GraceRequestRepository.GetTodayRequestCount(user.Id, ControlTime.Current.Today);
+        var otherBefore = GraceRequestRepository.GetTodayRequestCount(otherChild.Id, ControlTime.Current.Today);
+        foreach (var path in new[] { "/request", "/request?user=TestBrother", "/request?user=BreakChild" })
+        {
+            var noToken = await Send(HttpMethod.Get, path);
+            var noTokenBody = await noToken.Content.ReadAsStringAsync();
+            Debug.Assert((int)noToken.StatusCode == 401, $"{path} without a Request Token should give 401: {noToken.StatusCode}");
+            Debug.Assert(!noTokenBody.Contains("TestBrother") && !noTokenBody.Contains("BreakChild"), $"{path} without a token should name no user: {noTokenBody}");
+            Debug.Assert(noTokenBody == RequestPageTexts.For(SettingsRepository.GetLanguagePreset())["page_no_access"], $"{path} should show page_no_access: {noTokenBody}");
+        }
+        var extensionFor = (string name) => Json($"{{\"requestType\":\"extension\",\"minutes\":15,\"reason\":\"x\",\"username\":\"{name}\"}}");
+        var apiNoToken = await Send(HttpMethod.Post, "/api/request", content: extensionFor("BreakChild"));
+        Debug.Assert((int)apiNoToken.StatusCode == 401, "/api/request without a Request Token should give 401: " + apiNoToken.StatusCode);
+        Debug.Assert((await apiNoToken.Content.ReadAsStringAsync()).Contains("error"), "/api/request without a token should give a JSON error");
+        async Task<HttpResponseMessage> SendWithToken(HttpMethod method, string path, string token, HttpContent? content = null)
+        {
+            var request = new HttpRequestMessage(method, baseUrl + path) { Content = content };
+            request.Headers.Add("Cookie", ParentalControl.Domain.Requests.RequestTokenStore.CookieName + "=" + token);
+            return await http.SendAsync(request);
+        }
+        var badToken = await SendWithToken(HttpMethod.Post, "/api/request", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", extensionFor("BreakChild"));
+        Debug.Assert((int)badToken.StatusCode == 401, "/api/request with a wrong token should give 401: " + badToken.StatusCode);
+        var token = gateRequests.IssueRequestToken(gateAgent);
+        Debug.Assert(token is not null, "The service should issue a Request Token for the running agent of a Restricted User");
+        var withToken = await SendWithToken(HttpMethod.Get, "/request?user=BreakChild", token!);
+        var withTokenBody = await withToken.Content.ReadAsStringAsync();
+        // The build of the test may have no web/admin/dist (503); else the page names the user of the token only.
+        Debug.Assert((int)withToken.StatusCode is 200 or 503, "/request with a Request Token should pass the token check: " + withToken.StatusCode);
+        if ((int)withToken.StatusCode == 200)
+            Debug.Assert(withTokenBody.Contains("TestBrother") && !withTokenBody.Contains("BreakChild"), "/request should show only the user of the token");
+        // An invalid body passes the token check and gets 400: the token check comes first and the username has no effect.
+        var invalidWithToken = await SendWithToken(HttpMethod.Post, "/api/request", token!,
+            Json("{\"requestType\":\"extension\",\"minutes\":0,\"reason\":\"x\",\"username\":\"BreakChild\"}"));
+        Debug.Assert((int)invalidWithToken.StatusCode == 400, "/api/request with a token and an invalid body should give 400: " + invalidWithToken.StatusCode);
+        // Design D9: a tracked session of the launch record with another user refuses the token on both routes.
+        gateTracker.TrackForTest(ParentalControl.Service.ActiveSession.Create(gateAgent.SessionId, otherChild.Sid, otherChild.Username));
+        var otherSessionApi = await SendWithToken(HttpMethod.Post, "/api/request", token!, extensionFor("TestBrother"));
+        Debug.Assert((int)otherSessionApi.StatusCode == 401, "/api/request in a session of another user should give 401: " + otherSessionApi.StatusCode);
+        var otherSessionPage = await SendWithToken(HttpMethod.Get, "/request", token!);
+        Debug.Assert((int)otherSessionPage.StatusCode == 401, "/request in a session of another user should give 401: " + otherSessionPage.StatusCode);
+        gateTracker.TrackForTest(ParentalControl.Service.ActiveSession.Create(gateAgent.SessionId, user.Sid, user.Username));
+        var ownSession = await SendWithToken(HttpMethod.Post, "/api/request", token!,
+            Json("{\"requestType\":\"extension\",\"minutes\":0,\"reason\":\"x\"}"));
+        Debug.Assert((int)ownSession.StatusCode == 400, "/api/request in the session of the token user should pass the token check: " + ownSession.StatusCode);
+        gateTracker.RemoveSession(gateAgent.SessionId);
+        // Design D10: the root redirects to the web admin, not to the child page.
+        var root = await Send(HttpMethod.Get, "/");
+        Debug.Assert((int)root.StatusCode == 302 && root.Headers.Location?.OriginalString == "/admin", "/ should redirect to /admin: " + root.Headers.Location);
+        var adminAgent = new ParentalControl.Domain.Sessions.AgentLaunchRecord(78, new ParentalControl.Domain.Sessions.ProcessIdentity(7878, DateTime.UtcNow),
+            adminUser.Sid);
+        gateAgents.Record(adminAgent);
+        Debug.Assert(gateRequests.IssueRequestToken(adminAgent) is null, "An Administrator should get no Request Token");
+        gateAgents.MarkEnded(gateAgent.SessionId, gateAgent.Process);
+        var endedToken = await SendWithToken(HttpMethod.Post, "/api/request", token!, extensionFor("TestBrother"));
+        Debug.Assert((int)endedToken.StatusCode == 401, "The token of an ended agent should give 401: " + endedToken.StatusCode);
+        Debug.Assert(GraceRequestRepository.GetTodayRequestCount(user.Id, ControlTime.Current.Today) == requestsBefore
+                     && GraceRequestRepository.GetTodayRequestCount(otherChild.Id, ControlTime.Current.Today) == otherBefore,
+            "A refused request should store no Grace Request");
         // session-probe-and-agent-channel, spec "The HTTP agent routes are removed": each old agent route gives 404.
         Debug.Assert((int)(await Send(HttpMethod.Get, "/api/agent/status?user=TestBrother")).StatusCode == 404, "/api/agent/status should give 404");
         foreach (var agentRoute in new[] { "/api/agent/activity", "/api/agent/prompt/respond", "/api/agent/session-ending", "/api/agent/capture" })
@@ -1658,7 +1725,8 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
         Console.WriteLine("✅ Web Server Bind Retry Passed.");
 
         // CB1 d: the capture quota of the agent captures, now on the Agent Channel (session-probe-and-agent-channel D8).
-        var captureRequests = new ParentalControl.Service.AgentRequests(svcTracker, svcEnforcer, new ParentalControl.Service.BreakEnforcer(svcLogger), new ParentalControl.Service.SessionLocker(svcLogger), null, svcLogger);
+        var captureRequests = new ParentalControl.Service.AgentRequests(svcTracker, svcEnforcer, new ParentalControl.Service.BreakEnforcer(svcLogger), new ParentalControl.Service.SessionLocker(svcLogger), null, svcLogger,
+            new ParentalControl.Domain.Requests.RequestTokenStore(new ParentalControl.Domain.Sessions.AgentLaunchRegistry()));
         var captureRecord = new ParentalControl.Domain.Sessions.AgentLaunchRecord(1, new ParentalControl.Domain.Sessions.ProcessIdentity(4242, DateTime.UtcNow), user.Sid);
         Task<int> Upload(int bytes)
         {

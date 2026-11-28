@@ -15,6 +15,8 @@ using ParentalControl.Service.Web.Pages;
 using ParentalControl.Core;
 using ParentalControl.Domain.Categories;
 using ParentalControl.Domain.Web;
+using ParentalControl.Domain.Requests;
+using ParentalControl.Domain.Sessions;
 using ParentalControl.Domain.Captures;
 using ParentalControl.Domain.Messages;
 using ParentalControl.Domain.AdminAccess;
@@ -70,6 +72,8 @@ public sealed class WebServerHost : BackgroundService
     public string? LastPortOwner { get; private set; }
 
     private readonly PortSquatAlert _squatAlert = new();
+    // A refused Grace Request (no valid Request Token) logs at most once in 10 minutes.
+    private readonly WarningLimit _requestRefusals = new();
 
     /// <param name="startup">The start gate of the service, or null in a test (the database is ready then).</param>
     /// <param name="sessionLocker">The shared locker of the service (dependency injection), or null in a test.</param>
@@ -78,7 +82,10 @@ public sealed class WebServerHost : BackgroundService
         ServiceStartup? startup = null, SessionLocker? sessionLocker = null, AgentRequests? agentRequests = null)
     {
         _sessionLocker = sessionLocker ?? new SessionLocker(logger);
-        _agentRequests = agentRequests ?? new AgentRequests(sessionTracker, categoryEnforcer, breakEnforcer, _sessionLocker, telegramBotService, logger);
+        // Without the AgentRequests of the service (a test) the store has no running agent, so it refuses each Request
+        // Token (request-identity-from-launch, design D4: fail closed).
+        _agentRequests = agentRequests ?? new AgentRequests(sessionTracker, categoryEnforcer, breakEnforcer, _sessionLocker, telegramBotService, logger,
+            new ParentalControl.Domain.Requests.RequestTokenStore(new ParentalControl.Domain.Sessions.AgentLaunchRegistry()));
         _startup = startup;
         _sessionTracker = sessionTracker;
         _telegramBotService = telegramBotService;
@@ -405,6 +412,33 @@ public sealed class WebServerHost : BackgroundService
     }
 
     /// <summary>
+    /// The user and the session of a request of the Request Window (request-identity-from-launch, design D5): the launch
+    /// record of a valid Request Token in the cookie <see cref="RequestTokenStore.CookieName"/>, only for a Restricted
+    /// User. Null without a valid token. No part of the request names the user.
+    /// Null also if the tracked session of the launch record has another user (design D9): the session ID went to a
+    /// new sign-in before the end of the session removed the record.
+    /// </summary>
+    private (User User, int SessionId)? RequestCaller(HttpContext ctx)
+    {
+        var record = _agentRequests.RequestTokens.Verify(ctx.Request.Cookies[RequestTokenStore.CookieName]);
+        if (record is null) return null;
+        if (_sessionTracker.ActiveSessions.TryGetValue(record.SessionId, out var session)
+            && !string.Equals(session.UserSid, record.UserSid, StringComparison.OrdinalIgnoreCase))
+            return null;
+        var user = UserRepository.GetBySid(record.UserSid);
+        return user is { IsRestricted: true } ? (user, record.SessionId) : null;
+    }
+
+    /// <summary>401 with the text <c>page_no_access</c> of the Language Preset, and no data of a user.</summary>
+    private static IResult RequestNoAccessPage(HttpContext ctx)
+    {
+        AdminSpa.SetSecurityHeaders(ctx.Response);
+        ctx.Response.Headers.CacheControl = "no-store";
+        var texts = RequestPageTexts.For(SettingsRepository.GetLanguagePreset());
+        return Results.Text(texts["page_no_access"], "text/plain; charset=utf-8", statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    /// <summary>
     /// Adds the admin gate and maps all routes. A test can call it on its own <see cref="WebApplication"/>.
     /// </summary>
     public void ConfigureApp(WebApplication app)
@@ -415,68 +449,32 @@ public sealed class WebServerHost : BackgroundService
         app.UseRouting();
         app.Use(AdminGateAsync);
 
-        app.MapGet("/", () => Results.Redirect("/request"));
+        // The root goes to the web admin: the child page needs the Request Token of the Request Window, so a browser
+        // gets only the text page_no_access there (request-identity-from-launch, design D10).
+        app.MapGet("/", () => Results.Redirect("/admin"));
 
-        // User Grace Request Portal
+        // The child request page. The user and the session come only from the Request Token of the Request Window
+        // (request-identity-from-launch, design D5), never from the query: no fallback user and no list of users.
         app.MapGet("/request", async (HttpContext ctx) =>
         {
+            var caller = RequestCaller(ctx);
+            if (caller is null)
+                return RequestNoAccessPage(ctx);
+            var (targetUser, callerSessionId) = caller.Value;
+
             var moment = ControlTime.Current.Read(); // control-clock: the day of the Control Time Zone
             var today = moment.Today;
             var dayOfWeek = moment.DayOfWeek;
 
-            var allUsers = UserRepository.GetAll();
-            var restrictedUsers = allUsers.Where(u => u.IsRestricted).ToList();
-
-            // Check if specific restricted user was requested via query parameter ?user=...
-            var queryUser = ctx.Request.Query["user"].ToString();
-            User? targetUser = null;
-            if (!string.IsNullOrWhiteSpace(queryUser))
-            {
-                targetUser = restrictedUsers.FirstOrDefault(u => string.Equals(u.Username, queryUser, StringComparison.OrdinalIgnoreCase));
-            }
-
-            var consoleSession = _sessionTracker.GetConsoleSession();
-            User? consoleUser = consoleSession != null ? UserRepository.GetBySid(consoleSession.UserSid) : null;
-
-            // If no explicit ?user= query:
-            if (targetUser == null)
-            {
-                // If console user is Administrator or unrestricted, redirect directly to /admin
-                if (consoleUser != null && !consoleUser.IsRestricted)
-                {
-                    return Results.Redirect("/admin");
-                }
-
-                // If console user is restricted, target them
-                if (consoleUser != null && consoleUser.IsRestricted)
-                {
-                    targetUser = consoleUser;
-                }
-            }
-
-            bool isAdminTesting = false;
-            if (targetUser == null)
-            {
-                // Fallback for query testing or preview
-                if (restrictedUsers.Count > 0)
-                {
-                    targetUser = restrictedUsers.FirstOrDefault();
-                    isAdminTesting = true;
-                }
-                else
-                {
-                    return Results.Redirect("/admin");
-                }
-            }
-
-            var limit = ScheduleRepository.GetEffectiveLimit(targetUser!.Id, dayOfWeek, today);
+            var limit = ScheduleRepository.GetEffectiveLimit(targetUser.Id, dayOfWeek, today);
             var usage = UsageRepository.GetUsage(targetUser.Id, today);
             var totalAllowed = (limit?.DailyMinutes ?? 120) + (usage?.BonusMinutes ?? 0);
             var used = UsageLedger.Shared.AllowanceUsed(targetUser.Id, today, usage);
             var dailyRemaining = Math.Max(0, totalAllowed - used);
 
-            var sessions = _sessionTracker.ActiveSessions.Values.ToList();
-            var activeTargetSession = sessions.FirstOrDefault(s => s.UserSid == targetUser.Sid);
+            // The session of the launch record of the Request Token, not the first session of the user. RequestCaller
+            // already refused a tracked session of another user.
+            _sessionTracker.ActiveSessions.TryGetValue(callerSessionId, out var activeTargetSession);
             bool isSessionActive = activeTargetSession != null;
             bool isSessionLocked = activeTargetSession?.IsLocked ?? false;
 
@@ -515,8 +513,6 @@ public sealed class WebServerHost : BackgroundService
                 latestDeclineReason = lastOverallReq.DeclineReason;
                 latestResolvedAt = lastOverallReq.ResolvedAt;
             }
-
-            var availableUsernames = restrictedUsers.Select(u => u.Username).ToList();
 
             var baseLimit = LimitRepository.GetByUserId(targetUser.Id);
             var customSchedules = ScheduleRepository.GetWeeklySchedule(targetUser.Id);
@@ -563,8 +559,6 @@ public sealed class WebServerHost : BackgroundService
                 LatestStatus: latestReq?.Status ?? lastOverallReq?.Status,
                 DeclineReason: latestDeclineReason,
                 DeclineResolvedAt: latestResolvedAt,
-                IsAdminTesting: isAdminTesting,
-                AvailableUsers: availableUsernames,
                 SessionActive: isSessionActive,
                 SessionLocked: isSessionLocked,
                 Week: weeklySchedule,
@@ -581,6 +575,16 @@ public sealed class WebServerHost : BackgroundService
         {
             // The child sees these messages on the request page, so they follow the Language Preset.
             var texts = RequestPageTexts.For(SettingsRepository.GetLanguagePreset());
+            // request-identity-from-launch, design D5: the user comes only from the Request Token, checked before the
+            // body is read. A username in the body has no effect.
+            var caller = RequestCaller(ctx);
+            if (caller is null)
+            {
+                if (_requestRefusals.Take("api/request", TimeSpan.FromMilliseconds(Environment.TickCount64), out var suppressed))
+                    _logger.Warning("Grace Request refused: no valid Request Token ({Suppressed} same warnings left out)", suppressed);
+                return Results.Json(new { error = texts["api_no_access"] }, statusCode: StatusCodes.Status401Unauthorized);
+            }
+            var user = caller.Value.User;
             try
             {
                 using var reader = new StreamReader(ctx.Request.Body);
@@ -589,7 +593,6 @@ public sealed class WebServerHost : BackgroundService
                 var requestType = doc.RootElement.TryGetProperty("requestType", out var typeProp) ? typeProp.GetString() : "extension";
                 var minutes = doc.RootElement.GetProperty("minutes").GetInt32();
                 var reason = doc.RootElement.GetProperty("reason").GetString() ?? "";
-                var requestedUser = doc.RootElement.TryGetProperty("username", out var uProp) ? uProp.GetString() : null;
 
                 if (string.Equals(requestType, "schedule_change", StringComparison.OrdinalIgnoreCase))
                 {
@@ -607,31 +610,6 @@ public sealed class WebServerHost : BackgroundService
                 }
 
                 var today = ControlTime.Current.Today;
-
-                var restrictedUsers = UserRepository.GetAll().Where(u => u.IsRestricted).ToList();
-                User? user = null;
-
-                if (!string.IsNullOrWhiteSpace(requestedUser))
-                {
-                    user = restrictedUsers.FirstOrDefault(u => string.Equals(u.Username, requestedUser, StringComparison.OrdinalIgnoreCase));
-                }
-
-                if (user == null)
-                {
-                    var sessions = _sessionTracker.ActiveSessions.Values.ToList();
-                    foreach (var s in sessions)
-                    {
-                        var u = UserRepository.GetBySid(s.UserSid);
-                        if (u != null && u.IsRestricted) { user = u; break; }
-                    }
-                }
-
-                user ??= restrictedUsers.FirstOrDefault();
-
-                if (user == null)
-                {
-                    return Results.BadRequest(new { error = texts["api_no_user"] });
-                }
 
                 // Check daily request limits and pending requests
                 var maxRequests = SettingsRepository.GetMaxDailyRequests();
