@@ -415,11 +415,16 @@ public sealed class WebServerHost : BackgroundService
     /// The user and the session of a request of the Request Window (request-identity-from-launch, design D5): the launch
     /// record of a valid Request Token in the cookie <see cref="RequestTokenStore.CookieName"/>, only for a Restricted
     /// User. Null without a valid token. No part of the request names the user.
+    /// Null also if the tracked session of the launch record has another user (design D9): the session ID went to a
+    /// new sign-in before the end of the session removed the record.
     /// </summary>
     private (User User, int SessionId)? RequestCaller(HttpContext ctx)
     {
         var record = _agentRequests.RequestTokens.Verify(ctx.Request.Cookies[RequestTokenStore.CookieName]);
         if (record is null) return null;
+        if (_sessionTracker.ActiveSessions.TryGetValue(record.SessionId, out var session)
+            && !string.Equals(session.UserSid, record.UserSid, StringComparison.OrdinalIgnoreCase))
+            return null;
         var user = UserRepository.GetBySid(record.UserSid);
         return user is { IsRestricted: true } ? (user, record.SessionId) : null;
     }
@@ -444,7 +449,9 @@ public sealed class WebServerHost : BackgroundService
         app.UseRouting();
         app.Use(AdminGateAsync);
 
-        app.MapGet("/", () => Results.Redirect("/request"));
+        // The root goes to the web admin: the child page needs the Request Token of the Request Window, so a browser
+        // gets only the text page_no_access there (request-identity-from-launch, design D10).
+        app.MapGet("/", () => Results.Redirect("/admin"));
 
         // The child request page. The user and the session come only from the Request Token of the Request Window
         // (request-identity-from-launch, design D5), never from the query: no fallback user and no list of users.
@@ -465,9 +472,9 @@ public sealed class WebServerHost : BackgroundService
             var used = UsageLedger.Shared.AllowanceUsed(targetUser.Id, today, usage);
             var dailyRemaining = Math.Max(0, totalAllowed - used);
 
-            // The session of the launch record of the Request Token, not the first session of the user.
+            // The session of the launch record of the Request Token, not the first session of the user. RequestCaller
+            // already refused a tracked session of another user.
             _sessionTracker.ActiveSessions.TryGetValue(callerSessionId, out var activeTargetSession);
-            if (activeTargetSession is not null && activeTargetSession.UserSid != targetUser.Sid) activeTargetSession = null;
             bool isSessionActive = activeTargetSession != null;
             bool isSessionLocked = activeTargetSession?.IsLocked ?? false;
 

@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: The request routes take the user only from the Request Token
-The service SHALL take the user and the session of `GET /request` and `POST /api/request` only from a valid Request Token in the cookie `pc_request_token`: the user SID and the session of the launch record of the Session Agent that got the token. It SHALL ignore a user name in the query, in the body or in any other part of the request. It SHALL accept a token only for a Restricted User.
+The service SHALL take the user and the session of `GET /request` and `POST /api/request` only from a valid Request Token in the cookie `pc_request_token`: the user SID and the session of the launch record of the Session Agent that got the token. It SHALL ignore a user name in the query, in the body or in any other part of the request. It SHALL accept a token only for a Restricted User. It SHALL refuse a token if the service tracks the session of the launch record with another user.
 
 #### Scenario: Request in the name of another user
 - **WHEN** a process of the child sends `POST /api/request` with the Request Token of the child and the `username` of another Restricted User
@@ -12,6 +12,10 @@ The service SHALL take the user and the session of `GET /request` and `POST /api
 #### Scenario: Token of an Administrator
 - **WHEN** the Session Agent of an Administrator asks for a Request Token
 - **THEN** the service gives no token
+
+#### Scenario: Session of another user
+- **WHEN** a process sends `POST /api/request` with a valid Request Token, and the service tracks the session of its launch record with another user
+- **THEN** the service answers 401 and stores no Grace Request
 
 ### Requirement: The request routes refuse a request without a valid Request Token
 Without a valid Request Token, `GET /request` SHALL answer 401 with the text `page_no_access` of the Language Preset and SHALL show no data and no name of a user. `POST /api/request` SHALL answer 401 with the text `api_no_access` of the Language Preset and SHALL store nothing.

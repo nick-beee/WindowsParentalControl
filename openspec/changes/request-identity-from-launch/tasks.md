@@ -62,9 +62,19 @@ Use the snapshot `test-base-net10`. Install the build of this branch. `Kid` is i
 - [ ] 7.3 `/request?user=` shows no user list:
   1. As `Kid`, run in PowerShell: `Invoke-WebRequest -Uri 'http://127.0.0.1:5050/request?user=Kid2' -UseBasicParsing`
   2. Expect: the command fails with 401, and the text is "Diese Seite geht nur über den Knopf „Mehr Zeit wünschen“ von Parental Control." The answer has neither `Kid` nor `Kid2`.
-  3. Run the same command for `http://127.0.0.1:5050/request` and `http://127.0.0.1:5050/`. Expect: 401 with the same text (the second one after the redirect).
+  3. Run the same command for `http://127.0.0.1:5050/request`. Expect: 401 with the same text.
+  4. Open `http://localhost:5050/` in a browser of `nick`. Expect: a redirect to `/admin` and the sign-in of the web admin (design D10).
 - [ ] 7.4 The token ends with the agent:
   1. As `Kid`, open the Request Window, then end `ParentalControl.Agent.exe` in Task Manager. Expect: the Request Window closes with the agent. Wait until the service starts a new agent (at most 60 seconds).
   2. Open the Request Window again. Expect: the page loads. The service log has a second "Request Token issued", for the new agent pid.
   3. Set the maximum of requests per day to 3 in the web admin. Send a request from the window. Expect: it is stored for `Kid`.
 - [ ] 7.5 An Administrator gets no token: sign in as `nick` in the console. Expect: no widget and no request item in the tray, as before. The service log has no "Request Token issued" for that session.
+
+## 8. Review of PR #66
+
+- [x] 8.1 Merge `main` with the Lock Reason of #64. `AgentRequests` keeps the `BreakEnforcer` of #64 and the `RequestTokenStore` of this change.
+  - Done. Both builds pass.
+- [x] 8.2 Redirect `/` to `/admin`, not to `/request` (design D10). Update the `admin-access` delta.
+  - Done. The HTTP gate test checks the `Location` header.
+- [x] 8.3 `RequestCaller` refuses a token if the service tracks the session of its launch record with another user (design D9). Add a scenario to the `request-window` delta.
+  - Done. The HTTP gate test (Windows only, CI) checks 401 on both routes for a session of another user, and a pass for the session of the token user.

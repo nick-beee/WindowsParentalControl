@@ -107,6 +107,20 @@ Two new keys in `RequestPageTexts`, in "de", "en" and "id", without placeholders
 
 The key `api_no_user` goes away: the route no longer searches for a user.
 
+### D9. The tracked session must belong to the user of the token
+
+`RequestCaller` also compares the user SID of the launch record with the user of `ActiveSessions[record.SessionId]`. If the service tracks that session with another user, both `GET /request` and `POST /api/request` refuse the token (401). This is defence in depth: the end of a session removes its launch record, but the session ID can go to a new sign-in before the service handles that end.
+
+If the service does not track the session at all, the token stays valid. The launch record already proves that the agent runs. The session tracker removes a session for a short time in some states (for example a lock after a clock that went backwards), and a refusal then gives no extra protection.
+
+Decided by the orchestrator under the user's delegation (2026-11-28), from the review of PR #66.
+
+### D10. The root `/` redirects to `/admin`
+
+Before this change, `/` redirected to `/request`. Without a Request Token, `/request` now gives 401 with the text `page_no_access`. A parent who opens `http://localhost:5050/` then sees "only via the button" and not the web admin. So `/` redirects to `/admin`. The route stays open without an Admin Session, and the web admin asks for the sign-in. The Request Window never opens `/`, and its URL filter does not allow it.
+
+Decided by the orchestrator under the user's delegation (2026-11-28), from the review of PR #66.
+
 ## Risks / Trade-offs
 
 - [The cookie is not in place at the first navigation] → `AddOrUpdateCookie` has no completion event. So the window reads the cookie back with `GetCookiesAsync("http://127.0.0.1:5050/request")` before `Navigate`, and shows `request_window_unavailable` without a navigation if the cookie with the token is not there. VM task 7.1 checks that the window shows the page. If the cookie is never in place, the fallback design is `NavigateWithWebResourceRequest` with a `Cookie` header for the first navigation.

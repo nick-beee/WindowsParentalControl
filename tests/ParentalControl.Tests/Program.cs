@@ -1190,6 +1190,20 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
         var invalidWithToken = await SendWithToken(HttpMethod.Post, "/api/request", token!,
             Json("{\"requestType\":\"extension\",\"minutes\":0,\"reason\":\"x\",\"username\":\"BreakChild\"}"));
         Debug.Assert((int)invalidWithToken.StatusCode == 400, "/api/request with a token and an invalid body should give 400: " + invalidWithToken.StatusCode);
+        // Design D9: a tracked session of the launch record with another user refuses the token on both routes.
+        gateTracker.TrackForTest(ParentalControl.Service.ActiveSession.Create(gateAgent.SessionId, otherChild.Sid, otherChild.Username));
+        var otherSessionApi = await SendWithToken(HttpMethod.Post, "/api/request", token!, extensionFor("TestBrother"));
+        Debug.Assert((int)otherSessionApi.StatusCode == 401, "/api/request in a session of another user should give 401: " + otherSessionApi.StatusCode);
+        var otherSessionPage = await SendWithToken(HttpMethod.Get, "/request", token!);
+        Debug.Assert((int)otherSessionPage.StatusCode == 401, "/request in a session of another user should give 401: " + otherSessionPage.StatusCode);
+        gateTracker.TrackForTest(ParentalControl.Service.ActiveSession.Create(gateAgent.SessionId, user.Sid, user.Username));
+        var ownSession = await SendWithToken(HttpMethod.Post, "/api/request", token!,
+            Json("{\"requestType\":\"extension\",\"minutes\":0,\"reason\":\"x\"}"));
+        Debug.Assert((int)ownSession.StatusCode == 400, "/api/request in the session of the token user should pass the token check: " + ownSession.StatusCode);
+        gateTracker.RemoveSession(gateAgent.SessionId);
+        // Design D10: the root redirects to the web admin, not to the child page.
+        var root = await Send(HttpMethod.Get, "/");
+        Debug.Assert((int)root.StatusCode == 302 && root.Headers.Location?.OriginalString == "/admin", "/ should redirect to /admin: " + root.Headers.Location);
         var adminAgent = new ParentalControl.Domain.Sessions.AgentLaunchRecord(78, new ParentalControl.Domain.Sessions.ProcessIdentity(7878, DateTime.UtcNow),
             adminUser.Sid);
         gateAgents.Record(adminAgent);
