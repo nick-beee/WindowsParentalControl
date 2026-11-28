@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Programs that are never blocked
-The system SHALL never close or suspend because of a block: an exe below the Windows folder, an exe below the Parental Control install folder, the Trusted WebView2 Runtime (an exe with the file name `msedgewebview2.exe` below `Microsoft\EdgeWebView\Application\` in a Program Files folder), a process outside the sessions of Restricted Users, or a process whose exe path it cannot read. This SHALL be true also if a rule matches the exe. Each other exe with the file name `msedgewebview2.exe` SHALL be an ordinary exe: a block SHALL close it at its start or suspend it, as any other Blocked Program.
+The system SHALL never close or suspend because of a block, also if a rule matches: an exe below the Windows folder or the Parental Control install folder, the Trusted WebView2 Runtime (`msedgewebview2.exe` below `Microsoft\EdgeWebView\Application\` in a Program Files folder), a process outside the sessions of Restricted Users, or a process whose exe path it cannot read. Each other `msedgewebview2.exe` SHALL be an ordinary exe for a block.
 
 #### Scenario: WebView2 host
 - **WHEN** a folder rule blocks `C:\Program Files (x86)\Microsoft\` and a Study app starts `msedgewebview2.exe` below that folder
