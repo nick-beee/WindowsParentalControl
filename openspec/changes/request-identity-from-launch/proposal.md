@@ -15,7 +15,8 @@ The impact today is low: one child, and a Grace Request needs the approval of th
 - The Agent Channel gets a new message `requestToken`. The service answers it only for a Restricted User, and only while the agent of the launch record runs.
 - The Request Window asks for a Request Token before its first navigation and sets it as an HttpOnly cookie for `127.0.0.1`. Then the page load and each `fetch` of the page send it. Without a token, the window shows the text `request_window_unavailable`. The first page has no `?user=` any more.
 - `GET /request` and `POST /api/request` take the user and the session only from a valid Request Token. They ignore `?user=` and the `username` of the body. Without a valid token, `GET /request` answers 401 with a text of the Language Preset, and `POST /api/request` answers 401 with a JSON error of the Language Preset. The page shows that error.
-- The admin test mode of the request page goes away: no fallback user, no list of user names, no switch links, no redirect to `/admin` for an Administrator in the console.
+- The admin test mode of the request page goes away: no fallback user, no list of user names, no switch links, no redirect of `/request` to `/admin` for an Administrator in the console.
+- The root `/` redirects to `/admin`, not to `/request`, so a parent who opens `http://localhost:5050/` gets the web admin (design D10).
 - The approval flow of the parent does not change: the same Grace Request rows, the same Telegram alert, the same limits per day.
 - Decided by the orchestrator under the user's delegation (2026-11-28): option (a), a Request Token through the Agent Channel. Rejected: (b) the owner of the TCP connection, and (c) the request through the Agent Channel. See design.md D1.
 
@@ -29,7 +30,7 @@ None.
 
 - `request-window`: the window gets a Request Token before its first navigation; the request routes take the user only from the token; the query `?user=` has no effect; the window shows the fallback text without a token.
 - `session-agent-channel`: a new message for the Request Token; the list of the uses of agent data names it.
-- `admin-access`: the child-facing routes still need no Admin Session, but `/request` and `/api/request` need a valid Request Token.
+- `admin-access`: the child-facing routes still need no Admin Session, but `/request` and `/api/request` need a valid Request Token; `/` redirects to `/admin`.
 
 ## Out of scope
 
