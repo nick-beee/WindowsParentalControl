@@ -89,7 +89,7 @@ In the Storage Lockdown, the system SHALL try a write to the database every minu
 - **THEN** the system stays in the Storage Lockdown
 
 ### Requirement: Report the Storage Lockdown
-The system SHALL write a Windows event log entry at each entry into and each exit from the Storage Lockdown. The entry and the alert SHALL name the failed operation and the cause of the last failure, and SHALL say that the disk is full only if the cause is a full disk. At the first entry on a day of the Control Time Zone, and at a later entry on that day with a known cause of another kind, the system SHALL send a Telegram alert to the parent. The alert and its state SHALL not need a write to the database.
+The system SHALL write a Windows event log entry at each entry into and exit from the Storage Lockdown. The entry and the alert SHALL name the failed operation and the cause, and SHALL say "disk is full" only for a full disk. At the first entry of a day of the Control Time Zone, and at a later entry that day with a known cause of another kind, it SHALL send a Telegram alert to the parent, without a write to the database.
 
 #### Scenario: First Storage Lockdown of the day
 - **WHEN** the system enters the Storage Lockdown for the first time today and Telegram is configured
