@@ -31,6 +31,7 @@ python3 scripts/vm/typekeys.py < "$SECRET_FILE" | ssh root@192.168.1.98 "sh -s"
 | `spike-attack.ps1 <pid> [pipe]` | As Kid: tries to end the spike probe and to open or re-create a channel pipe (task 1.1, 1.3). |
 | `resume-process.ps1 <name>` | As Kid: resumes a suspended process with `NtResumeProcess`, as a child with a tool does. |
 | `samples.ps1 <exe path>` | Sends agent samples for an exe to `/api/agent/activity`. |
+| `kid-study-samples.ps1 [count]` | As Kid: sends a Study sample to `/api/agent/activity` every 5 s and logs each HTTP status to `C:\Users\Public\kid-study-samples.log` (task 8.1: the route gives 404). |
 | `grant.ps1 [userId] [minutes]` | Signs in with the next TOTP code from `VmTool totp code`, then grants Bonus Minutes through the admin API. Run `VmTool totp setup` one time before. |
 | `state.ps1` | Shows the service state, the suspended threads of the test programs and the end of the service log. |
 | `watch.ps1` | Shows the current app of the session from the dashboard API every 20 s. |
