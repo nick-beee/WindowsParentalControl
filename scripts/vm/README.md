@@ -9,6 +9,7 @@ The Mac scripts use the SSH alias `winvm` and the Proxmox host `root@192.168.1.9
 | Script | What it does |
 |---|---|
 | `shot.sh <out.png>` | Takes a screenshot of the VM console (`screendump`) and converts it to PNG with `magick`. |
+| `qclick.py <x> <y> [move]` | Runs on pve2: an absolute mouse click (or move) on the VM console through the QMP socket. See `docs/vm.md`. |
 | `typekeys.py [vmid]` | Reads text on stdin and prints one `qm sendkey` line per character. Pipe the output to the Proxmox host. |
 | `kid-run.sh <script.ps1> [args]` | Copies a script from `guest/` to `C:\Users\Public` and runs it as `Kid` in the console session, through a scheduled task with `/ru Kid /it`. |
 | `spike.sh deploy\|conf\|kid\|kidcmd\|log` | The spike of `session-probe-and-agent-channel` (task group 1): publishes the spike tools, sets the config of the spike service, runs `SpikeKid` or a command line as `Kid`, prints the service log. The usage is at the top of the script. |

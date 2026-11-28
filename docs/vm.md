@@ -48,6 +48,12 @@ A session lock or a logon must happen in the console, not over RDP. You can driv
 - **Kid on the logon screen:** after a reboot, Windows shows the last user. To show `Kid`, set the LogonUI values in `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI` (`LastLoggedOnUser`, `LastLoggedOnSAMUser`, `LastLoggedOnDisplayName`, `LastLoggedOnUserSID`, `SelectedUserSID`) to `Kid` and its SID.
 - **Programs as Kid:** a scheduled task with `/ru Kid /it` runs a program in the console session of `Kid`. Create it over SSH with `schtasks /create ... /ru Kid /it`, then start it with `schtasks /run`.
 - **Admin RDP:** a `Kid` logon in the console ends the RDP session of `nick`. SSH keeps working.
+- **Mouse:** `scripts/vm/qclick.py` sends an absolute click through the QMP socket of the VM (the HID tablet). Copy it to pve2 once (`scp scripts/vm/qclick.py root@192.168.1.98:/root/`), then run `ssh root@192.168.1.98 "python3 /root/qclick.py <x> <y>"` with the pixel position on the 1024×768 console (a 60 % screenshot position × 1/0.6). Add `move` to move without a click.
+- **Kid logon without the secret:** if the secret card gets no answer, set a temporary password as `nick` (`net user Kid <random>`), keep it only in the scratchpad, and roll back to `test-base-net10` at the end: the rollback restores the password of the user.
+- **First logon after a rollback:** Windows shows up to five privacy pages ("Let Microsoft and apps use your location", …). On each page click "No" (about 345,413 on the first page, 345,440 on the next pages) and then "Accept" (915,677). A Settings window and the first-run dialog of Open-Shell can open after it; end them as `nick` (`taskkill /f /im SystemSettings.exe`, `taskkill /f /im StartMenu.exe`).
+- **Display timeout:** the snapshot turns the display off after 10 minutes; `screendump` then gives a black image. Run `powercfg /change monitor-timeout-ac 0` as `nick` after a rollback. If a screenshot shows a window that no longer exists, press `esc` once; the console then draws again.
+- **Foreground:** a program that a scheduled task starts cannot take the foreground. Click its window (`qclick.py`), or run `SpikeKid click <x> <y>` / `front.ps1` as `Kid`. Check the result in the probe trace (`PARENTAL_CONTROL_TEST_PROBE_TRACE=1` in the `Environment` value of the service, VM-test build only).
+- **Short unlock:** an unlock during a lock that the service applies again lasts about 1–2 seconds. To see the widget in it, run `screendump` from pve2 1.2 s after the `ret` key, not through `shot.sh`.
 
 ## Service on the VM
 
@@ -55,6 +61,11 @@ A session lock or a logon must happen in the console, not over RDP. You can driv
 - The database is in `C:\ProgramData\ParentalControl\`.
 - Test hook for the suspend fallback: set `PARENTAL_CONTROL_TEST_SUSPEND_FAIL=<exe file name>` in the `Environment` value of the service key, then restart the service. Remove the value after the test.
 - Test hook for the Storage Lockdown: set `PARENTAL_CONTROL_TEST_WRITE_FAIL=C:\ProgramData\pc-write-fail.flag` in the `Environment` value of the service key, then restart the service. While that file exists, each database write fails and each read works. Create the file as `nick` to start the failure, delete it to end it. Remove the value after the test.
+
+## Test switches of the probe
+
+- `PARENTAL_CONTROL_TEST_PROBE_ARGS=gap=<s>` (VM-test build): the probe waits s more seconds after each 10th sample. Keep s at 18 or less: the watchdog of the service ends a probe after 30 s without a line, and a gap over a probe end gives no `PROBE_GAP` (design S15).
+- A framework-dependent test program cannot be renamed: the apphost looks for a dll with its own name. Publish a copy with `-p:AssemblyName=<name>` instead (for example `msedgewebview2` for the scenario of #48).
 
 ## Time zone and disk tests
 
