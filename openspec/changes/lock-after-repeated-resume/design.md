@@ -43,8 +43,7 @@ Rejected: put the count into `SuspensionPlanner`. The planner is stateless, and 
 - `Suspend` gives `Ok` → `MarkSuspended`, also for a recorded process.
 - A tick sees a recorded process suspended (`IsSuspended`), its session has no Session End Hold, and no Session End Guard covers it → `MarkSuspended`. This covers the first tick after a service start.
 - `ResumeRecord` (time left again, block removed, service stop) → `MarkResumedByService`.
-- `ResumeSessionForEnd` (the end of a session, a Forced Logoff) → `MarkResumedByService` for each record of the session, before the hold check. Also a refused hold does this, because the Session Agent resumes the processes.
-- `StartGuard` → `MarkResumedByService` for each covered process. The agent resumed it for the end of the session.
+- `ResumeSessionForEnd` (the end of a session, a Forced Logoff) → `MarkResumedByService` for each record of the session, before the hold check. A refused hold does this too, because the Session Agent resumes the processes. The processes that a Session End Guard covers are records of that session, so the guard needs no step of its own.
 
 So a resume for the end of a session never counts: when the hold or the guard ends, the process is not watched, and the planner suspends it again without a count. The service watches it again after the next `Suspend`.
 

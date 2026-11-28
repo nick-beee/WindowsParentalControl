@@ -19,6 +19,9 @@ namespace ParentalControl.Service;
 /// process, and the enforcer suspends it <see cref="PendingSuspensions.Delay"/> later. During a Session End Hold of a
 /// session, it suspends no process of that session. After a refused hold, a Session End Guard keeps the processes
 /// that the Session Agent resumed for the end of the session from a new suspension (<see cref="SessionEndGuards"/>).
+/// A process that the child resumes again and again (a Child Resume) leads to a Resume Lock: after
+/// <see cref="ResumeLocks.Threshold"/> Child Resumes of one user in <see cref="ResumeLocks.Window"/>, the enforcer locks each
+/// unlocked session of that user through <see cref="SessionLocker"/> until the lock ends (<see cref="ResumeLocks"/>).
 /// <see cref="UsageMonitorWorker"/> calls <see cref="Tick"/> every 60 seconds. A bonus approval, an admin
 /// change, an unlock and the follow-up timer (the end of a Pending Suspension, a hold or a guard) call <see cref="RequestTick"/>.
 /// </summary>
@@ -52,6 +55,10 @@ public sealed class CategoryEnforcer : IDisposable
     private readonly SessionEndHolds _holds = new();
     private readonly SessionEndGuards _guards = new();
     private readonly PendingSuspensions _pending = new();
+    private readonly ResumeLocks _resumes = new();
+    // The last message of a Resume Lock per session. The locks run outside the gate, so two ticks can overlap.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, DateTime> _lastResumeLockMessage = new();
+    private static readonly TimeSpan ResumeLockMessageInterval = TimeSpan.FromSeconds(10);
     private readonly Timer _followUp;
     // A copy of the Pending Suspensions for the status route, which reads it without the lock.
     private volatile IReadOnlyList<SuspendAction> _pendingSnapshot = [];
@@ -120,6 +127,8 @@ public sealed class CategoryEnforcer : IDisposable
         // must not stop the tick, which is the fallback of the watcher.
         _blockEnforcer.EnsureRunning();
 
+        // The sessions of a Resume Lock. They are locked after the gate, because the message before the lock waits.
+        var resumeLockSessions = new List<int>();
         lock (_gate)
         {
             if (_stopped)
@@ -161,7 +170,9 @@ public sealed class CategoryEnforcer : IDisposable
                     UsageRepository.GetUsage(id, today)?.BonusMinutes ?? 0));
 
             var records = SuspensionRepository.GetAll();
-            _guards.Retain(records.Select(r => (r.Pid, r.StartTimeUtc)).ToHashSet());
+            var recordKeys = records.Select(r => (r.Pid, r.StartTimeUtc)).ToHashSet();
+            _guards.Retain(recordKeys);
+            _resumes.Retain(recordKeys);
             if (restrictedSessions.Count == 0 && records.Count == 0)
             {
                 _pending.Clear();
@@ -171,9 +182,19 @@ public sealed class CategoryEnforcer : IDisposable
 
             var sessionIds = restrictedSessions.Keys.Concat(records.Select(r => r.SessionId)).ToHashSet();
             var processes = ProcessControl.ListProcesses(sessionIds);
-            _guards.Observe(records.Select(r => (r.Pid, r.StartTimeUtc)),
-                processes.Where(p => p.IsSuspended).Select(p => (p.Pid, p.StartTimeUtc)).ToHashSet(), nowUtc);
+            var suspendedNow = processes.Where(p => p.IsSuspended).Select(p => (p.Pid, p.StartTimeUtc)).ToHashSet();
+            _guards.Observe(records.Select(r => (r.Pid, r.StartTimeUtc)), suspendedNow, nowUtc);
             var guarded = _guards.Covered(nowUtc);
+            var held = _holds.HeldSessions(nowUtc);
+
+            // A recorded process that is suspended now, outside a hold and a guard, is watched: a later run of it again
+            // is a Child Resume (lock-after-repeated-resume D2). This also covers the first tick after a service start.
+            foreach (var record in records)
+            {
+                var key = (record.Pid, record.StartTimeUtc);
+                if (suspendedNow.Contains(key) && !held.Contains(record.SessionId) && !guarded.Contains(key))
+                    _resumes.MarkSuspended(record.Pid, record.StartTimeUtc);
+            }
 
             SendWarnings(users, dayLimits, RunningExes(processes, restrictedSessions, config.Resolver));
 
@@ -181,20 +202,22 @@ public sealed class CategoryEnforcer : IDisposable
             // skipped by the planner; each other blocked process is suspended by the planner.
             var pendingClose = CloseBlockedStarts(processes, restrictedSessions, users, records, config);
 
+            ExeVerdict VerdictFor(int userId, string path)
+            {
+                var resolution = config.Resolver.Resolve(path);
+                var exhausted = dayLimits.TryGetValue(userId, out var day) && day.IsExhausted(resolution);
+                return new ExeVerdict(resolution.Category, exhausted, _blockEnforcer.IsBlockedProgram(resolution));
+            }
+
             var plan = SuspensionPlanner.Plan(new PlannerInput(
                 processes,
                 restrictedSessions,
-                (userId, path) =>
-                {
-                    var resolution = config.Resolver.Resolve(path);
-                    var exhausted = dayLimits.TryGetValue(userId, out var day) && day.IsExhausted(resolution);
-                    return new ExeVerdict(resolution.Category, exhausted, _blockEnforcer.IsBlockedProgram(resolution));
-                },
+                VerdictFor,
                 (userId, path) => _foregroundHistory.WasForeground(userId, today, path),
                 records,
                 SessionTracker.GetAgentExecutablePath(),
                 Environment.GetFolderPath(Environment.SpecialFolder.Windows),
-                _holds.HeldSessions(nowUtc),
+                held,
                 p => pendingClose.Contains((p.Pid, p.StartTimeUtc)),
                 _blockEnforcer.ProtectedPrograms,
                 guarded));
@@ -215,6 +238,8 @@ public sealed class CategoryEnforcer : IDisposable
             foreach (var record in plan.ToResume)
                 ResumeRecord(record, record.Reason == SuspensionReason.Blocked ? "block removed" : "time available again");
 
+            CheckResumeLocks(plan, today, users, restrictedSessions, VerdictFor, resumeLockSessions);
+
             // Two phases: the agent minimizes the windows of a pending process, and the next steps suspend it.
             var step = _pending.Step(plan.ToSuspend, nowUtc);
             foreach (var action in step.Started)
@@ -225,6 +250,95 @@ public sealed class CategoryEnforcer : IDisposable
                 Suspend(action, users, dayLimits, config.Resolver);
 
             PublishAndSchedule();
+        }
+
+        foreach (var sessionId in resumeLockSessions)
+            LockForResumeLock(sessionId);
+    }
+
+    /// <summary>
+    /// Ends the Resume Locks whose reason ended, counts the Child Resumes of this tick, writes the event and sends the
+    /// alert for each new Resume Lock, and collects the unlocked sessions of each user with a Resume Lock. Call it with the
+    /// lock, after the plan.
+    /// </summary>
+    private void CheckResumeLocks(SuspensionPlan plan, DateOnly today, IReadOnlyDictionary<int, User> users,
+        IReadOnlyDictionary<int, int> restrictedSessions, Func<int, string, ExeVerdict> verdict, List<int> lockSessions)
+    {
+        static int Bonus(int userId, DateOnly day) => UsageRepository.GetUsage(userId, day)?.BonusMinutes ?? 0;
+        string Name(int userId) => users.TryGetValue(userId, out var u) ? u.Username : UserRepository.GetById(userId)?.Username ?? userId.ToString();
+
+        // A resumed exe keeps the lock due while it has no time left or is still a Blocked Program. A user without a
+        // session has no limits in this tick: keep the lock; the next day or Bonus Minutes still end it.
+        var ended = _resumes.Release(today, userId => Bonus(userId, today), (userId, path) =>
+        {
+            if (!restrictedSessions.Values.Contains(userId))
+                return true;
+            var v = verdict(userId, path);
+            return v.Category != AppCategory.System
+                   && (v.IsExhausted || (v.IsBlocked && !_blockEnforcer.ProtectedPrograms.IsProtected(path)));
+        });
+        foreach (var end in ended)
+            _logger.Information("Resume Lock of {Username} ended: {Reason}", Name(end.UserId), end.Reason);
+
+        var resumed = plan.ToSuspend.Where(a => a.IsRecorded)
+            .Select(a => new ResumedProcess(a.Process.Pid, a.Process.StartTimeUtc, a.UserId, a.ExePath));
+        var check = _resumes.Check(resumed, SessionLocker.MonotonicNow(), today, userId => Bonus(userId, today));
+        foreach (var userId in check.Counted)
+        {
+            var started = check.Started.Any(s => s.UserId == userId);
+            _logger.Warning("Child Resume of {Username}: a paused program runs again ({State})", Name(userId),
+                started ? $"{ResumeLocks.Threshold} of {ResumeLocks.Threshold} in {ResumeLocks.Window.TotalMinutes} min: Resume Lock starts"
+                : _resumes.IsLocked(userId) ? "during the Resume Lock"
+                : $"{_resumes.ChildResumes(userId)} of {ResumeLocks.Threshold} in {ResumeLocks.Window.TotalMinutes} min");
+        }
+
+        foreach (var start in check.Started)
+        {
+            var username = Name(start.UserId);
+            var exes = string.Join(", ", start.ExePaths.Select(WindowsPath.GetFileName));
+            _logger.Warning("Resume Lock of {Username} started: {Exes} resumed again and again. The sessions lock until the next day, Bonus Minutes, or no reason left",
+                username, exes);
+            var sid = users.TryGetValue(start.UserId, out var user) ? user.Sid : UserRepository.GetById(start.UserId)?.Sid;
+            if (sid is not null)
+                _health.TryWrite(() => EventRepository.LogEvent(sid, EventType.SECURITY_ALERT,
+                    $"Paused programs resumed again and again ({exes}): session locked (Resume Lock)"), "security alert event", _logger);
+            if (_sentToday.Add($"resumelock:{start.UserId}"))
+                SendParentAlert($"Parental Control: {username} on {Environment.MachineName} resumed paused programs again and again ({exes}). " +
+                                "The session is locked for the rest of the day. Bonus Minutes end the lock.");
+        }
+
+        foreach (var (sessionId, userId) in restrictedSessions)
+        {
+            if (_resumes.IsLocked(userId)
+                && _sessionTracker.ActiveSessions.TryGetValue(sessionId, out var session) && !session.IsLocked)
+                lockSessions.Add(sessionId);
+        }
+    }
+
+    /// <summary>
+    /// Locks a session of a Resume Lock: first the message (at most one time in 10 seconds per session), then the Enforced
+    /// Workstation Lock. During a Lock Deferral it sends no message and does not lock; the lock is owed, and the tick at
+    /// the end of the deferral locks again if the Resume Lock still runs. It never closes a program. Call it without the lock.
+    /// </summary>
+    private void LockForResumeLock(int sessionId)
+    {
+        const string reason = "Resume Lock";
+        if (_stopped || _locker.ShouldDefer(sessionId, reason))
+            return;
+
+        var now = DateTime.UtcNow;
+        if (!_lastResumeLockMessage.TryGetValue(sessionId, out var last) || now - last > ResumeLockMessageInterval)
+        {
+            _lastResumeLockMessage[sessionId] = now;
+            var texts = SessionTexts.For(SettingsRepository.GetLanguagePreset());
+            NotificationManager.SendMessage(sessionId, texts["resume_lock_title"], texts["resume_lock_body"],
+                isWarning: true, timeoutSeconds: 5, wait: true);
+        }
+
+        if (_locker.Lock(sessionId, reason))
+        {
+            _sessionTracker.OnSessionLock(sessionId, $"{reason} - workstation locked");
+            _logger.Information("Session {SessionId} locked: {Reason}", sessionId, reason);
         }
     }
 
@@ -249,6 +363,11 @@ public sealed class CategoryEnforcer : IDisposable
                 return HoldRequestResult.Refused;
 
             var result = _holds.Request(sessionId, user.Id, DateTime.UtcNow, trusted);
+
+            // The service, or after a refused hold the Session Agent, resumes these processes for the end of the session.
+            // A run of them again is no Child Resume until the service suspends them again (lock-after-repeated-resume D2).
+            foreach (var record in SuspensionRepository.GetAll().Where(r => r.SessionId == sessionId))
+                _resumes.MarkResumedByService(record.Pid, record.StartTimeUtc);
             switch (result)
             {
                 case HoldRequestResult.Refused:
@@ -399,6 +518,7 @@ public sealed class CategoryEnforcer : IDisposable
         if (result is ProcessOpResult.Ok or ProcessOpResult.NotFound)
         {
             _guards.MarkResumed(record.Pid, record.StartTimeUtc);
+            _resumes.MarkResumedByService(record.Pid, record.StartTimeUtc);
             // A failed delete keeps the record; the next tick resumes the process again (no effect) and tries the delete.
             _health.TryWrite(() => SuspensionRepository.Delete(record.Pid, record.StartTimeUtc), "delete of a suspension record", _logger);
             _logger.Information("Resumed {Exe} (pid {Pid}, {Category}): {Reason} ({Result})",
@@ -442,6 +562,7 @@ public sealed class CategoryEnforcer : IDisposable
         {
             case ProcessOpResult.Ok:
                 _guards.MarkSuspended(p.Pid, p.StartTimeUtc);
+                _resumes.MarkSuspended(p.Pid, p.StartTimeUtc);
                 _logger.Information("Suspended {Exe} (pid {Pid}, {Category}, {Reason}) of {Username}{Again}",
                     action.ExePath, p.Pid, action.Category, action.Reason, username, action.IsRecorded ? " again" : "");
                 if (action.Reason == SuspensionReason.Blocked)

@@ -63,6 +63,9 @@ An exe whose App Rule has the block on. The rule precedence of App Rules decides
 ## Blocked Start
 A process of a Blocked Program that started after the block took effect and after the service started, and that the service detects within 10 seconds after its creation. The service closes a Blocked Start at once. This is the only close of a program of a Restricted User. A process of a Blocked Program that is not a Blocked Start becomes a Suspended App.
 
+## Resume Lock
+The Enforced Workstation Lock of each session of a Restricted User after 3 Child Resumes of that user in 10 minutes, of one exe or of different exes. A Child Resume is a check in which the service finds that a Suspended App runs again while its exe still has no time left or is still a Blocked Program. A resume by the service itself, or for the end of a session under a Session End Hold or a Session End Guard, is not a Child Resume. One check counts at most one Child Resume per user, and a check less than 30 seconds after the last counted one does not count. The service locks the session again after each unlock and each sign-in. The lock ends on the next day of the Control Time Zone, after new Bonus Minutes, or when no resumed exe has a reason to stay suspended. A Lock Deferral delays it. Each start writes an event, and the parent gets at most one alert per day. It never closes, kills or suspends a program. The state is in memory only: a restart of the service ends it.
+
 ## Language Preset
 A named set of default child texts: "de" (German), "en" (English) or "id" (Indonesian). A new install uses "de". The preset sets the language of the service messages, the Session Agent and the child request page. It does not change the language of the admin UIs. A preset switch replaces only the texts that the parent did not edit.
 

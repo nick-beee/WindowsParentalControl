@@ -2,7 +2,7 @@
 
 ## 1. Domain: pure logic
 
-- [ ] 1.1 Add `ResumeLocks` in `src/ParentalControl.Domain/Categories` (design D1 to D4, D6): the watched processes (`MarkSuspended`, `MarkResumedByService`, `Retain`), `Check` (one Child Resume per user and check, 30 seconds between two, 3 in 10 minutes start a lock, a Child Resume during a lock adds its exes) and `Release` (new day, more Bonus Minutes, no exe still due; the strikes clear). Verify with xUnit tests in `tests/ParentalControl.Domain.Tests/ResumeLocksTests.cs`:
+- [x] 1.1 Add `ResumeLocks` in `src/ParentalControl.Domain/Categories` (design D1 to D4, D6): the watched processes (`MarkSuspended`, `MarkResumedByService`, `Retain`), `Check` (one Child Resume per user and check, 30 seconds between two, 3 in 10 minutes start a lock, a Child Resume during a lock adds its exes) and `Release` (new day, more Bonus Minutes, no exe still due; the strikes clear). Verify with xUnit tests in `tests/ParentalControl.Domain.Tests/ResumeLocksTests.cs`:
   - a watched process that runs again counts one Child Resume; an unwatched one does not;
   - 10 resumed processes of one user in one check count 1;
   - the same process does not count again in the next check of its Pending Suspension;
@@ -14,21 +14,25 @@
   - `Retain` drops a process without a record;
   - `Release` ends a lock on a new day, after more Bonus Minutes, and when no exe is still due; it keeps the lock while one exe is still due; after the end a new lock needs 3 new Child Resumes;
   - a Child Resume during a lock starts no second lock and adds its exe.
-- [ ] 1.2 Add the rows `resume_lock_title` and `resume_lock_body` to `SessionTexts` in de, en and id (design D8). Verify with an xUnit test of the German and English texts.
-
+  - Done: `Domain/Categories/ResumeLocks`, with 22 tests in `ResumeLocksTests`.
+- [x] 1.2 Add the rows `resume_lock_title` and `resume_lock_body` to `SessionTexts` in de, en and id (design D8). Verify with an xUnit test of the German and English texts.
+  - Done: the theory `ResumeLockTexts` in `SessionTextsTests`.
 ## 2. Service
 
-- [ ] 2.1 In `CategoryEnforcer`, hold one `ResumeLocks`. In `Tick`: `Retain` with the records; `MarkSuspended` for each recorded process that the tick sees suspended outside a hold and a guard; after the plan, `Release` and `Check` (design D5); `MarkSuspended` after `Suspend` = `Ok`. `MarkResumedByService` in `ResumeRecord`, in `ResumeSessionForEnd` (each record of the session, also for a refused hold) and in `StartGuard` (the covered processes). Verify that `dotnet build -p:EnableWindowsTargeting=true` passes.
-- [ ] 2.2 For each new lock: the `SECURITY_ALERT` event and the parent alert with the key `resumelock:<userId>` (design D8). Collect the unlocked sessions of each locked user, and lock them after the gate: `ShouldDefer`, the child message (at most one time in 10 seconds per session), `SessionLocker.Lock`, `SessionTracker.OnSessionLock` (design D5). Verify that the build passes and that the log names each lock with the reason "Resume Lock".
+- [x] 2.1 In `CategoryEnforcer`, hold one `ResumeLocks`. In `Tick`: `Retain` with the records; `MarkSuspended` for each recorded process that the tick sees suspended outside a hold and a guard; after the plan, `Release` and `Check` (design D5); `MarkSuspended` after `Suspend` = `Ok`. `MarkResumedByService` in `ResumeRecord` and in `ResumeSessionForEnd` (each record of the session, also for a refused hold, so also the processes of a guard). Verify that `dotnet build -p:EnableWindowsTargeting=true` passes.
+- [x] 2.2 For each new lock: the `SECURITY_ALERT` event and the parent alert with the key `resumelock:<userId>` (design D8). Collect the unlocked sessions of each locked user, and lock them after the gate: `ShouldDefer`, the child message (at most one time in 10 seconds per session), `SessionLocker.Lock`, `SessionTracker.OnSessionLock` (design D5). Verify that the build passes and that the log names each lock with the reason "Resume Lock".
 
+  - Done: `CheckResumeLocks` and `LockForResumeLock` in `CategoryEnforcer`. The log lines are "Child Resume of … (n of 3 in 10 min)", "Resume Lock of … started", "Session … locked: Resume Lock" and "Resume Lock of … ended: <reason>".
 ## 3. Documentation
 
-- [ ] 3.1 Add the term "Resume Lock" (with Child Resume) to `GLOSSARY.md` after "Blocked Start" (design D9). Verify that `git diff origin/main -- GLOSSARY.md` shows only the new term.
+- [x] 3.1 Add the term "Resume Lock" (with Child Resume) to `GLOSSARY.md` after "Blocked Start" (design D9). Verify that `git diff origin/main -- GLOSSARY.md` shows only the new term.
 
+  - Done: the new term is after "Blocked Start", before "Language Preset".
 ## 4. Verification on the Mac
 
-- [ ] 4.1 `dotnet build -p:EnableWindowsTargeting=true` passes, `dotnet test tests/ParentalControl.Domain.Tests` passes, and `openspec validate --all --strict` passes.
+- [x] 4.1 `dotnet build -p:EnableWindowsTargeting=true` passes, `dotnet test tests/ParentalControl.Domain.Tests` passes, and `openspec validate --all --strict` passes.
 
+  - Done (2026-11-28): the build has 0 warnings and 0 errors; 1098 tests pass; `openspec validate --all --strict` gives 11 passed.
 ## 5. Verification on VM 102
 
 Setup for each check: roll back to the snapshot `test-base-net10`, install the build of this branch with `scripts/vm/guest/deploy.ps1`, sign in as `Kid` in the Proxmox console (not RDP), Language Preset "de", Breaks off. Add the rule `TestGame.exe` → Games, give Games a limit of 1 minute today, and keep `TestGame.exe` in front until it is suspended. `scripts/vm/guest/resume-process.ps1 -Name TestGame` (run as `Kid`) calls `NtResumeProcess` one time.
