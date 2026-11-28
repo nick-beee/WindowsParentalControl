@@ -8,8 +8,19 @@ var form = new Form { Text = $"{name} (pid {Environment.ProcessId})", Width = 42
 var label = new Label { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 28), TextAlign = ContentAlignment.MiddleCenter };
 form.Controls.Add(label);
 var start = DateTime.Now;
+// The cpu=on argument uses about 20 ms of CPU time in each tick (about 80 ms per second), also while the window is
+// minimized. A resumed copy then shows a clear CPU growth (lock-after-repeated-resume, design D10).
+var cpuLoad = args.Contains("cpu=on");
 var timer = new System.Windows.Forms.Timer { Interval = 250 };
-timer.Tick += (_, _) => label.Text = $"{name}\n{(DateTime.Now - start):hh\\:mm\\:ss}";
+timer.Tick += (_, _) =>
+{
+    label.Text = $"{name}\n{(DateTime.Now - start):hh\\:mm\\:ss}";
+    if (cpuLoad)
+    {
+        var spin = System.Diagnostics.Stopwatch.StartNew();
+        while (spin.ElapsedMilliseconds < 20) { }
+    }
+};
 timer.Start();
 
 // A 440 Hz tone, 1 s, played in a loop. The sound=off argument starts it without sound.

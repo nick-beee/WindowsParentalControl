@@ -4,6 +4,7 @@ using ParentalControl.Core.Models;
 using ParentalControl.Core.Services;
 using ParentalControl.Domain.Captures;
 using ParentalControl.Domain.Messages;
+using ParentalControl.Domain.Requests;
 using ParentalControl.Domain.Sessions;
 using ParentalControl.Domain.Time;
 
@@ -33,8 +34,9 @@ public sealed class AgentRequests
     private readonly CaptureRefusalLog _captureRefusals = new();
 
     public AgentRequests(SessionTracker sessionTracker, CategoryEnforcer categoryEnforcer, BreakEnforcer breakEnforcer,
-        SessionLocker sessionLocker, TelegramBotService? telegramBotService, Serilog.ILogger logger)
+        SessionLocker sessionLocker, TelegramBotService? telegramBotService, Serilog.ILogger logger, RequestTokenStore requestTokens)
     {
+        RequestTokens = requestTokens;
         _sessionTracker = sessionTracker;
         _categoryEnforcer = categoryEnforcer;
         _breakEnforcer = breakEnforcer;
@@ -42,6 +44,12 @@ public sealed class AgentRequests
         _telegramBotService = telegramBotService;
         _logger = logger;
     }
+
+    /// <summary>
+    /// The Request Tokens of the Request Window (request-identity-from-launch, design D3). The Agent Channel issues
+    /// them; the web server takes the user of <c>/request</c> and <c>/api/request</c> only from them.
+    /// </summary>
+    public RequestTokenStore RequestTokens { get; }
 
     /// <summary>The capture commands of the parent per user name.</summary>
     public System.Collections.Concurrent.ConcurrentDictionary<string, CaptureCommandState> CaptureStates { get; } =
@@ -367,6 +375,29 @@ public sealed class AgentRequests
     }
 
     /// <summary>
+    /// A new Request Token for the launch record (request-identity-from-launch, design D4), only for a Restricted User
+    /// and only while the agent of the record runs. Else null. The token replaces the earlier token of the record.
+    /// </summary>
+    public string? IssueRequestToken(AgentLaunchRecord record)
+    {
+        var user = UserRepository.GetBySid(record.UserSid);
+        if (user is null || !user.IsRestricted)
+        {
+            _logger.Information("Request Token refused for the agent in session {SessionId} (pid {Pid}): no Restricted User",
+                record.SessionId, record.Process.Pid);
+            return null;
+        }
+        var token = RequestTokens.Issue(record);
+        if (token is null)
+            _logger.Information("Request Token refused for {Username} in session {SessionId} (pid {Pid}): the agent does not run",
+                user.Username, record.SessionId, record.Process.Pid);
+        else
+            _logger.Information("Request Token issued for {Username} in session {SessionId} (pid {Pid})",
+                user.Username, record.SessionId, record.Process.Pid);
+        return token;
+    }
+
+    /// <summary>
     /// A session-end request of the agent (design D8, D14): first the Lock Deferral, then the hold or the Session End
     /// Guard, both untrusted and only for the session of the launch record of a Restricted User. The caller must not
     /// tell the agent whether the deferral was granted.
@@ -379,6 +410,9 @@ public sealed class AgentRequests
             _logger.Information("Session end request of the agent in session {SessionId} ignored: no Restricted User", record.SessionId);
             return;
         }
+        // The agent resumed the Suspended Apps before it sent this request. Unwatch them before the deferral and the
+        // gate of the enforcer, so that a tick in between does not count a Child Resume (lock-after-repeated-resume D12).
+        _categoryEnforcer.UnwatchSessionForEnd(record.SessionId);
         _sessionLocker.OnSessionEnding(record.SessionId, user.Id, user.Username, trusted: false, $"agent {message.Reason}");
         var result = _categoryEnforcer.ResumeSessionForEnd(record.SessionId, user, trusted: false, $"agent {message.Reason}");
         _logger.Information("Session end request of the agent in session {SessionId} ({Username}): {Result}",

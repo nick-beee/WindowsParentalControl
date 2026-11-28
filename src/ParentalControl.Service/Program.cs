@@ -40,6 +40,10 @@ builder.Services.AddHostedService<UsageMonitorWorker>();
 builder.Services.AddSingleton<SessionProbeHost>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SessionProbeHost>());
 // session-probe-and-agent-channel D7, D9: the Session Agent of each session and its private Agent Channel.
+// request-identity-from-launch D3, D4: the Request Tokens of the Request Window. One store for the Agent Channel (issue)
+// and the web server (verify, through the AgentRequests singleton); it reads the launch records of the agents.
+builder.Services.AddSingleton(sp => new ParentalControl.Domain.Requests.RequestTokenStore(
+    sp.GetRequiredService<ParentalControl.Domain.Sessions.AgentLaunchRegistry>()));
 builder.Services.AddSingleton<AgentRequests>();
 builder.Services.AddSingleton<AgentChannelHost>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AgentChannelHost>());

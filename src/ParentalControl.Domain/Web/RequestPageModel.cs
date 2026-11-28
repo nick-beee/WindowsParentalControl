@@ -30,8 +30,6 @@ public sealed record RequestPageInput(
     string? LatestStatus,
     string? DeclineReason,
     DateTime? DeclineResolvedAt,
-    bool IsAdminTesting,
-    IReadOnlyList<string> AvailableUsers,
     bool SessionActive,
     bool SessionLocked,
     IReadOnlyList<RequestPageDay> Week,
@@ -58,7 +56,6 @@ public sealed record RequestPageModel(
     bool HasPending,
     string? LatestStatus,
     string? DeclineReason,
-    RequestPageAdminTest? AdminTest,
     string SessionState,
     IReadOnlyList<RequestPageDayModel> Days,
     IReadOnlyList<RequestPageOption> ExtensionOptions,
@@ -123,7 +120,6 @@ public sealed record RequestPageModel(
             HasPending: input.HasPending,
             LatestStatus: input.LatestStatus,
             DeclineReason: declined ? input.DeclineReason : null,
-            AdminTest: input.IsAdminTesting ? RequestPageAdminTest.For(input.AvailableUsers) : null,
             SessionState: !input.SessionActive ? SessionInactive : input.SessionLocked ? SessionLocked : SessionActive,
             Days: days,
             ExtensionOptions: ExtensionMinutes.Select(m => new RequestPageOption(m, "+" + SessionTexts.Duration(sessionTexts, m))).ToList(),
@@ -154,18 +150,3 @@ public sealed record RequestPageOption(int Minutes, string Label);
 
 /// <summary>The dates of the schedule form (yyyy-MM-dd, local date of the service).</summary>
 public sealed record RequestPageDates(string Min, string Tomorrow, string Max);
-
-/// <summary>
-/// The banner of the admin test mode: the page shows a Restricted User to a parent. Only the parent sees it, so its
-/// texts are Indonesian and do not follow the preset, as before the move to React (add-german-child-texts).
-/// <see cref="Text"/> has the placeholder <c>{user}</c>.
-/// </summary>
-public sealed record RequestPageAdminTest(string Title, string Text, string SwitchLabel, IReadOnlyList<string> Users)
-{
-    public static RequestPageAdminTest For(IReadOnlyList<string> users) => new(
-        Title: "Mode Uji Coba Administrator",
-        Text: "Menampilkan status akun terbatas {user}.",
-        SwitchLabel: "Ganti Akun Pengujian:",
-        // The page shows the switch links only for two or more users.
-        Users: users.Count > 1 ? users : Array.Empty<string>());
-}

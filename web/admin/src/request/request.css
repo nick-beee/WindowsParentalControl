@@ -416,7 +416,4 @@ button.submit-btn:disabled {
 /* Before the move to React these were inline styles or the #feedback rule. */
 .header-badges { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 .timer-value.timer-over { color: #ef4444; }
-.banner-admin { border-left: 4px solid #38bdf8; }
-.admin-switch { margin-top: 0.4rem; font-size: 0.8rem; opacity: 0.9; }
-.admin-switch a { color: #38bdf8; text-decoration: underline; }
 .feedback { margin-top: 1rem; }

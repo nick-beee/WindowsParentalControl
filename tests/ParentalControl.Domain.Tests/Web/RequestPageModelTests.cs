@@ -27,8 +27,6 @@ public class RequestPageModelTests
         LatestStatus: "DECLINED",
         DeclineReason: "Erst die Hausaufgaben {status}",
         DeclineResolvedAt: new DateTime(2026, 11, 26, 18, 5, 0),
-        IsAdminTesting: false,
-        AvailableUsers: new[] { "Kid" },
         SessionActive: true,
         SessionLocked: false,
         Week: Enum.GetValues<DayOfWeek>()
@@ -109,14 +107,28 @@ public class RequestPageModelTests
     }
 
     [Fact]
-    public void TheAdminTestBannerHasSwitchLinksOnlyForTwoOrMoreUsers()
+    public void TheDataHasNoListOfUsers()
     {
-        Assert.Null(RequestPageModel.Build(Input()).AdminTest);
-        var one = RequestPageModel.Build(Input() with { IsAdminTesting = true });
-        Assert.Empty(one.AdminTest!.Users);
-        Assert.Contains("{user}", one.AdminTest.Text);
-        var two = RequestPageModel.Build(Input() with { IsAdminTesting = true, AvailableUsers = new[] { "Kid", "Kid2" } });
-        Assert.Equal(new[] { "Kid", "Kid2" }, two.AdminTest!.Users);
+        // request-identity-from-launch, design D6: the page shows only the user of the Request Token.
+        using var doc = JsonDocument.Parse(RequestPageModel.Build(Input()).ToJson());
+        Assert.False(doc.RootElement.TryGetProperty("adminTest", out _));
+        Assert.False(doc.RootElement.TryGetProperty("availableUsers", out _));
+        Assert.DoesNotContain("Kid2", doc.RootElement.GetRawText(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("de", "Diese Seite geht nur über den Knopf „Mehr Zeit wünschen“ von Parental Control.",
+        "Das Anfragefenster ist abgelaufen. Schließ es und öffne es wieder.")]
+    [InlineData("en", "This page opens only from the request button of Parental Control.",
+        "The request window has expired. Close it and open it again.")]
+    [InlineData("id", "Halaman ini hanya dapat dibuka dari tombol permintaan Parental Control.",
+        "Jendela permintaan sudah kedaluwarsa. Tutup lalu buka kembali.")]
+    public void TheTextsWithoutARequestTokenFollowThePreset(string preset, string page, string api)
+    {
+        var texts = RequestPageTexts.For(preset);
+        Assert.Equal(page, texts["page_no_access"]);
+        Assert.Equal(api, texts["api_no_access"]);
+        Assert.DoesNotContain("api_no_user", texts.Keys);
     }
 
     [Fact]

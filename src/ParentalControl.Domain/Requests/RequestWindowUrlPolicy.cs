@@ -11,9 +11,11 @@ public static class RequestWindowUrlPolicy
     public const int Port = 5050;
     public const string RequestPath = "/request";
 
-    /// <summary>The first page of the Request Window for <paramref name="userName"/>.</summary>
-    public static string PageUrl(string userName) =>
-        $"http://{Host}:{Port}{RequestPath}?user={Uri.EscapeDataString(userName)}";
+    /// <summary>
+    /// The first page of the Request Window. It names no user: the service takes the user from the Request Token
+    /// (request-identity-from-launch).
+    /// </summary>
+    public static string PageUrl => $"http://{Host}:{Port}{RequestPath}";
 
     /// <summary>True only for the request page of the local service.</summary>
     public static bool IsAllowedDocument(string? url) => TryParse(url, out var uri) && IsAllowedDocument(uri);
