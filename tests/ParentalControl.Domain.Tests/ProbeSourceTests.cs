@@ -95,7 +95,7 @@ public class ProbeSourceTests
     [Fact]
     public void TheProbeLocksComeBeforeTheWritesOfASample()
     {
-        var text = File.ReadAllText(Path.Combine(RepoRoot(), "src/ParentalControl.Service/SessionProbeHost.cs"));
+        var text = Read("src/ParentalControl.Service/SessionProbeHost.cs");
         var start = text.IndexOf("    private void Count(", StringComparison.Ordinal);
         Assert.True(start >= 0);
         var end = text.IndexOf("\n    }\n", start, StringComparison.Ordinal);
@@ -117,6 +117,9 @@ public class ProbeSourceTests
         // The usage for the locks never reads the ledger without a fallback.
         Assert.DoesNotContain("_ledger.CategoryUsage(", body);
     }
+
+    // A checkout on Windows can have CRLF line ends (core.autocrlf, no .gitattributes).
+    private static string Read(string path) => File.ReadAllText(Path.Combine(RepoRoot(), path)).Replace("\r\n", "\n");
 
     private static string RepoRoot()
     {
