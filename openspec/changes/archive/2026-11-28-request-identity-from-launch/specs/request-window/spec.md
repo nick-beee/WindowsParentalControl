@@ -48,7 +48,7 @@ A Request Token SHALL be valid only for 60 minutes after its issue, only while t
 ## MODIFIED Requirements
 
 ### Requirement: The request button opens the Request Window
-The request button of the widget and the request item of the tray menu SHALL open the child request page in the Request Window, a window of the Session Agent with an embedded web view. The Session Agent SHALL NOT start a browser or another program for it. A second click SHALL bring the open Request Window to the front and SHALL NOT open a second one. The child SHALL be able to close the window; the Session Agent keeps running. Each open of the Request Window SHALL get a new Request Token from the service through the Agent Channel, and the page SHALL send it with each request to the service.
+The request button of the widget and the request item of the tray menu SHALL open the child request page in the Request Window, a window of the Session Agent with an embedded web view, and SHALL NOT start a browser. A second click SHALL bring the open window to the front, not open a second one. The child SHALL be able to close it; the agent keeps running. Each open SHALL get a new Request Token through the Agent Channel, and the page SHALL send it with each request.
 
 #### Scenario: Request with all browsers blocked
 - **WHEN** the 15 default browsers are blocked and the child clicks "🎮 Mehr Zeit wünschen"
