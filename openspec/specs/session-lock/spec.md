@@ -41,7 +41,7 @@ The system SHALL check for a Lock Deferral directly before it locks the session,
 - **AND** the system locks the session within 10 seconds after the end of the deferral, also if Windows does not report the lock flag
 
 ### Requirement: Owed lock at the end of the deferral
-A lock that becomes due during a Lock Deferral is owed. When the deferral ends by its time and the session still exists, the system SHALL check the session again and SHALL lock it if a lock is still due: within 10 seconds for the Allowance Time, the Schedule Window and a Break, and within 20 seconds for the fallback of a suspension. A changed state SHALL apply: a lock that Bonus Minutes made unnecessary SHALL NOT run.
+A lock that becomes due during a Lock Deferral is owed. When the deferral ends by its time and the session still exists, the system SHALL check the session again and SHALL lock it if a lock is still due: within 10 seconds for the Allowance Time, the Schedule Window, a Break and a Resume Lock, and within 20 seconds for the fallback of a suspension. A changed state SHALL apply: a lock that Bonus Minutes made unnecessary SHALL NOT run.
 
 #### Scenario: Sign-out cancelled at the schedule end
 - **WHEN** the Schedule Window ends during the sign-out, Notepad asks to save, and the child clicks Cancel
@@ -60,6 +60,11 @@ A lock that becomes due during a Lock Deferral is owed. When the deferral ends b
 #### Scenario: Break owed
 - **WHEN** a Break started during the deferral and the child cancelled the sign-out
 - **THEN** the system sends the message of the running Break and locks the session within 10 seconds after the end of the deferral
+
+#### Scenario: Resume Lock owed
+- **WHEN** a Resume Lock of the child runs, the child starts a sign-out, and cancels it
+- **THEN** the system does not lock the session during the deferral
+- **AND** the system sends the message of the Resume Lock and locks the session within 10 seconds after the end of the deferral
 
 ### Requirement: Limit the Lock Deferral
 A session-end request of the Session Agent is a claim of the child, so a request during a deferral of the session SHALL NOT extend it. After a deferral that owed a lock and ended by its time while the session still existed, the system SHALL start no deferral for that Restricted User for 15 minutes from its start, except before a Forced Logoff. A deferral that ended with the session, or that owed no lock, SHALL NOT count. The system SHALL log each deferral, each deferred lock and each refusal.
@@ -85,7 +90,7 @@ A session-end request of the Session Agent is a claim of the child, so a request
 - **THEN** the web server answers 404 and no deferral starts
 
 ### Requirement: Lock timings with a Lock Deferral
-The timings of the Enforced Workstation Lock in the requirements for Breaks, for the Allowance Time, for the Schedule Window and for the fallback of a suspension SHALL apply as before when no Lock Deferral of the session is active. During a deferral, a lock that they require SHALL be owed and SHALL run as the requirement "Owed lock at the end of the deferral" states.
+The timings of the Enforced Workstation Lock in the requirements for Breaks, for the Allowance Time, for the Schedule Window, for the fallback of a suspension and for a Resume Lock SHALL apply as before when no Lock Deferral of the session is active. During a deferral, a lock that they require SHALL be owed and SHALL run as the requirement "Owed lock at the end of the deferral" states.
 
 #### Scenario: No sign-out
 - **WHEN** Continuous Use reaches N minutes and nobody started a sign-out
