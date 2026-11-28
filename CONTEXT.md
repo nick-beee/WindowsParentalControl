@@ -48,7 +48,7 @@ The active window currently receiving user input focus within a Restricted User'
 A daily aggregation of active minutes spent per application process name and window title for each Restricted User.
 
 ### Session Agent
-A lightweight background helper process executing within a Restricted User's active desktop session, responsible for foreground window activity sampling, system tray remaining-time display, and user grace request invocation.
+A helper process (`ParentalControl.Agent.exe`) that runs as the user in the desktop session of the user. It shows the remaining-time widget, the tray icon, the Interactive Session Prompts, the toasts and the Request Window. It takes the Screen Captures, mutes and minimizes the Suspended Apps, and tells the service that the session ends. It does no Foreground Window sampling: the Session Probe gives the samples. It talks to the service only through its Agent Channel. The child controls this process, so no limit reads its data.
 
 ### Active Application
 The foreground process name and window title currently receiving user interaction in an active session, tracked in real-time by the background service.
@@ -60,7 +60,7 @@ Historical daily aggregation of application usage durations and window titles fo
 Terminal Services sessions in `WTSDisconnected` state (e.g. fast user switch or locked screen) maintained in memory across service restarts without usage accumulation, re-enforcing curfew and quota constraints immediately upon unlock.
 
 ### Session Agent Auto-Spawner
-LocalSystem background mechanism utilizing `WTSQueryUserToken` and `CreateProcessAsUserW` to launch `ParentalControl.Agent.exe` directly into interactive user sessions (`winsta0\default`) on service start, unlock, or after installer upgrades.
+The LocalSystem mechanism (`SessionTracker.EnsureAgentRunning`) that uses `WTSQueryUserToken` and `CreateProcessAsUserW` to start `ParentalControl.Agent.exe` with a new Agent Channel in each interactive session (`winsta0\default`): at the service start, at a sign-in or an unlock, and at the next tick (at most 60 seconds) after the agent ended. It is the only process that starts the agent. The installer sets no `Run` value and deletes the `Run` value `ParentalControlAgent` of an older install. One launch record per session (`AgentLaunchRegistry`) decides whether an agent runs, so a process of the child with the name of the agent does not count.
 
 ### Curfew Countdown Clamping
 Enforcement policy ensuring countdown widgets and user request portals display `Math.Min(dailyRemaining, curfewRemaining)` so restricted users are visually warned of schedule cutoffs even when daily quota remains.
