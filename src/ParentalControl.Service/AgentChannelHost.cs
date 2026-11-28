@@ -485,6 +485,7 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
                 AgentPromptAnswer => "promptAnswer",
                 AgentCapture => "capture",
                 AgentSessionEnding => "sessionEnding",
+                AgentRequestTokenRequest => "requestToken",
                 _ => "unknown",
             };
             try
@@ -496,6 +497,7 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
                     AgentCapture capture => Answer(new { id = message.Id, type, ok = true, result = Capture(capture) }),
                     // The answer does not say whether the deferral or the hold was granted (design D8).
                     AgentSessionEnding ending => SessionEndingAnswer(ending, type),
+                    AgentRequestTokenRequest => RequestTokenAnswer(message.Id, type),
                     _ => Answer(new { id = message.Id, type, ok = false }),
                 };
             }
@@ -539,6 +541,15 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
         {
             _host._requests.SessionEnding(Record, ending);
             return Answer(new { id = ending.Id, type, ok = true });
+        }
+
+        // request-identity-from-launch D4: the token for the launch record of this channel, or ok: false.
+        private byte[] RequestTokenAnswer(long id, string type)
+        {
+            var token = _host._requests.IssueRequestToken(Record);
+            return token is null
+                ? Answer(new { id, type, ok = false })
+                : Answer(new { id, type, ok = true, token });
         }
 
         private static byte[] Answer<T>(T value)

@@ -11,12 +11,13 @@ namespace ParentalControl.Agent;
 /// The Request Window (request-window, ADR 0014): the child request page of the local service in an embedded
 /// WebView2. It shows only <c>http://127.0.0.1:5050/request</c>, opens no other window, file or program, and has no
 /// browser tools. It fails closed: the first navigation starts only after each setting, each event handler and the
-/// resource filter are in place (design D6a). Each failure shows the text <c>request_window_unavailable</c>.
+/// resource filter are in place (design D6a), and after the Request Token is set as a cookie
+/// (request-identity-from-launch). Each failure shows the text <c>request_window_unavailable</c>.
 /// The agent never starts a browser.
 /// </summary>
 public partial class RequestWindow : Window
 {
-    private readonly string _userName;
+    private readonly Func<Task<string?>> _getRequestToken;
     private readonly RequestWindowNavigations _navigations = new();
     private TextSet _texts;
     private CoreWebView2Environment? _environment;
@@ -25,12 +26,14 @@ public partial class RequestWindow : Window
     private bool _closed;
     private bool _webViewDisposed;
 
-    public RequestWindow(TextSet texts, string userName)
+    /// <param name="getRequestToken">Gets a new Request Token from the service through the Agent Channel, or null
+    /// (request-identity-from-launch, design D7).</param>
+    public RequestWindow(TextSet texts, Func<Task<string?>> getRequestToken)
     {
         InitializeComponent();
         PlaceInWorkArea();
         _texts = texts;
-        _userName = userName;
+        _getRequestToken = getRequestToken;
         ApplyTexts(texts);
         Loaded += OnLoaded;
         Closed += OnClosed;
@@ -138,8 +141,27 @@ public partial class RequestWindow : Window
         core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All, CoreWebView2WebResourceRequestSourceKinds.All);
 
         if (_closed || _fallbackShown) return;
+
+        // request-identity-from-launch, design D2 and D7: the service takes the user of the page only from the Request
+        // Token. It goes as an HttpOnly cookie, so the page load and each fetch of the page send it, and the page code
+        // cannot read it. Without a token the window shows the fallback and does not navigate.
+        var token = await _getRequestToken();
+        if (_closed || _fallbackShown) return;
+        if (token is null)
+        {
+            AgentLog.Logger.Warning("Request Window: the service gave no Request Token");
+            ShowFallback();
+            return;
+        }
+        var cookies = core.CookieManager;
+        var cookie = cookies.CreateCookie(RequestTokenStore.CookieName, token, RequestWindowUrlPolicy.Host, "/");
+        cookie.IsHttpOnly = true;
+        cookie.IsSecure = false; // the page is http://127.0.0.1
+        cookie.SameSite = CoreWebView2CookieSameSiteKind.Strict;
+        cookies.AddOrUpdateCookie(cookie);
+
         _navigateCalled = true;
-        core.Navigate(RequestWindowUrlPolicy.PageUrl(_userName));
+        core.Navigate(RequestWindowUrlPolicy.PageUrl);
     }
 
 #if REQUEST_WINDOW_FAULT_TEST

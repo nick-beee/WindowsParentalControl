@@ -4,6 +4,7 @@ using ParentalControl.Core.Models;
 using ParentalControl.Core.Services;
 using ParentalControl.Domain.Captures;
 using ParentalControl.Domain.Messages;
+using ParentalControl.Domain.Requests;
 using ParentalControl.Domain.Sessions;
 using ParentalControl.Domain.Time;
 
@@ -32,14 +33,21 @@ public sealed class AgentRequests
     private readonly CaptureRefusalLog _captureRefusals = new();
 
     public AgentRequests(SessionTracker sessionTracker, CategoryEnforcer categoryEnforcer, SessionLocker sessionLocker,
-        TelegramBotService? telegramBotService, Serilog.ILogger logger)
+        TelegramBotService? telegramBotService, Serilog.ILogger logger, RequestTokenStore requestTokens)
     {
+        RequestTokens = requestTokens;
         _sessionTracker = sessionTracker;
         _categoryEnforcer = categoryEnforcer;
         _sessionLocker = sessionLocker;
         _telegramBotService = telegramBotService;
         _logger = logger;
     }
+
+    /// <summary>
+    /// The Request Tokens of the Request Window (request-identity-from-launch, design D3). The Agent Channel issues
+    /// them; the web server takes the user of <c>/request</c> and <c>/api/request</c> only from them.
+    /// </summary>
+    public RequestTokenStore RequestTokens { get; }
 
     /// <summary>The capture commands of the parent per user name.</summary>
     public System.Collections.Concurrent.ConcurrentDictionary<string, CaptureCommandState> CaptureStates { get; } =
@@ -351,6 +359,29 @@ public sealed class AgentRequests
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// A new Request Token for the launch record (request-identity-from-launch, design D4), only for a Restricted User
+    /// and only while the agent of the record runs. Else null. The token replaces the earlier token of the record.
+    /// </summary>
+    public string? IssueRequestToken(AgentLaunchRecord record)
+    {
+        var user = UserRepository.GetBySid(record.UserSid);
+        if (user is null || !user.IsRestricted)
+        {
+            _logger.Information("Request Token refused for the agent in session {SessionId} (pid {Pid}): no Restricted User",
+                record.SessionId, record.Process.Pid);
+            return null;
+        }
+        var token = RequestTokens.Issue(record);
+        if (token is null)
+            _logger.Information("Request Token refused for {Username} in session {SessionId} (pid {Pid}): the agent does not run",
+                user.Username, record.SessionId, record.Process.Pid);
+        else
+            _logger.Information("Request Token issued for {Username} in session {SessionId} (pid {Pid})",
+                user.Username, record.SessionId, record.Process.Pid);
+        return token;
     }
 
     /// <summary>

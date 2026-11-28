@@ -2,6 +2,7 @@ using System.Drawing;
 using System.Text.Json;
 using System.Windows.Threading;
 using ParentalControl.Domain.Messages;
+using ParentalControl.Domain.Requests;
 
 namespace ParentalControl.Agent;
 
@@ -32,6 +33,9 @@ public sealed record AgentStatusResponse(
 
 /// <summary>The answer of the service to a <c>status</c> request on the Agent Channel.</summary>
 public sealed record AgentStatusAnswer(long id, string? type, bool ok, AgentStatusResponse? status);
+
+/// <summary>The answer of the service to a <c>requestToken</c> request (request-identity-from-launch, design D4).</summary>
+public sealed record AgentRequestTokenAnswer(long id, string? type, bool ok, string? token);
 
 internal sealed class AgentController : IDisposable
 {
@@ -305,7 +309,7 @@ internal sealed class AgentController : IDisposable
             return;
         }
 
-        var window = new RequestWindow(_texts, Environment.UserName);
+        var window = new RequestWindow(_texts, FetchRequestTokenAsync);
         window.Closed += (_, _) =>
         {
             if (ReferenceEquals(_requestWindow, window)) _requestWindow = null;
@@ -313,6 +317,27 @@ internal sealed class AgentController : IDisposable
         _requestWindow = window;
         window.Show();
         window.Activate();
+    }
+
+    /// <summary>
+    /// A new Request Token for one open of the Request Window (request-identity-from-launch, design D7), or null for a
+    /// timeout, a dropped request, a refusal or a token of the wrong form. The service takes the user from the launch
+    /// record of this channel.
+    /// </summary>
+    private async Task<string?> FetchRequestTokenAsync()
+    {
+        try
+        {
+            var answer = await _channel.RequestAsync(id => new { type = "requestToken", id }, RequestTimeout);
+            if (answer is null) return null;
+            var token = JsonSerializer.Deserialize<AgentRequestTokenAnswer>(answer.Json, JsonSerializerOptions.Web);
+            return token is { ok: true } && RequestTokenStore.IsWellFormed(token.token) ? token.token : null;
+        }
+        catch (Exception ex)
+        {
+            AgentLog.Logger.Warning(ex, "Request Window: the Request Token request failed");
+            return null;
+        }
     }
 
     /// <summary>Keeps the request item and the Request Window in line with the last status (request-window, design D6).</summary>

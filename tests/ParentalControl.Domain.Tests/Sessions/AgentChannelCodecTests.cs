@@ -139,6 +139,18 @@ public class AgentChannelCodecTests
         Assert.Equal([new AgentStatusRequest(1), new AgentSessionEnding(2, "logoff")], messages);
     }
 
+    [Fact]
+    public void Request_token_request_decodes_without_user_or_session()
+    {
+        // request-identity-from-launch, design D4: the token is for the launch record of the channel.
+        var codec = new AgentChannelCodec();
+        var messages = Decode(codec,
+            Json("""{"type":"requestToken","id":7}"""),
+            Json("""{"type":"requestToken","id":8,"user":"Mama","username":"Mama","sessionId":0}"""));
+        Assert.Equal([new AgentRequestTokenRequest(7), new AgentRequestTokenRequest(8)], messages);
+        Assert.Null(codec.Error);
+    }
+
     [Theory]
     [InlineData("""{"type":"status"}""")]
     [InlineData("""{"type":"other","id":1}""")]

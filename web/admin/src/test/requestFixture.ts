@@ -81,7 +81,6 @@ export function requestData(overrides: Partial<RequestPageData> = {}): RequestPa
     hasPending: false,
     latestStatus: null,
     declineReason: null,
-    adminTest: null,
     sessionState: 'active',
     days: [
       day(0),

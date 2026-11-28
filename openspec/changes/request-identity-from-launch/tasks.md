@@ -2,34 +2,47 @@
 
 ## 1. Domain: pure logic
 
-- [ ] 1.1 Add `RequestTokenStore` in `src/ParentalControl.Domain/Requests` (design D3): `Issue(AgentLaunchRecord)`, `Verify(string?)`, the lifetime of 60 minutes on a monotonic clock, one token per launch record, only a SHA-256 hash in memory, the form check before the hash, and the check of the running record in `AgentLaunchRegistry`. Verify with xUnit tests: issue then verify; a wrong, a malformed and a too-long token; an expired token; the old token after a new issue; a token of a record that the registry marked as ended, that a new agent replaced, or whose session ended; no issue for a record that does not run.
-- [ ] 1.2 Add the message `requestToken` to `AgentChannelCodec` (`AgentRequestTokenRequest`, design D4). Verify with xUnit tests: the message decodes, and a `user` field in it is ignored.
-- [ ] 1.3 Remove the admin test mode from `RequestPageModel` (`IsAdminTesting`, `AvailableUsers`, `AdminTest`, `RequestPageAdminTest`, design D6). Add `page_no_access` and `api_no_access` to `RequestPageTexts` in "de", "en" and "id", and remove `api_no_user` (design D8). `RequestWindowUrlPolicy.PageUrl` has no user. Update the xUnit tests.
+- [x] 1.1 Add `RequestTokenStore` in `src/ParentalControl.Domain/Requests` (design D3): `Issue(AgentLaunchRecord)`, `Verify(string?)`, the lifetime of 60 minutes on a monotonic clock, one token per launch record, only a SHA-256 hash in memory, the form check before the hash, and the check of the running record in `AgentLaunchRegistry`. Verify with xUnit tests: issue then verify; a wrong, a malformed and a too-long token; an expired token; the old token after a new issue; a token of a record that the registry marked as ended, that a new agent replaced, or whose session ended; no issue for a record that does not run.
+  - Done: `Domain/Requests/RequestTokenStore`, with `RequestTokenStoreTests`.
+- [x] 1.2 Add the message `requestToken` to `AgentChannelCodec` (`AgentRequestTokenRequest`, design D4). Verify with xUnit tests: the message decodes, and a `user` field in it is ignored.
+  - Done: `AgentRequestTokenRequest`, with `Request_token_request_decodes_without_user_or_session`.
+- [x] 1.3 Remove the admin test mode from `RequestPageModel` (`IsAdminTesting`, `AvailableUsers`, `AdminTest`, `RequestPageAdminTest`, design D6). Add `page_no_access` and `api_no_access` to `RequestPageTexts` in "de", "en" and "id", and remove `api_no_user` (design D8). `RequestWindowUrlPolicy.PageUrl` has no user. Update the xUnit tests.
+  - Done. `RequestPageModelTests.TheDataHasNoListOfUsers` and `TheTextsWithoutARequestTokenFollowThePreset`; `RequestWindowUrlPolicyTests.PageUrlHasNoUserAndPassesTheFilter`.
 
 ## 2. Service
 
-- [ ] 2.1 Register `RequestTokenStore` as a DI singleton with the `AgentLaunchRegistry` singleton, and give it to `AgentRequests`. Add `AgentRequests.IssueRequestToken(record)` (only for a Restricted User). Answer `requestToken` in `AgentChannelHost` (design D4).
-- [ ] 2.2 In `WebServerHost`, take the user and the session of `GET /request` and `POST /api/request` only from the cookie `pc_request_token` (design D5). Without a valid token: 401 with `page_no_access` as text, or 401 with `{ error: api_no_access }`. Remove the console-user branch, the redirect to `/admin`, the fallback user, the list of names and the `username` of the body.
-- [ ] 2.3 Update the HTTP gate test in `tests/ParentalControl.Tests` (Windows only, CI): `GET /request` and `POST /api/request` without a token give 401 and store nothing; with a token of a fake launch record of `TestBrother`, `GET /request` gives 200 with the name `TestBrother` and no other user name, and `POST /api/request` with an invalid body gives 400 (past the token check).
+- [x] 2.1 Register `RequestTokenStore` as a DI singleton with the `AgentLaunchRegistry` singleton, and give it to `AgentRequests`. Add `AgentRequests.IssueRequestToken(record)` (only for a Restricted User). Answer `requestToken` in `AgentChannelHost` (design D4).
+  - Done: `Program.cs`, `AgentRequests.IssueRequestToken`, `AgentChannelHost.RequestTokenAnswer`.
+- [x] 2.2 In `WebServerHost`, take the user and the session of `GET /request` and `POST /api/request` only from the cookie `pc_request_token` (design D5). Without a valid token: 401 with `page_no_access` as text, or 401 with `{ error: api_no_access }`. Remove the console-user branch, the redirect to `/admin`, the fallback user, the list of names and the `username` of the body.
+  - Done: `WebServerHost.RequestCaller` and `RequestNoAccessPage`.
+- [x] 2.3 Update the HTTP gate test in `tests/ParentalControl.Tests` (Windows only, CI): `GET /request` and `POST /api/request` without a token give 401 and store nothing; with a token of a fake launch record of `TestBrother`, `GET /request` gives 200 with the name `TestBrother` and no other user name, and `POST /api/request` with an invalid body gives 400 (past the token check).
+  - Done. It compiles on the Mac; CI runs it on `windows-latest`. It also checks that an Administrator gets no token and that the token of an ended agent gives 401.
 
 ## 3. Agent
 
-- [ ] 3.1 `AgentController` gives the Request Window a delegate that sends `requestToken` (timeout 3 seconds) and returns the token or null. `RequestWindow.StartAsync` calls it after the setup and before `Navigate`, sets the HttpOnly cookie `pc_request_token` for `127.0.0.1` with `SameSite = Strict`, and opens `/request` without a query. Without a token it shows `request_window_unavailable` (design D7).
+- [x] 3.1 `AgentController` gives the Request Window a delegate that sends `requestToken` (timeout 3 seconds) and returns the token or null. `RequestWindow.StartAsync` calls it after the setup and before `Navigate`, sets the HttpOnly cookie `pc_request_token` for `127.0.0.1` with `SameSite = Strict`, and opens `/request` without a query. Without a token it shows `request_window_unavailable` (design D7).
+  - Done: `AgentController.FetchRequestTokenAsync`, `RequestWindow.StartAsync`.
 
 ## 4. Web page
 
-- [ ] 4.1 In `web/admin/src/request`: remove `username` from the request body (`api.ts`, `RequestApp.tsx`), remove `AdminTest` and the admin test banner, and update the tests and the fixture. Verify with `npm run lint`, `npm run typecheck` and `npm test`.
+- [x] 4.1 In `web/admin/src/request`: remove `username` from the request body (`api.ts`, `RequestApp.tsx`), remove `AdminTest` and the admin test banner, and update the tests and the fixture. Verify with `npm run lint`, `npm run typecheck` and `npm test`.
+  - Done. The unused CSS of the banner is gone too. A new test shows the 401 text of the service.
 
 ## 5. Docs
 
-- [ ] 5.1 Add the term Request Token to `GLOSSARY.md`. The entries Agent Channel and Request Window name it.
+- [x] 5.1 Add the term Request Token to `GLOSSARY.md`. The entries Agent Channel and Request Window name it.
+  - Done.
 
 ## 6. Verification on the Mac
 
-- [ ] 6.1 `dotnet build -p:EnableWindowsTargeting=true` passes, with and without `-p:VmTest=true` (Node 22.12 or later).
-- [ ] 6.2 `dotnet test tests/ParentalControl.Domain.Tests` passes.
-- [ ] 6.3 `npm run lint`, `npm run typecheck` and `npm test` in `web/admin` pass.
-- [ ] 6.4 `openspec validate --all --strict` passes.
+- [x] 6.1 `dotnet build -p:EnableWindowsTargeting=true` passes, with and without `-p:VmTest=true` (Node 22.12 or later).
+  - Done: 0 warnings and 0 errors in both builds (Node 24.15.0).
+- [x] 6.2 `dotnet test tests/ParentalControl.Domain.Tests` passes.
+  - Done: 1368 tests pass.
+- [x] 6.3 `npm run lint`, `npm run typecheck` and `npm test` in `web/admin` pass.
+  - Done: lint and typecheck are clean; 128 tests pass.
+- [x] 6.4 `openspec validate --all --strict` passes.
+  - Done: 13 items pass.
 
 ## 7. Verification on VM 102
 
