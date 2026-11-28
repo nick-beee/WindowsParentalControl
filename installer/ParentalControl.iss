@@ -97,11 +97,13 @@ begin
               and (ResultCode = 0);
 end;
 
+// "net stop" waits until the service is stopped ("sc stop" does not). So the old service cannot start the old agent
+// again after StopRunningProcesses ends it.
 procedure StopService();
 var
     ResultCode: Integer;
 begin
-    Exec('sc', ExpandConstant('stop {#ServiceName}'),
+    Exec(ExpandConstant('{sys}\net.exe'), ExpandConstant('stop {#ServiceName}'),
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     Sleep(2500);
 end;
@@ -252,11 +254,13 @@ begin
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
+// The order of [UninstallRun]: stop the service first (it starts the agent and the probe), then end the agent and the
+// admin app, then each probe that is left.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-    StopRunningProcesses();
     if ServiceExists() then
         StopService();
+    StopRunningProcesses();
     StopProbes();
     Result := '';
 end;
@@ -265,9 +269,9 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
     if CurStep = ssInstall then
     begin
-        StopRunningProcesses();
         if ServiceExists() then
             StopService();
+        StopRunningProcesses();
         StopProbes();
     end
     else if CurStep = ssPostInstall then
