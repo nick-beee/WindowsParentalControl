@@ -97,6 +97,13 @@ A sample SHALL also give the focus window if another process owns it, one visibl
 - **WHEN** a script of the child puts the window of a game into a window of `notepad.exe` with `SetParent`, sets `WS_EX_NOACTIVATE` on the Notepad window, and the child plays the game with the mouse while another window is the Foreground Window
 - **THEN** the sample gives the game process as a process under the cursor, with the style `WS_EX_NOACTIVATE`
 
+### Requirement: Sample the window under the cursor without a Foreground Window
+A sample without a Foreground Window SHALL still give each process of the window under the cursor and of its parent windows up to the top-level window, with the `WS_EX_NOACTIVATE` style of that top-level window.
+
+#### Scenario: Game with WS_EX_NOACTIVATE and no Foreground Window
+- **WHEN** a script of the child sets `WS_EX_NOACTIVATE` on the window of a game, no window is the Foreground Window, and the child plays the game with the mouse
+- **THEN** the sample has no Foreground Window and gives the game process as the window under the cursor, with the style `WS_EX_NOACTIVATE`
+
 ### Requirement: A hung window counts as its program
 If the Foreground Window is the ghost window that Windows shows for a hung window, the system SHALL count the process of the hung window, not `dwm.exe`, and SHALL read it like each other entry. Only if the probe finds no hung window and the Foreground Window is `dwm.exe` SHALL it count the Foreground Window process of the last sample before the ghost while that process runs. A window that only has the class name of a ghost SHALL count as its own process.
 
@@ -201,6 +208,11 @@ The system SHALL end the Session Probe of a session when the session ends, and t
 - **WHEN** the child signs out
 - **THEN** the sign-out completes as without the Session Probe
 - **AND** no Session Probe of that session runs after the end of the session
+
+#### Scenario: Late sample after the sign-out
+- **WHEN** the service reads a sample of a Session Probe after the sign-out notification of its session
+- **THEN** the sample adds no Category Usage and no budget item
+- **AND** the service writes no `PROBE_OUTAGE` event for that session after the sign-out
 
 ### Requirement: Classify each end of the Session Probe
 After an end of a Session Probe that it did not ask for, the service SHALL start a new probe after the restart delay, without a further wait, unless the session signed out or is gone. If the session signs out or is gone, or the service stops, within 90 seconds after the end, the end SHALL be a session-end end: no event, no alert and no budget item. Only after these 90 seconds SHALL the end count as unexpected. Data of the Session Agent SHALL NOT decide the class.

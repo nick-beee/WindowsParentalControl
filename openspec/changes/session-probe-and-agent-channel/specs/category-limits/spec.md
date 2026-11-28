@@ -182,6 +182,19 @@ The counted processes of a sample SHALL be the Foreground Window process, the fo
 - **THEN** the time counts in Study only
 - **AND** the game is suspended when Games is exhausted
 
+### Requirement: The counted processes of a sample without a Foreground Window
+In a sample without a Foreground Window, the counted processes SHALL be the processes under the cursor if the top-level window there has `WS_EX_NOACTIVATE`, except each one in System. A process under the cursor of such a sample that the service cannot read or that ended SHALL NOT make a blind sample or a budget item.
+
+#### Scenario: Game with WS_EX_NOACTIVATE and no Foreground Window
+- **WHEN** a script of the child sets `WS_EX_NOACTIVATE` on a game window and keeps the Foreground Window empty, and the child plays the game with the mouse
+- **THEN** the time counts in Games
+- **AND** the game is suspended when Games is exhausted
+
+#### Scenario: Unreadable window under the cursor without a Foreground Window
+- **WHEN** the probe locks are on, no window is the Foreground Window, and the cursor rests on a `WS_EX_NOACTIVATE` window of a process that the service cannot read
+- **THEN** the sample is no blind sample and no budget item
+- **AND** no time counts for that sample
+
 ### Requirement: WebView2 counts with the program that started it
 A `msedgewebview2.exe` below `Microsoft\EdgeWebView\Application` in a Program Files folder SHALL count, in each role, as the first process in its chain of parent processes that is not such a file, and that process SHALL be recorded as a Foreground Window exe. If a parent ended or the chain cannot be checked, the entry SHALL count nothing and SHALL be no blind sample and no budget item. Each other `msedgewebview2.exe` SHALL count by its App Rule, like any other exe.
 
@@ -251,11 +264,16 @@ A click or a drag on the widget of the Session Agent SHALL NOT make the Session 
 - **AND** the Session Agent does not become the Foreground Window
 
 ### Requirement: The set of Foreground Window exes fails closed
-The system SHALL keep at least 60,000 exes per Restricted User and day in the set of Foreground Window exes. If the set is full, the system SHALL apply the Enforced Workstation Lock as a probe lock and notify the parent, because a new exe would not be a suspend candidate.
+The system SHALL keep at least 60,000 exes per Restricted User and day in the set of Foreground Window exes. If the set is full, the system SHALL apply the Enforced Workstation Lock as a probe lock and notify the parent, because a new exe would not be a suspend candidate. An exe whose path is not an absolute Windows path SHALL NOT give this lock. Such an exe is never suspended, so the requirement "A program that is never suspended still has a limit" applies to it.
 
 #### Scenario: Normal day
 - **WHEN** the child uses 500 different programs on one day
 - **THEN** each of them is a suspend candidate when its category is exhausted
+
+#### Scenario: Exe path that is not absolute
+- **WHEN** the probe locks are on, Unknown is exhausted, and a game in Unknown runs from a path without a drive letter, for example from a shadow copy
+- **THEN** the system applies no lock for a full set
+- **AND** the session is locked within 2 minutes under the rule of a program that is never suspended
 
 ### Requirement: Agent Window Budget
 In a sample of the Session Probe, the system SHALL exempt the Session Agent as a counted process, also as the creator of a trusted WebView2 process, for at most 5 minutes in any 60 minutes of unlocked time. Exempt time SHALL add no Category Usage for the Session Agent and SHALL NOT count toward the lock of a program that is never suspended. The system SHALL NOT start, extend or end the budget because of data that the Session Agent sends.
@@ -273,6 +291,14 @@ In a sample of the Session Probe, the system SHALL exempt the Session Agent as a
 - **WHEN** the probe locks are on, the Session Agent was exempt for 5 minutes from 10:00, and the session stays unlocked
 - **THEN** the Session Agent is not exempt again before 11:00
 - **AND** from 11:05 at the latest the budget has 5 minutes again
+
+#### Scenario: Only System programs after the budget
+- **WHEN** the probe locks are on, the Session Agent was exempt for 5 minutes from 10:00, and from 10:05 to 11:10 only System programs are in front of the unlocked session
+- **THEN** at 11:10 the budget has 5 minutes again
+
+#### Scenario: Locked time does not refill the budget
+- **WHEN** the probe locks are on, the Session Agent was exempt for 5 minutes from 10:00, and the session is locked from 10:05 to 12:00
+- **THEN** the budget has no exempt time at the unlock at 12:00
 
 ### Requirement: The Agent Window Budget exempts only the Session Agent
 The Agent Window Budget SHALL exempt only the time that the Session Agent that the service started adds. A process with the agent exe that the service did not start SHALL count in Unknown without the budget. If another counted process of the same sample is in the same App Category, that category SHALL still get the interval of the sample. The budget SHALL NOT change the Allowance Time, Continuous Use, a Break or the Schedule Window.
