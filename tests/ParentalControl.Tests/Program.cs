@@ -1643,7 +1643,7 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
         Console.WriteLine("✅ Web Server Bind Retry Passed.");
 
         // CB1 d: the capture quota of the agent captures, now on the Agent Channel (session-probe-and-agent-channel D8).
-        var captureRequests = new ParentalControl.Service.AgentRequests(svcTracker, svcEnforcer, new ParentalControl.Service.SessionLocker(svcLogger), null, svcLogger);
+        var captureRequests = new ParentalControl.Service.AgentRequests(svcTracker, svcEnforcer, new ParentalControl.Service.BreakEnforcer(svcLogger), new ParentalControl.Service.SessionLocker(svcLogger), null, svcLogger);
         var captureRecord = new ParentalControl.Domain.Sessions.AgentLaunchRecord(1, new ParentalControl.Domain.Sessions.ProcessIdentity(4242, DateTime.UtcNow), user.Sid);
         Task<int> Upload(int bytes)
         {

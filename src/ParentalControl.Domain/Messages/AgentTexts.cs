@@ -2,7 +2,7 @@ namespace ParentalControl.Domain.Messages;
 
 /// <summary>
 /// The texts of the Session Agent (widget, tray menu, prompt dialog, full-screen settings) per Language Preset.
-/// The parent cannot edit them. The "id" texts are the texts of the earlier agent, letter for letter.
+/// The parent cannot edit them. The "id" texts are the texts of the earlier agent, letter for letter, except the new texts of each Lock Reason.
 /// </summary>
 public static class AgentTexts
 {
@@ -16,7 +16,11 @@ public static class AgentTexts
         ("tray_fullscreen_settings", "⚙️ Einstellungen für Vollbild", "⚙️ Fullscreen Settings", "⚙️ Pengaturan Layar Penuh"),
         ("tray_request", "🎮 Mehr Bildschirmzeit wünschen...", "🎮 Ask for More Screen Time...", "🎮 Minta Tambahan Waktu Layar..."),
         ("tray_unrestricted", "Parental Control: Konto ohne Grenzen", "Parental Control: Unrestricted Account", "Parental Control: Akun Tidak Dibatasi"),
-        ("tray_locked", "Parental Control: Gesperrt (Pause)", "Parental Control: Session Locked (Paused)", "Parental Control: Sesi Dikunci (Dijeda)"),
+        // The lock texts per Lock Reason (widget-shows-schedule-lock-after-break). Only the Break text says "Pause".
+        ("tray_locked", "Parental Control: Gesperrt (Zeit läuft nicht)", "Parental Control: Locked (time stopped)", "Parental Control: Sesi Dikunci (Dijeda)"),
+        ("tray_locked_schedule", "Parental Control: Gesperrt (keine Computerzeit)", "Parental Control: Locked (outside allowed hours)", "Parental Control: Terkunci (di luar jam diizinkan)"),
+        ("tray_locked_allowance", "Parental Control: Gesperrt (Zeit für heute um)", "Parental Control: Locked (no time left today)", "Parental Control: Terkunci (waktu hari ini habis)"),
+        ("tray_locked_break", "Parental Control: Gesperrt (Pause)", "Parental Control: Locked (break)", "Parental Control: Terkunci (istirahat)"),
         ("tray_remaining_hours",
             "Parental Control: noch {hours} Std. {minutes} Min.",
             "Parental Control: {hours}h {minutes}m left",
@@ -34,7 +38,10 @@ public static class AgentTexts
             "The allowed hours end before your daily time.",
             "Waktu dibatasi oleh Jam Malam, bukan kuota harian"),
         ("widget_curfew_empty", "Computerzeit: --:--", "Allowed hours: --:--", "Jam malam: --:--"),
-        ("widget_locked", "⏸ Gesperrt (Pause)", "⏸ Session Locked (Paused)", "⏸ Sesi Terkunci (Dijeda)"),
+        ("widget_locked", "⏸ Gesperrt (Zeit läuft nicht)", "⏸ Locked (time stopped)", "⏸ Sesi Terkunci (Dijeda)"),
+        ("widget_locked_schedule", "🌙 Gesperrt (keine Computerzeit)", "🌙 Locked (outside allowed hours)", "🌙 Terkunci (di luar jam diizinkan)"),
+        ("widget_locked_allowance", "⏸ Gesperrt (Zeit für heute um)", "⏸ Locked (no time left today)", "⏸ Terkunci (waktu hari ini habis)"),
+        ("widget_locked_break", "⏸ Gesperrt (Pause)", "⏸ Locked (break)", "⏸ Terkunci (istirahat)"),
         ("widget_request_button", "🎮 Mehr Zeit wünschen", "🎮 Ask for More Time", "🎮 Minta Tambahan Waktu"),
         ("request_window_title", "Mehr Zeit wünschen", "Ask for More Time", "Minta Tambahan Waktu"),
         ("request_window_unavailable",
