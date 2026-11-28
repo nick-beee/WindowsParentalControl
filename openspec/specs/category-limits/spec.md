@@ -181,7 +181,7 @@ The Session Agent SHALL mute the audio sessions of the suspended processes and S
 - **THEN** the audio of that process is muted
 
 ### Requirement: Only the child's processes
-The system SHALL suspend only processes that run in a session of the Restricted User whose limit ended. It SHALL NOT suspend processes of another user or session, processes in System, the Session Agent, the Trusted WebView2 Runtime (an exe with the file name `msedgewebview2.exe` below `Microsoft\EdgeWebView\Application\` in a Program Files folder), an exe below the Windows folder (also if no App Rule puts it in System), or a process whose exe path it cannot read. It SHALL suspend each other exe with the file name `msedgewebview2.exe` as any other exe.
+The system SHALL suspend only processes in a session of the Restricted User whose limit ended. It SHALL NOT suspend processes of another user or session, processes in System, the Session Agent, the Trusted WebView2 Runtime, an exe below the Windows folder (also without an App Rule for System), or a process whose exe path it cannot read. It SHALL suspend each other `msedgewebview2.exe` as any other exe.
 
 #### Scenario: WebView2 host
 - **WHEN** Unknown is exhausted and a Study app uses `msedgewebview2.exe` of the Trusted WebView2 Runtime
@@ -516,7 +516,7 @@ In a sample without a Foreground Window, the counted processes SHALL be the proc
 - **AND** no time counts for that sample
 
 ### Requirement: WebView2 counts with the program that started it
-A process of the Trusted WebView2 Runtime (a `msedgewebview2.exe` below `Microsoft\EdgeWebView\Application` in a Program Files folder) SHALL count, in each role, as the first process in its chain of parent processes that is not such a file, and that process SHALL be recorded as a Foreground Window exe. If a parent ended or the chain cannot be checked, the entry SHALL count nothing and SHALL be no blind sample and no budget item. Each other `msedgewebview2.exe` (a copy, a Fixed Version runtime, a per-user runtime) SHALL count as itself by its App Rule, like any other exe, and SHALL be recorded as a Foreground Window exe.
+A process of the Trusted WebView2 Runtime SHALL count, in each role, as the first process in its chain of parent processes that is not such a process, and that process SHALL be recorded as a Foreground Window exe. If a parent ended or the chain cannot be checked, the entry SHALL count nothing and SHALL be no blind sample and no budget item. Each other `msedgewebview2.exe` (a copy, a Fixed Version or per-user runtime) SHALL count as itself by its App Rule.
 
 #### Scenario: WebView2 in a Study app
 - **WHEN** a Study app is the Foreground Window and its `msedgewebview2.exe` control from the WebView2 Runtime has the focus
