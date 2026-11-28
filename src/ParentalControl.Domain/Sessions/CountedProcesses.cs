@@ -64,7 +64,9 @@ public sealed record SampleReading(
 /// <summary>The facts of the service that the selection needs. None of them comes from the Session Agent.</summary>
 /// <param name="Categorize">The App Category of an exe path (<see cref="CategoryResolver"/>).</param>
 /// <param name="WindowsFolder">The Windows folder, for the path of <c>dwm.exe</c>.</param>
-/// <param name="IsAgent">True for the Session Agent of the launch record of the session.</param>
+/// <param name="IsAgent">True for the Session Agent: the process and its exe path of a counted entry, after the swap of a
+/// trusted WebView2 to its creator. So the service can name the agent by its exe path also if no window of the agent is
+/// in the sample (a WebView2 of the agent moved into another window, D5 rule 5).</param>
 /// <param name="PromptActive">The service has an active Interactive Session Prompt for the user of the session.</param>
 /// <param name="IsSuspended">True for a process that the service suspended for this user.</param>
 /// <param name="IsRunning">True if the process still runs (the same pid and start time).</param>
@@ -72,7 +74,7 @@ public sealed record SampleReading(
 public sealed record SelectionContext(
     Func<string, AppCategory> Categorize,
     string WindowsFolder,
-    Func<ProcessIdentity, bool> IsAgent,
+    Func<ProcessIdentity, string, bool> IsAgent,
     bool PromptActive,
     Func<ProcessIdentity, bool> IsSuspended,
     Func<ProcessIdentity, bool> IsRunning,
@@ -225,7 +227,7 @@ public static class CountedProcesses
     private static CountedProcess? Count(SampleEntry entry, SelectionContext context)
     {
         if (context.IsSuspended(entry.Process)) return null;
-        if (context.IsAgent(entry.Process))
+        if (context.IsAgent(entry.Process, entry.ExePath!))
         {
             // The Session Agent counts in Unknown as fg, focus or child, never as cursor, never during a prompt (S1,
             // N22, S10).

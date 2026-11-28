@@ -43,8 +43,10 @@ internal sealed class Sampler
     private const int MaxDesktopChars = 64;
 
     private readonly LineWriter _output;
-    private readonly TestSwitches _switches;
     private readonly char[] _text = new char[MaxTitleChars + 1];
+
+#if VM_TEST
+    private readonly TestSwitches _switches;
 
     public Sampler(LineWriter output, TestSwitches switches)
     {
@@ -52,27 +54,44 @@ internal sealed class Sampler
         _switches = switches;
     }
 
+    private bool NoHung => _switches.NoHung;
+#else
+    public Sampler(LineWriter output) => _output = output;
+
+    private static bool NoHung => false;
+#endif
+
     public void Run()
     {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
         var original = GetThreadDesktop(GetCurrentThreadId());
+#if VM_TEST
         var started = Stopwatch.StartNew();
         long count = 0;
+#endif
         while (true)
         {
             var wait = MinWaitSeconds + Exponential(MeanRandomSeconds);
             if (wait > MaxWaitSeconds) wait = MaxWaitSeconds;
+#if VM_TEST
             if (_switches.GapSeconds is { } gap && count > 0 && count % 10 == 0) wait += gap;
+#endif
             Thread.Sleep(TimeSpan.FromSeconds(wait));
 
+#if VM_TEST
             if (_switches.HangAfterSeconds is { } hang && started.Elapsed.TotalSeconds > hang)
             {
                 _output.Log("test switch hang: the sampler blocks now", force: true);
                 Thread.Sleep(Timeout.Infinite);
             }
+#endif
 
+#if VM_TEST
             count++;
             var stall = _switches.StallSeconds is { } s && count % 10 == 0 ? s : 0;
+#else
+            const int stall = 0;
+#endif
             var line = Sample(original, stall);
             if (!_output.Write(line))
                 Environment.Exit(4); // the pipe broke: the service ended or closed it
@@ -160,7 +179,7 @@ internal sealed class Sampler
         sample.Foreground = new Entry(fg, tid, pid);
         var seen = new HashSet<int> { pid };
 
-        if (!_switches.NoHung && ClassName(fg) == "Ghost")
+        if (!NoHung && ClassName(fg) == "Ghost")
         {
             var hung = HungWindowFromGhostWindow(fg);
             if (hung != IntPtr.Zero && IsHungAppWindow(hung))
@@ -174,7 +193,9 @@ internal sealed class Sampler
             }
         }
 
+#if VM_TEST
         if (stallSeconds > 0) Thread.Sleep(TimeSpan.FromSeconds(stallSeconds));
+#endif
 
         // Step 4: the focus window, if another process owns it.
         var info = new GUITHREADINFO { cbSize = Marshal.SizeOf<GUITHREADINFO>() };

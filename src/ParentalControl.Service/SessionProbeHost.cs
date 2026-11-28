@@ -31,7 +31,11 @@ namespace ParentalControl.Service;
 /// </summary>
 public sealed class SessionProbeHost : BackgroundService
 {
-    /// <summary>Test hook (an administrator setting in the service environment on a test machine): the switches that the
+#if VM_TEST
+    // The test hooks exist only in a build for VM 102 (-p:VmTest=true, compile symbol VM_TEST, design D15). The release
+    // build has none of them, so no setting can turn them on.
+
+    /// <summary>Test hook (an administrator setting in the service environment on VM 102): the switches that the
     /// service gives to each probe, for example <c>crash=60</c>. Only the known switches pass.</summary>
     public const string TestProbeArgsEnv = "PARENTAL_CONTROL_TEST_PROBE_ARGS";
 
@@ -41,11 +45,16 @@ public sealed class SessionProbeHost : BackgroundService
     /// <summary>Test hook: "1" writes one log line for each sample (the entries, the counted processes, the time).</summary>
     public const string TestProbeTraceEnv = "PARENTAL_CONTROL_TEST_PROBE_TRACE";
 
+    private static readonly Regex TestSwitch = new(@"^((crash|hang|gap|stall)=\d{1,4}|nohung)$", RegexOptions.CultureInvariant);
+    private readonly string _testArgs;
+    private readonly bool _testNoStart;
+    private readonly bool _trace;
+#endif
+
     public static readonly TimeSpan WatchdogTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan EnsureInterval = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan SettingInterval = TimeSpan.FromSeconds(10);
-    private static readonly Regex TestSwitch = new(@"^((crash|hang|gap|stall)=\d{1,4}|nohung)$", RegexOptions.CultureInvariant);
 
     private readonly SessionTracker _tracker;
     private readonly CategoryEnforcer _enforcer;
@@ -60,9 +69,6 @@ public sealed class SessionProbeHost : BackgroundService
         Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles));
     private readonly string _windowsFolder = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
     private readonly ProtectedPrograms _protected = CategoryRepository.LocalProtectedPrograms();
-    private readonly string _testArgs;
-    private readonly bool _testNoStart;
-    private readonly bool _trace;
 
     private readonly Lock _gate = new();
     private readonly Dictionary<int, ProbeRun> _runs = new();
@@ -73,6 +79,7 @@ public sealed class SessionProbeHost : BackgroundService
     private readonly ProbeOutageMonitor _monitor;
     private readonly ProbeLockGate _lockGate;
     private readonly ForegroundSampleCounter _counter = new();
+    // The Agent Window Budget of each Restricted User (by user ID, not by session).
     private readonly Dictionary<int, AgentWindowBudget> _agentBudgets = new();
     private readonly Dictionary<int, NeverSuspendedAllowance> _allowances = new();
     private readonly Dictionary<int, ForegroundProcess?> _lastForeground = new();
@@ -85,10 +92,11 @@ public sealed class SessionProbeHost : BackgroundService
     private readonly HashSet<string> _loggedOnce = new(StringComparer.Ordinal);
     private bool _ready;
     private bool _stopping;
-    private bool _sleeping;
+    private readonly ProbeSleepFlag _sleep = new();
     private TimeSpan _lastEnsure = TimeSpan.FromDays(-1);
     private TimeSpan _lastSetting = TimeSpan.FromDays(-1);
     private readonly Dictionary<int, (IReadOnlyList<string> Exes, TimeSpan At)> _lastOver = new();
+    private readonly Dictionary<int, (DateOnly Day, Dictionary<AppCategory, int> Usage)> _lastUsage = new();
 
     public SessionProbeHost(SessionTracker tracker, CategoryEnforcer enforcer, SessionLocker locker, ForegroundHistory history,
         ServiceStartup startup, Serilog.ILogger logger)
@@ -101,10 +109,12 @@ public sealed class SessionProbeHost : BackgroundService
         _logger = logger;
         _monitor = new ProbeOutageMonitor(probeLocksEnforced: false);
         _lockGate = new ProbeLockGate(enforced: false);
+#if VM_TEST
         _testArgs = string.Join(' ', (Environment.GetEnvironmentVariable(TestProbeArgsEnv) ?? "")
             .Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(a => TestSwitch.IsMatch(a)));
         _testNoStart = Environment.GetEnvironmentVariable(TestProbeNoStartEnv) == "1";
         _trace = Environment.GetEnvironmentVariable(TestProbeTraceEnv) == "1";
+#endif
         _locker.OwedLockDue += OnOwedLockDue;
     }
 
@@ -118,16 +128,25 @@ public sealed class SessionProbeHost : BackgroundService
         public required LaunchedProcess Process;
         public required SafeFileHandle Pipe;
         public readonly ProbeLineReader Reader = new();
-        public ManualResetEvent? ExitEvent;
+        public ProcessExitWait? ExitEvent;
         public RegisteredWaitHandle? Wait;
         public TimeSpan LastLine;
         public bool AskedEnd;
         public bool WatchdogKill;
+        public bool LoggedTerminateFailure;
         public bool Ended;
         public bool LoggedProblem;
         public bool LoggedLate;
         public bool LoggedNotAttributed;
         public bool LoggedMissingDuration;
+    }
+
+    // A wait on the process handle of the launch. The base constructor of WaitHandle creates no kernel object (unlike
+    // ManualResetEvent), and the handle stays owned by LaunchedProcess.
+    private sealed class ProcessExitWait : WaitHandle
+    {
+        public ProcessExitWait(SafeProcessHandle process) =>
+            SafeWaitHandle = new SafeWaitHandle(process.DangerousGetHandle(), ownsHandle: false);
     }
 
     // ------------------------------------------------------------------ lifetime
@@ -143,6 +162,10 @@ public sealed class SessionProbeHost : BackgroundService
             return;
         }
 
+        // The leftovers of an earlier service run go before _ready: after _ready, a sign-in event can start a probe of this
+        // run, which is also a SYSTEM process at the probe path, and EndLeftovers would end it.
+        EndLeftovers();
+
         var enforced = Safe(SettingsRepository.IsProbeLocksEnforced, false);
         lock (_gate)
         {
@@ -150,10 +173,7 @@ public sealed class SessionProbeHost : BackgroundService
             _lockGate.SetEnforced(enforced);
             _ready = true;
         }
-        _logger.Information("Session Probe host started (probe locks {State}){Test}", enforced ? "on" : "off (shadow mode)",
-            _testArgs.Length > 0 || _testNoStart || _trace ? $" with test hooks [{_testArgs}] noStart={_testNoStart} trace={_trace}" : "");
-
-        EndLeftovers();
+        _logger.Information("Session Probe host started (probe locks {State}){Test}", enforced ? "on" : "off (shadow mode)", TestHooksText());
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -252,7 +272,6 @@ public sealed class SessionProbeHost : BackgroundService
             _logger.Information("Session Probe: sign-out of session {SessionId} (logon {Key})", sessionId, key);
             if (run is not null) EndRun(run, "sign-out");
             _counter.SessionEnded(sessionId);
-            _agentBudgets.Remove(sessionId);
             _lastForeground.Remove(sessionId);
             _owed.Remove(sessionId);
         }
@@ -283,12 +302,13 @@ public sealed class SessionProbeHost : BackgroundService
         }
     });
 
-    /// <summary><c>PBT_APMSUSPEND</c>: the watchdog and the outage timer stop.</summary>
+    /// <summary><c>PBT_APMSUSPEND</c>: the watchdog and the outage timer stop. The tick clears the flag if no resume
+    /// event comes within 30 s of unbiased time (<see cref="ProbeSleepFlag"/>).</summary>
     public void OnSuspend() => Guard("suspend", () =>
     {
         lock (_gate)
         {
-            _sleeping = true;
+            _sleep.Suspend(SessionProbePlatform.UnbiasedNow());
             _logger.Information("Session Probe: system suspend, the watchdog and the outage timer stop");
         }
     });
@@ -298,16 +318,20 @@ public sealed class SessionProbeHost : BackgroundService
     {
         lock (_gate)
         {
-            var now = SessionProbePlatform.UnbiasedNow();
-            var wasSleeping = _sleeping;
-            _sleeping = false;
-            foreach (var run in _runs.Values) run.LastLine = now;
-            _monitor.Resumed(now);
-            _counter.Resumed();
+            var wasSleeping = _sleep.Resume();
+            Resumed(SessionProbePlatform.UnbiasedNow());
             if (wasSleeping)
                 _logger.Information("Session Probe: system resume, the watchdog and the outage timer start again");
         }
     });
+
+    // Under _gate: the resume event, or the stale clear of the sleep flag in the tick.
+    private void Resumed(TimeSpan now)
+    {
+        foreach (var run in _runs.Values) run.LastLine = now;
+        _monitor.Resumed(now);
+        _counter.Resumed();
+    }
 
     // ------------------------------------------------------------------ start and end of a probe
 
@@ -336,11 +360,13 @@ public sealed class SessionProbeHost : BackgroundService
             LogOnce("noexe", () => _logger.Error("Session Probe: ParentalControl.Probe.exe not found; no category time counts"));
             return;
         }
+#if VM_TEST
         if (_testNoStart)
         {
             LogOnce($"nostart:{sessionId}", () => _logger.Warning("Session Probe test hook: no start in session {SessionId}", sessionId));
             return;
         }
+#endif
 
         SafeFileHandle? read = null;
         try
@@ -350,7 +376,10 @@ public sealed class SessionProbeHost : BackgroundService
             LaunchedProcess launched;
             using (pipeWrite)
             {
-                var args = "--pipe " + ProcessLauncherPlaceholder + (_testArgs.Length > 0 ? " " + _testArgs : "");
+                var args = "--pipe " + ProcessLauncherPlaceholder;
+#if VM_TEST
+                if (_testArgs.Length > 0) args += " " + _testArgs;
+#endif
                 launched = SessionSystemProcess.Start(sessionId, exe, args, pipeWrite.DangerousGetHandle(), envError =>
                 {
                     if (_daily.Take("probe-environment", ControlTime.Current.Today))
@@ -378,7 +407,7 @@ public sealed class SessionProbeHost : BackgroundService
 
             var reader = new Thread(() => ReadLoop(run)) { IsBackground = true, Name = $"probe-reader-{sessionId}" };
             reader.Start();
-            run.ExitEvent = new ManualResetEvent(false) { SafeWaitHandle = new SafeWaitHandle(launched.Handle.DangerousGetHandle(), ownsHandle: false) };
+            run.ExitEvent = new ProcessExitWait(launched.Handle);
             run.Wait = ThreadPool.RegisterWaitForSingleObject(run.ExitEvent, (_, _) => OnProbeExited(run), null, Timeout.Infinite, executeOnlyOnce: true);
 
             _logger.Information("Session Probe started in session {SessionId} for {Username} (pid {Pid}, {Why}{Planned})",
@@ -401,22 +430,39 @@ public sealed class SessionProbeHost : BackgroundService
         Terminate(run, reason);
     }
 
-    private void Terminate(ProbeRun run, string reason)
+    // True if TerminateProcess succeeded. A failure is logged once per probe run.
+    private bool Terminate(ProbeRun run, string reason)
     {
         try
         {
-            if (!run.Process.Handle.IsClosed && !run.Process.Handle.IsInvalid)
-                NativeTerminate(run);
+            if (run.Process.Handle.IsClosed || run.Process.Handle.IsInvalid) return false;
+            if (!NativeTerminate(run, out var error))
+            {
+                if (!run.LoggedTerminateFailure)
+                {
+                    run.LoggedTerminateFailure = true;
+                    _logger.Warning("Could not end the Session Probe of session {SessionId} (pid {Pid}): TerminateProcess error {Error} ({Reason})",
+                        run.SessionId, run.Process.Pid, error, reason);
+                }
+                return false;
+            }
             _logger.Information("Session Probe of session {SessionId} (pid {Pid}) ended by the service: {Reason}", run.SessionId, run.Process.Pid, reason);
+            return true;
         }
         catch (Exception ex)
         {
             _logger.Warning(ex, "Could not end the Session Probe of session {SessionId}", run.SessionId);
+            return false;
         }
     }
 
     // The kept handle of the launch: no pid reuse is possible. Exit code 0xC0DE0001 marks an end by the service.
-    private static void NativeTerminate(ProbeRun run) => SessionProbePlatform.Terminate(run.Process.Handle, 0xC0DE0001);
+    private static bool NativeTerminate(ProbeRun run, out int error)
+    {
+        var ok = SessionProbePlatform.Terminate(run.Process.Handle, 0xC0DE0001);
+        error = ok ? 0 : System.Runtime.InteropServices.Marshal.GetLastPInvokeError();
+        return ok;
+    }
 
     private void OnProbeExited(ProbeRun run) => Guard("probe end", () =>
     {
@@ -426,6 +472,8 @@ public sealed class SessionProbeHost : BackgroundService
         {
             run.Ended = true;
             run.Wait?.Unregister(null);
+            run.ExitEvent?.Dispose();
+            run.Process.Dispose();
             if (_runs.TryGetValue(run.SessionId, out var current) && current == run) _runs.Remove(run.SessionId);
 
             var cause = run.AskedEnd ? ProbeEndCause.Service : run.WatchdogKill ? ProbeEndCause.Watchdog : ProbeEndCause.Other;
@@ -581,19 +629,19 @@ public sealed class SessionProbeHost : BackgroundService
         var resolver = config.Resolver;
         var locked = IsLocked(sessionId);
 
+        // The agent by its exe path (D5 rule 5): also as the creator of a trusted WebView2 when no window of the agent is
+        // in the sample. Task 5.1 may add the launch record of the agent (AgentLaunchRegistry), but as an OR with this
+        // path test: a test of the launch record only brings the moved WebView2 of the agent back to its App Rule.
         var agentPath = WindowsPath.Canonicalize(SessionTracker.GetAgentExecutablePath());
-        // Task 5.1 replaces this path test with the launch record of the agent (AgentLaunchRegistry).
-        var agents = reading.Entries.Concat(reading.Hung is { } h ? [h] : [])
-            .Where(e => e.Outcome == EntryOutcome.Read && agentPath is not null
-                        && string.Equals(WindowsPath.Canonicalize(e.ExePath), agentPath, StringComparison.OrdinalIgnoreCase))
-            .Select(e => e.Process).ToHashSet();
+        bool IsAgent(ProcessIdentity _, string exePath) =>
+            agentPath is not null && string.Equals(WindowsPath.Canonicalize(exePath), agentPath, StringComparison.OrdinalIgnoreCase);
         var suspended = Safe(() => SuspensionRepository.GetForUser(userId), []).Select(r => new ProcessIdentity(r.Pid, r.StartTimeUtc)).ToHashSet();
         var promptActive = Safe(() => SessionPromptRepository.GetActivePrompt(run.Username) is not null, false);
 
         var context = new SelectionContext(
             path => resolver.Resolve(path).Category,
             _windowsFolder,
-            agents.Contains,
+            IsAgent,
             promptActive,
             suspended.Contains,
             p => ProcessControl.QueryPathAndStart(p.Pid).StartUtc == p.StartUtc,
@@ -602,13 +650,15 @@ public sealed class SessionProbeHost : BackgroundService
         _lastForeground[sessionId] = selection.NextLastForeground;
 
         var credit = _counter.Accept(sessionId, sample.T, sample.Duration, receiptTick, unbiased, selection.Blind, selection.Counted);
+#if VM_TEST
         if (_trace) Trace(run, sample, reading, selection, credit, receiptTick);
+#endif
         if (reading.Hung is { } hungEntry && LogOnce($"ghost:{sessionId}:{hungEntry.Process.Pid}"))
             _logger.Information("Session Probe of session {SessionId}: ghost window in front, hung window of {Exe} (pid {Pid}, {Outcome})",
                 sessionId, hungEntry.ExePath ?? "-", hungEntry.Process.Pid, hungEntry.Outcome);
 
         // The locked state comes from Windows (D4): a locked session counts nothing and gives no item.
-        if (locked || _sleeping)
+        if (locked || _sleep.IsSet)
         {
             _monitor.Observe(userId, unbiased, activeAndUnlocked: false);
             return;
@@ -621,7 +671,7 @@ public sealed class SessionProbeHost : BackgroundService
                 sessionId, selection.NotAttributed[0]);
         }
 
-        // The set of Foreground Window exes of the day (the suspend candidates).
+        // The set of Foreground Window exes of the day (the suspend candidates). In memory only.
         var fullSet = false;
         foreach (var exe in selection.ExesToRecord)
         {
@@ -633,22 +683,44 @@ public sealed class SessionProbeHost : BackgroundService
         var item = selection.EndedItem || credit.GapItem;
         var activeAndUnlocked = !(selection.Blind || item) || SessionProbePlatform.IsActive(sessionId) && !IsLocked(sessionId);
         var decision = _monitor.Sample(userId, unbiased, activeAndUnlocked, today, selection.Blind, item);
+
+        // D14: each probe lock comes before any write of this sample (events, log lines, alerts, Category Usage, App
+        // Usage). The inputs of the locks are in memory or read through Safe, so a failed database read never stops a lock.
+        if (decision.Action != ProbeLockAction.None)
+            ApplyBudgetDecision(sessionId, userId, run.UserSid, run.Username, decision, today);
+
+        // The Agent Window Budget (D5, #54): only the entry of the agent takes the exempt part of the interval. One budget
+        // per Restricted User, so a new sign-in does not give a new budget.
+        var agentCounted = selection.Counted.Any(c => c.IsAgent);
+        var intervalSeconds = (int)Math.Round(credit.Time.TotalSeconds);
+        if (!_agentBudgets.TryGetValue(userId, out var budget)) _agentBudgets[userId] = budget = new AgentWindowBudget();
+        var exemptSeconds = budget.Sample(TimeSpan.FromMilliseconds(sample.T), intervalSeconds, agentCounted, unlocked: true);
+
+        var dayLimits = config.Calculator.Evaluate(today, CategoryUsageForLocks(userId, today),
+            Safe(() => UsageRepository.GetUsage(userId, today)?.BonusMinutes ?? 0, 0));
+        bool IsExhausted(AppCategory category) => dayLimits.CategoryLimit(category)?.IsReached ?? false;
+
+        if (!_allowances.TryGetValue(userId, out var allowance))
+            _allowances[userId] = allowance = new NeverSuspendedAllowance(_protected.IsProtected);
+        var over = allowance.Sample(_monitor.UnlockedTime(userId, unbiased), unlocked: true, selection, credit.Time, IsExhausted,
+            TimeSpan.FromSeconds(exemptSeconds));
+        if (over.Count > 0) _lastOver[userId] = (over, unbiased);
+        foreach (var exe in over)
+            ApplyOtherProbeLock(sessionId, userId, run.UserSid, run.Username, ProbeLockKind.NeverSuspended, exe, today, unbiased);
+
+        if (fullSet)
+        {
+            _fullSetDay[userId] = today;
+            ApplyOtherProbeLock(sessionId, userId, run.UserSid, run.Username, ProbeLockKind.FullSet, null, today, unbiased);
+        }
+
+        // The writes, after the locks.
         if (selection.Blind || item)
             _logger.Information("Session Probe of session {SessionId}: {Kind} ({Detail}){Ignored}", sessionId,
                 selection.Blind ? "blind sample" : "budget item", Describe(sample, selection, credit),
                 activeAndUnlocked ? "" : " ignored: the session is not active and unlocked");
 
         if (credit.LongGap) ReportGap(run, sample, credit, today);
-
-        // The Agent Window Budget (D5, #54): only the entry of the agent takes the exempt part of the interval.
-        var agentCounted = selection.Counted.Any(c => c.IsAgent);
-        var intervalSeconds = (int)Math.Round(credit.Time.TotalSeconds);
-        if (!_agentBudgets.TryGetValue(sessionId, out var budget)) _agentBudgets[sessionId] = budget = new AgentWindowBudget();
-        var exemptSeconds = budget.Sample(TimeSpan.FromMilliseconds(sample.T), intervalSeconds, agentCounted, unlocked: true);
-
-        var dayLimits = config.Calculator.Evaluate(today, _ledger.CategoryUsage(userId, today),
-            Safe(() => UsageRepository.GetUsage(userId, today)?.BonusMinutes ?? 0, 0));
-        bool IsExhausted(AppCategory category) => dayLimits.CategoryLimit(category)?.IsReached ?? false;
 
         var tickNeeded = false;
         foreach (var (category, time) in ProbeCategoryTime.PerCategory(selection, credit.Time, TimeSpan.FromSeconds(exemptSeconds)))
@@ -688,25 +760,26 @@ public sealed class SessionProbeHost : BackgroundService
             _logger.Information("Session Probe of session {SessionId}: {Role} entry {Exe} adds {Category}, which the Foreground Window does not add",
                 sessionId, extra.Role, extra.ExePath, extra.Category);
 
-        // The probe locks.
-        if (decision.Action != ProbeLockAction.None)
-            ApplyBudgetDecision(sessionId, userId, run.UserSid, run.Username, decision, today);
-
-        if (!_allowances.TryGetValue(userId, out var allowance))
-            _allowances[userId] = allowance = new NeverSuspendedAllowance(_protected.IsProtected);
-        var over = allowance.Sample(_monitor.UnlockedTime(userId, unbiased), unlocked: true, selection, credit.Time, IsExhausted,
-            TimeSpan.FromSeconds(exemptSeconds));
-        if (over.Count > 0) _lastOver[userId] = (over, unbiased);
-        foreach (var exe in over)
-            ApplyOtherProbeLock(sessionId, userId, run.UserSid, run.Username, ProbeLockKind.NeverSuspended, exe, today, unbiased);
-
-        if (fullSet)
-        {
-            _fullSetDay[userId] = today;
-            ApplyOtherProbeLock(sessionId, userId, run.UserSid, run.Username, ProbeLockKind.FullSet, null, today, unbiased);
-        }
-
         if (tickNeeded) _enforcer.RequestTick();
+    }
+
+    // The Category Usage of the day for the probe locks (D14). If the read fails, the last good read of the same user and
+    // day is used, so an exhausted category stays exhausted during a database failure and the lock of a program that is
+    // never suspended still applies. Without a good read of the day, nothing is exhausted (the usage is unknown).
+    private Dictionary<AppCategory, int> CategoryUsageForLocks(int userId, DateOnly today)
+    {
+        try
+        {
+            var usage = _ledger.CategoryUsage(userId, today);
+            _lastUsage[userId] = (today, usage);
+            return usage;
+        }
+        catch (Exception ex)
+        {
+            LogOnce("usage-read:" + ex.GetType().Name, () =>
+                _logger.Warning(ex, "Session Probe host: the Category Usage read failed; the probe locks use the last good read"));
+            return _lastUsage.TryGetValue(userId, out var last) && last.Day == today ? last.Usage : new Dictionary<AppCategory, int>();
+        }
     }
 
     private static string Describe(ProbeSample sample, SampleSelection selection, SampleCredit credit)
@@ -727,7 +800,7 @@ public sealed class SessionProbeHost : BackgroundService
         _logger.Warning("Session Probe of session {SessionId}: {Detail}", run.SessionId, detail);
         _health.TryWrite(() => EventRepository.LogEvent(run.UserSid, EventType.PROBE_GAP, detail), "probe gap event", _logger);
         if (_daily.Take($"gap:{run.UserId}", today))
-            _enforcer.SendParentAlert($"Parental Control: the Session Probe of {run.Username} on {Environment.MachineName} " +
+            Alert($"Parental Control: the Session Probe of {run.Username} on {Environment.MachineName} " +
                                       $"had a long gap between two samples ({detail}). The time counts under the gap rule; no lock.");
     }
 
@@ -759,10 +832,17 @@ public sealed class SessionProbeHost : BackgroundService
                 // A signed-out session that the tracker still lists must not start the unlocked clock again (S5).
                 if (!_monitor.MayStart(sessionId, _logonKeys.GetValueOrDefault(sessionId))) continue;
                 var user = Safe(() => UserRepository.GetBySid(session.UserSid), null);
-                if (user is { IsRestricted: true }) _monitor.Observe(user.Id, now, !session.IsLocked && !_sleeping);
+                if (user is { IsRestricted: true }) _monitor.Observe(user.Id, now, !session.IsLocked && !_sleep.IsSet);
             }
 
-            if (!_sleeping)
+            if (_sleep.ClearIfStale(now))
+            {
+                _logger.Warning("Session Probe: no resume event within {Seconds} s of unbiased time after the suspend event; " +
+                                "the watchdog and the outage timer start again", ProbeSleepFlag.StaleAfter.TotalSeconds);
+                Resumed(now);
+            }
+
+            if (!_sleep.IsSet)
             {
                 // The watchdog (S15): no accepted line for 30 s in an unlocked, connected session.
                 foreach (var run in _runs.Values.ToList())
@@ -770,7 +850,10 @@ public sealed class SessionProbeHost : BackgroundService
                     if (run.Ended || run.AskedEnd || run.WatchdogKill || IsLocked(run.SessionId)) continue;
                     if (now - run.LastLine < WatchdogTimeout) continue;
                     run.WatchdogKill = true;
-                    Terminate(run, $"watchdog: no line for {(now - run.LastLine).TotalSeconds:0} s");
+                    // If TerminateProcess fails, the next tick tries again (the failure is logged once per run). The
+                    // exit wait classifies the end only when the probe ends.
+                    if (!Terminate(run, $"watchdog: no line for {(now - run.LastLine).TotalSeconds:0} s"))
+                        run.WatchdogKill = false;
                 }
 
                 foreach (var outage in _monitor.CheckOutages(now))
@@ -791,7 +874,6 @@ public sealed class SessionProbeHost : BackgroundService
                     _monitor.SessionGone(UserOf(sessionId), sessionId, now);
                     _sessionUsers.Remove(sessionId);
                     _counter.SessionEnded(sessionId);
-                    _agentBudgets.Remove(sessionId);
                     _lastForeground.Remove(sessionId);
                 }
             }
@@ -808,7 +890,7 @@ public sealed class SessionProbeHost : BackgroundService
             _health.TryWrite(() => EventRepository.LogEvent(user.Sid, EventType.PROBE_OUTAGE, "No Session Probe sample for 5 minutes"),
                 "probe outage event", _logger);
         if (outage.Alert)
-            _enforcer.SendParentAlert($"Parental Control: the Session Probe of {name} on {Environment.MachineName} gave no sample " +
+            Alert($"Parental Control: the Session Probe of {name} on {Environment.MachineName} gave no sample " +
                                       "for 5 minutes. No category time counts during the outage; the daily time still counts.");
     }
 
@@ -827,7 +909,7 @@ public sealed class SessionProbeHost : BackgroundService
             _health.TryWrite(() => EventRepository.LogEvent(user.Sid, EventType.PROBE_RESTART, $"Unexpected end of the Session Probe in session {end.SessionId}"),
                 "probe restart event", _logger);
         if (end.Alert)
-            _enforcer.SendParentAlert($"Parental Control: the Session Probe of {name} on {Environment.MachineName} ended " +
+            Alert($"Parental Control: the Session Probe of {name} on {Environment.MachineName} ended " +
                                       $"{ProbeOutageMonitor.RestartAlertAt} times within one hour. The service starts it again each time.");
     }
 
@@ -846,16 +928,23 @@ public sealed class SessionProbeHost : BackgroundService
             return;
         }
 
-        if (!LockSession(sessionId, $"Session Probe: {reason}"))
+        switch (LockSession(sessionId, $"Session Probe: {reason}"))
         {
-            Owe(sessionId, kind);
-            return;
+            case LockOutcome.Owed:
+                Owe(sessionId, kind);
+                return;
+            case LockOutcome.AlreadyLocked:
+                // Windows locked the session already. This call applied no lock, so it gives no strike, no event and
+                // no alert.
+                _logger.Information("Probe lock of session {SessionId} ({Username}) not needed, the session is locked: {Reason}",
+                    sessionId, username, reason);
+                return;
         }
         _monitor.LockApplied(userId, today);
         _logger.Warning("Probe lock of session {SessionId} ({Username}): {Reason}", sessionId, username, reason);
         _health.TryWrite(() => EventRepository.LogEvent(userSid, EventType.PROBE_BLIND, $"Session locked: {reason}"), "probe blind event", _logger);
         if (_daily.Take($"blind:{userId}", today))
-            _enforcer.SendParentAlert($"Parental Control: the session of {username} on {Environment.MachineName} is locked: {reason}. " +
+            Alert($"Parental Control: the session of {username} on {Environment.MachineName} is locked: {reason}. " +
                                       "The service could not see which program was in front. No program was closed.");
     }
 
@@ -870,16 +959,18 @@ public sealed class SessionProbeHost : BackgroundService
             ReportWouldLock(userId, userSid, username, kind, exe, reason, today);
             return;
         }
-        if (IsLocked(sessionId)) return;
-        if (!LockSession(sessionId, $"Session Probe: {reason}"))
+        switch (LockSession(sessionId, $"Session Probe: {reason}"))
         {
-            Owe(sessionId, kind);
-            return;
+            case LockOutcome.Owed:
+                Owe(sessionId, kind);
+                return;
+            case LockOutcome.AlreadyLocked:
+                return;
         }
         _logger.Warning("Probe lock of session {SessionId} ({Username}): {Reason}", sessionId, username, reason);
         _health.TryWrite(() => EventRepository.LogEvent(userSid, EventType.SECURITY_ALERT, $"Session locked: {reason}"), "probe lock event", _logger);
         if (_daily.Take($"lock:{userId}:{kind}:{exe}", today))
-            _enforcer.SendParentAlert($"Parental Control: the session of {username} on {Environment.MachineName} is locked: {reason}. No program was closed.");
+            Alert($"Parental Control: the session of {username} on {Environment.MachineName} is locked: {reason}. No program was closed.");
     }
 
     private void ReportWouldLock(int userId, string userSid, string username, ProbeLockKind kind, string? exe, string reason, DateOnly today)
@@ -893,17 +984,40 @@ public sealed class SessionProbeHost : BackgroundService
                 $"Would lock ({kind}): {reason}; decisions: {report.Decisions}"), "probe would-lock event", _logger);
         }
         if (report.Alert)
-            _enforcer.SendParentAlert($"Parental Control (probe locks off): the service would lock the session of {username} on " +
+            Alert($"Parental Control (probe locks off): the service would lock the session of {username} on " +
                                       $"{Environment.MachineName}: {reason}." + (exe is null ? "" : $"\nPath: {exe}"));
     }
 
-    // The lock through the Lock Deferral (D14). True if the session is locked now; false if a deferral owes it.
-    private bool LockSession(int sessionId, string reason)
+    private enum LockOutcome
     {
-        if (IsLocked(sessionId)) return true;
-        if (!_locker.Lock(sessionId, reason)) return false;
+        /// <summary>This call locked the session.</summary>
+        Locked,
+        /// <summary>The session was locked already: no new lock, no event, no alert.</summary>
+        AlreadyLocked,
+        /// <summary>A Lock Deferral runs: the lock is owed.</summary>
+        Owed,
+    }
+
+    // The lock through the Lock Deferral (D14).
+    private LockOutcome LockSession(int sessionId, string reason)
+    {
+        if (IsLocked(sessionId)) return LockOutcome.AlreadyLocked;
+        if (!_locker.Lock(sessionId, reason)) return LockOutcome.Owed;
         _tracker.OnSessionLock(sessionId, $"{reason} - workstation locked");
-        return true;
+        return LockOutcome.Locked;
+    }
+
+    // A parent alert never stops a lock or a count: a failed settings read in SendParentAlert is only logged.
+    private void Alert(string text)
+    {
+        try
+        {
+            _enforcer.SendParentAlert(text);
+        }
+        catch (Exception ex)
+        {
+            LogOnce("alert:" + ex.GetType().Name, () => _logger.Warning(ex, "Session Probe host: a parent alert failed"));
+        }
     }
 
     private void Owe(int sessionId, ProbeLockKind kind)
@@ -936,7 +1050,7 @@ public sealed class SessionProbeHost : BackgroundService
                 && now - last.At <= TimeSpan.FromSeconds(15))
             {
                 var config = CategoryConfigCache.Current;
-                var dayLimits = config.Calculator.Evaluate(today, _ledger.CategoryUsage(user.Id, today),
+                var dayLimits = config.Calculator.Evaluate(today, CategoryUsageForLocks(user.Id, today),
                     Safe(() => UsageRepository.GetUsage(user.Id, today)?.BonusMinutes ?? 0, 0));
                 if (last.Exes.Any(exe => dayLimits.CategoryLimit(config.Resolver.Resolve(exe).Category)?.IsReached ?? false))
                     due.Add("a program that is never suspended");
@@ -948,10 +1062,14 @@ public sealed class SessionProbeHost : BackgroundService
                 return;
             }
             var reason = "Session Probe (owed): " + string.Join(", ", due);
-            if (!LockSession(sessionId, reason))
+            switch (LockSession(sessionId, reason))
             {
-                foreach (var kind in kinds) Owe(sessionId, kind);
-                return;
+                case LockOutcome.Owed:
+                    foreach (var kind in kinds) Owe(sessionId, kind);
+                    return;
+                case LockOutcome.AlreadyLocked:
+                    _logger.Information("Owed probe lock of session {SessionId}: the session is locked already", sessionId);
+                    return;
             }
             if (due.Contains("blind samples")) _monitor.LockApplied(user.Id, today);
             _logger.Warning("Owed probe lock of session {SessionId} ({Username}) applied: {Reason}", sessionId, user.Username, reason);
@@ -972,7 +1090,7 @@ public sealed class SessionProbeHost : BackgroundService
     {
         if (!_tracker.ActiveSessions.TryGetValue(sessionId, out var session)) return;
         var user = Safe(() => UserRepository.GetBySid(session.UserSid), null);
-        if (user is { IsRestricted: true }) _monitor.Observe(user.Id, SessionProbePlatform.UnbiasedNow(), unlocked && !_sleeping);
+        if (user is { IsRestricted: true }) _monitor.Observe(user.Id, SessionProbePlatform.UnbiasedNow(), unlocked && !_sleep.IsSet);
     }
 
     private static bool IsGone(int sessionId) =>
@@ -985,6 +1103,16 @@ public sealed class SessionProbeHost : BackgroundService
 
     private bool LogOnce(string key) => _loggedOnce.Add(key);
 
+    private string TestHooksText()
+    {
+#if VM_TEST
+        return $" (VM_TEST build, test hooks [{_testArgs}] noStart={_testNoStart} trace={_trace})";
+#else
+        return "";
+#endif
+    }
+
+#if VM_TEST
     private void Trace(ProbeRun run, ProbeSample sample, SampleReading reading, SampleSelection selection, SampleCredit credit, long receiptTick)
     {
         static string Entry(SampleEntry e) => $"{e.Role}:{(e.Outcome == EntryOutcome.Read ? WindowsPath.GetFileName(e.ExePath ?? "?") : e.Outcome.ToString())}";
@@ -996,6 +1124,7 @@ public sealed class SessionProbeHost : BackgroundService
             sample.BlindReason is { } r ? $"({r})" : "", sample.Desktop ?? "", entries, reading.CursorNoActivate, counted,
             credit.Time.TotalSeconds, credit.Gap.TotalSeconds, credit.GapItem, credit.LongGap, selection.Blind, selection.EndedItem);
     }
+#endif
 
     private void Guard(string what, Action action)
     {

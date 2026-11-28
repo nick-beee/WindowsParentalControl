@@ -8,6 +8,13 @@ internal static class LaunchNative
 {
     internal const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
     internal const uint DETACHED_PROCESS = 0x00000008;
+    internal const uint SEM_FAILCRITICALERRORS = 0x0001;
+    internal const uint SEM_NOGPFAULTERRORBOX = 0x0002;
+    internal const uint SEM_NOOPENFILEERRORBOX = 0x8000;
+
+    // The process error mode; a child process inherits it (without CREATE_DEFAULT_ERROR_MODE).
+    [DllImport("kernel32.dll")]
+    internal static extern uint SetErrorMode(uint mode);
     internal const uint HIGH_PRIORITY_CLASS = 0x00000080;
     internal const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
     internal static readonly IntPtr PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002;

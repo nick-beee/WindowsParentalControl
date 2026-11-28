@@ -15,4 +15,10 @@
     <UseSystemResourceKeys>true</UseSystemResourceKeys>
     <ApplicationIcon>..\..\icon.ico</ApplicationIcon>
   </PropertyGroup>
+  <!-- The test switches of the probe and the test hooks of SessionProbeHost exist only in a build for VM 102:
+       dotnet build or publish -p:VmTest=true (compile symbol VM_TEST, design D15). build.ps1, release.yml and ci.yml
+       build without it, so the release has none of them. -->
+  <PropertyGroup Condition="'$(VmTest)' == 'true'">
+    <DefineConstants>$(DefineConstants);VM_TEST</DefineConstants>
+  </PropertyGroup>
 </Project>

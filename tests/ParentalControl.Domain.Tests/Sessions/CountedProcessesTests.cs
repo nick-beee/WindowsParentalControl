@@ -40,8 +40,9 @@ public class CountedProcessesTests
         bool prompt = false,
         ForegroundProcess? last = null,
         Func<ProcessIdentity, bool>? running = null,
-        Func<ProcessIdentity, bool>? suspended = null) =>
-        new(Categorize, @"C:\Windows", p => p == AgentP, prompt, suspended ?? (_ => false), running ?? (_ => true), last);
+        Func<ProcessIdentity, bool>? suspended = null,
+        Func<ProcessIdentity, string, bool>? agent = null) =>
+        new(Categorize, @"C:\Windows", agent ?? ((p, _) => p == AgentP), prompt, suspended ?? (_ => false), running ?? (_ => true), last);
 
     private static SampleEntry E(ProbeRole role, ProcessIdentity p, string exe, WebView2Creator? creator = null) =>
         new(role, EntryOutcome.Read, p, exe, creator);
@@ -205,6 +206,55 @@ public class CountedProcessesTests
         var s = Select(E(ProbeRole.Foreground, WebView2P, WebView2, new WebView2Creator(CreatorOutcome.Read, AgentP, Agent)));
         Assert.Equal([AppCategory.Unknown], Cats(s));
         Assert.True(s.Counted[0].IsAgent);
+    }
+
+    // Review of group 4, item 3: the service names the agent by its exe path. A WebView2 of the agent that a script moved
+    // into another window has the agent as its creator, but no window of the agent is in the sample.
+    private static bool AgentByPath(ProcessIdentity _, string path) => string.Equals(path, Agent, StringComparison.OrdinalIgnoreCase);
+
+    [Fact]
+    public void Moved_agent_WebView2_child_without_an_agent_window_counts_in_Unknown_as_the_agent()
+    {
+        var s = Select(new SampleReading([
+                E(ProbeRole.Foreground, NotepadP, Notepad),
+                E(ProbeRole.Child, WebView2P, WebView2, new WebView2Creator(CreatorOutcome.Read, AgentP, Agent))]),
+            Context(agent: AgentByPath));
+        Assert.Equal([AppCategory.Unknown], Cats(s));
+        Assert.Single(s.Counted);
+        Assert.True(s.Counted[0].IsAgent);
+        Assert.Equal(ProbeRole.Child, s.Counted[0].Role);
+    }
+
+    [Fact]
+    public void Moved_agent_WebView2_child_uses_the_Agent_Window_Budget_and_then_gets_the_never_suspended_lock()
+    {
+        var context = Context(agent: AgentByPath);
+        var reading = new SampleReading([
+            E(ProbeRole.Foreground, NotepadP, Notepad),
+            E(ProbeRole.Child, WebView2P, WebView2, new WebView2Creator(CreatorOutcome.Read, AgentP, Agent))]);
+        var budget = new AgentWindowBudget();
+        // The agent is protected by its rule (IsAgent), not by ProtectedPrograms.
+        var allowance = new NeverSuspendedAllowance(_ => false);
+        var unlocked = TimeSpan.Zero;
+        var exemptTotal = 0;
+        IReadOnlyList<string> over = [];
+        var seconds = 0;
+        while (over.Count == 0 && seconds < 3600)
+        {
+            var s = CountedProcesses.Select(reading, context, Trusted);
+            var agentCounted = s.Counted.Any(c => c.IsAgent);
+            Assert.True(agentCounted);
+            var exempt = budget.Sample(TimeSpan.FromSeconds(seconds), 1, agentCounted, unlocked: true);
+            exemptTotal += exempt;
+            unlocked += TimeSpan.FromSeconds(1);
+            seconds++;
+            over = allowance.Sample(unlocked, true, s, TimeSpan.FromSeconds(1), c => c == AppCategory.Unknown, TimeSpan.FromSeconds(exempt));
+        }
+        Assert.Equal(AgentWindowBudget.MaxExemptSeconds, exemptTotal);
+        Assert.Equal([Agent], over);
+        // The budget first, then more than the 60 seconds of the allowance.
+        Assert.InRange(seconds, AgentWindowBudget.MaxExemptSeconds + NeverSuspendedAllowance.AllowedSeconds,
+            AgentWindowBudget.MaxExemptSeconds + NeverSuspendedAllowance.AllowedSeconds + 2);
     }
 
     [Fact]

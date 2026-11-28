@@ -8,8 +8,9 @@ namespace ParentalControl.Probe;
 /// the input desktop at random times and writes one JSON line per sample to the pipe. It exits when the pipe breaks
 /// (the service ended) and when the restore of its thread desktop fails. It writes no file and shows nothing.
 /// <para>
-/// Usage: <c>ParentalControl.Probe.exe --pipe &lt;handle&gt; [test switches]</c>. The test switches come only from the
-/// service, which takes them from its own environment (an administrator setting on a test machine):
+/// Usage: <c>ParentalControl.Probe.exe --pipe &lt;handle&gt; [test switches]</c>. The test switches exist only in a
+/// build for VM 102 (<c>-p:VmTest=true</c>, compile symbol <c>VM_TEST</c>, design D15); the release build ignores each
+/// argument but <c>--pipe</c>. They come only from the service, which takes them from its own environment:
 /// <c>crash=&lt;s&gt;</c> ends the process with a crash after s seconds; <c>hang=&lt;s&gt;</c> blocks the sampler after
 /// s seconds; <c>gap=&lt;s&gt;</c> waits s more seconds after each 10th sample; <c>stall=&lt;s&gt;</c> stalls each 10th
 /// sample for s seconds inside the sample; <c>nohung</c> drops the <c>hung</c> entry.
@@ -21,7 +22,10 @@ internal static class Program
     {
         // Design D2: no error dialog of any kind, and DLLs only from System32 and the folder of the exe.
         Native.SetErrorMode(Native.SEM_FAILCRITICALERRORS | Native.SEM_NOGPFAULTERRORBOX | Native.SEM_NOOPENFILEERRORBOX);
-        Native.SetDefaultDllDirectories(Native.LOAD_LIBRARY_SEARCH_SYSTEM32 | Native.LOAD_LIBRARY_SEARCH_APPLICATION_DIR);
+        // Without the safe DLL search, a later LoadLibrary could take a DLL from another folder: exit, the service logs the
+        // end and starts the probe again.
+        if (!Native.SetDefaultDllDirectories(Native.LOAD_LIBRARY_SEARCH_SYSTEM32 | Native.LOAD_LIBRARY_SEARCH_APPLICATION_DIR))
+            return 3;
 
         var pipeIndex = Array.IndexOf(args, "--pipe");
         if (pipeIndex < 0 || pipeIndex + 1 >= args.Length
@@ -31,8 +35,9 @@ internal static class Program
         if (Native.GetFileType(pipe) != Native.FILE_TYPE_PIPE)
             return 2;
 
-        var switches = TestSwitches.Parse(args);
         var output = new LineWriter(pipe);
+#if VM_TEST
+        var switches = TestSwitches.Parse(args);
         output.Log($"probe start pid {Environment.ProcessId}{switches.Describe()}", force: true);
 
         if (switches.CrashAfterSeconds is { } crash)
@@ -46,6 +51,10 @@ internal static class Program
         }
 
         var sampler = new Thread(() => new Sampler(output, switches).Run()) { IsBackground = false, Name = "sampler" };
+#else
+        output.Log($"probe start pid {Environment.ProcessId}", force: true);
+        var sampler = new Thread(() => new Sampler(output).Run()) { IsBackground = false, Name = "sampler" };
+#endif
         sampler.SetApartmentState(ApartmentState.MTA);
         sampler.Start();
         sampler.Join();
@@ -53,7 +62,8 @@ internal static class Program
     }
 }
 
-/// <summary>The test switches of the probe. The service passes them only on a test machine.</summary>
+#if VM_TEST
+/// <summary>The test switches of the probe (VM_TEST build only). The service passes them only on VM 102.</summary>
 internal sealed record TestSwitches(int? CrashAfterSeconds, int? HangAfterSeconds, int? GapSeconds, int? StallSeconds, bool NoHung)
 {
     public static TestSwitches Parse(string[] args)
@@ -79,3 +89,4 @@ internal sealed record TestSwitches(int? CrashAfterSeconds, int? HangAfterSecond
         return parts.Count == 0 ? "" : " test switches: " + string.Join(' ', parts);
     }
 }
+#endif

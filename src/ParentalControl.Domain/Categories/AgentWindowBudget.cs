@@ -10,7 +10,7 @@ namespace ParentalControl.Domain.Categories;
 /// </para>
 /// <para>
 /// No service code calls this class before the Session Probe (PR #43, task 6.1). It must never get its input from the
-/// unauthenticated agent routes. Not thread-safe: one caller per session.
+/// unauthenticated agent routes. One instance per Restricted User (all sessions of the user share it); not thread-safe.
 /// </para>
 /// </summary>
 public sealed class AgentWindowBudget

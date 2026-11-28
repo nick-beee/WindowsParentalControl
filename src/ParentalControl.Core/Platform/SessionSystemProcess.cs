@@ -43,8 +43,25 @@ public static class SessionSystemProcess
             if (entries is null) environmentWarning?.Invoke(envError ?? "CreateEnvironmentBlock failed");
             var environment = LaunchEnvironment.BuildForProbe(entries, Environment.GetEnvironmentVariables());
             var folder = Path.GetDirectoryName(exePath) ?? throw new ArgumentException("The exe path has no folder.", nameof(exePath));
-            return ProcessLauncher.Launch(token, exePath, arguments, inheritHandle,
-                LaunchNative.DETACHED_PROCESS | LaunchNative.HIGH_PRIORITY_CLASS, environment, systemOnlyObjects: true, folder);
+            // Design D2: no error dialog of any kind, also from the loader before Main of the probe runs. The probe
+            // inherits the process error mode of the service at CreateProcessAsUserW. The error mode is process-wide, so
+            // the service sets it only for this launch, under the launch lock (the agent launch takes the same lock and so
+            // never inherits it), and restores it at once. Other threads of the service run with it for this short time
+            // only; a session-0 service shows no error dialog anyway.
+            lock (ProcessLaunchLock.Gate)
+            {
+                var previous = LaunchNative.SetErrorMode(
+                    LaunchNative.SEM_FAILCRITICALERRORS | LaunchNative.SEM_NOGPFAULTERRORBOX | LaunchNative.SEM_NOOPENFILEERRORBOX);
+                try
+                {
+                    return ProcessLauncher.Launch(token, exePath, arguments, inheritHandle,
+                        LaunchNative.DETACHED_PROCESS | LaunchNative.HIGH_PRIORITY_CLASS, environment, systemOnlyObjects: true, folder);
+                }
+                finally
+                {
+                    LaunchNative.SetErrorMode(previous);
+                }
+            }
         }
         finally
         {

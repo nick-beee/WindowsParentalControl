@@ -271,6 +271,17 @@ public class ProbeOutageMonitorTests
     }
 
     [Fact]
+    public void Sign_in_with_the_same_logon_key_clears_the_sign_out_mark()
+    {
+        // The logon key query can fail (key 0) or give the old key: each sign-in event clears the mark.
+        var m = New();
+        m.SignedOut(User, Session, 0, S(5));
+        Assert.False(m.MayStart(Session, 0));
+        m.SignedIn(Session, 0);
+        Assert.True(m.MayStart(Session, 0));
+    }
+
+    [Fact]
     public void End_and_a_gone_session_7_s_later_is_a_session_end_end()
     {
         var m = New();

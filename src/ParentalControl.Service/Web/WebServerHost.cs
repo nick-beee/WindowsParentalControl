@@ -1480,9 +1480,10 @@ public sealed class WebServerHost : BackgroundService
                 msgBreakRunning = SettingsRepository.GetMessage(SettingsRepository.KeyMsgBreakRunning),
                 msgProgramBlocked = SettingsRepository.GetMessage(SettingsRepository.KeyMsgProgramBlocked),
                 notifyBlockedTelegram = SettingsRepository.IsNotifyBlockedTelegramEnabled(),
-                // session-probe-and-agent-channel D12: the switch of the probe locks and the "would lock" events of 7 days.
+                // session-probe-and-agent-channel D12: the switch of the probe locks and the "would lock" events of the
+                // last 7 days of the Control Time Zone (D14). The events table keeps the local time of the machine.
                 probeLocksEnforced = SettingsRepository.IsProbeLocksEnforced(),
-                probeWouldLockEvents = EventRepository.GetEvents(from: DateTime.Now.AddDays(-7))
+                probeWouldLockEvents = EventRepository.GetEvents(from: ControlTime.Current.StartOfLastDaysUtc(7).ToLocalTime())
                     .Count(e => e.EventType == EventType.PROBE_WOULD_LOCK)
             });
         });

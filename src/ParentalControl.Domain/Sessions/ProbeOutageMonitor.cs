@@ -213,11 +213,10 @@ public sealed class ProbeOutageMonitor
         _restartsAt.Remove((sessionId, logonKey));
     }
 
-    /// <summary><c>WTS_SESSION_LOGON</c> in the session: a new logon clears the signed-out state.</summary>
-    public void SignedIn(int sessionId, long logonKey)
-    {
-        if (_signedOut.TryGetValue(sessionId, out var key) && key != logonKey) _signedOut.Remove(sessionId);
-    }
+    /// <summary><c>WTS_SESSION_LOGON</c> in the session: a new logon clears the signed-out state. Each logon event
+    /// clears it, also with the same logon key: the key comes from <c>WTSQuerySessionInformation</c> and can be 0 or
+    /// equal to the old key if that query fails, and a missed sign-in must not stop the probe for the whole session.</summary>
+    public void SignedIn(int sessionId, long logonKey) => _signedOut.Remove(sessionId);
 
     /// <summary>The service stops: each pending end is a session-end end.</summary>
     public void ServiceStopping() => _pending.Clear();
