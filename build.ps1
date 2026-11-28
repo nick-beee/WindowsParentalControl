@@ -70,10 +70,12 @@ if (Test-Path $publishDir) {
     Remove-Item $publishDir -Recurse -Force
 }
 
-# Publish Service
+# Publish Service. -p:VmTest=false: the release never has the test hooks of the probe and the service (design D15 of
+# session-probe-and-agent-channel), also if the environment has a VmTest variable (MSBuild reads it as a property).
 Write-Host "`n=== Publishing ParentalControl.Service ===" -ForegroundColor Cyan
 dotnet publish "$srcDir\ParentalControl.Service\ParentalControl.Service.csproj" `
     --configuration $Configuration `
+    -p:VmTest=false `
     --runtime win-x64 `
     --self-contained true `
     --output "$publishDir\service"
@@ -104,6 +106,7 @@ if ($LASTEXITCODE -ne 0) { Write-Error "Agent publish failed."; exit 1 }
 Write-Host "`n=== Publishing ParentalControl.Probe ===" -ForegroundColor Cyan
 dotnet publish "$srcDir\ParentalControl.Probe\ParentalControl.Probe.csproj" `
     --configuration $Configuration `
+    -p:VmTest=false `
     --runtime win-x64 `
     --self-contained true `
     --output "$publishDir\probe"

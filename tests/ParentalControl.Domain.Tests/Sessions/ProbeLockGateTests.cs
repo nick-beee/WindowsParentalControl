@@ -39,6 +39,24 @@ public class ProbeLockGateTests
     }
 
     [Fact]
+    public void Each_reason_and_each_never_suspended_exe_has_its_own_event_minute()
+    {
+        var gate = new ProbeLockGate(false);
+        Assert.True(gate.WouldLock(1, Day, ProbeLockKind.Strike, null, S(100)).WriteEvent);
+        // The budget lock and the strike are one reason.
+        Assert.False(gate.WouldLock(1, Day, ProbeLockKind.Budget, null, S(101)).WriteEvent);
+        // A strike at each sample does not hide the event of another reason or another exe in the same minute.
+        Assert.True(gate.WouldLock(1, Day, ProbeLockKind.FullSet, null, S(102)).WriteEvent);
+        Assert.True(gate.WouldLock(1, Day, ProbeLockKind.NeverSuspended, @"C:\Windows\notepad.exe", S(103)).WriteEvent);
+        Assert.False(gate.WouldLock(1, Day, ProbeLockKind.NeverSuspended, @"C:\WINDOWS\NOTEPAD.EXE", S(104)).WriteEvent);
+        Assert.True(gate.WouldLock(1, Day, ProbeLockKind.NeverSuspended, @"C:\Windows\System32\mspaint.exe", S(105)).WriteEvent);
+
+        var strike = gate.WouldLock(1, Day, ProbeLockKind.Strike, null, S(161));
+        Assert.True(strike.WriteEvent);
+        Assert.Equal(2, strike.Decisions);
+    }
+
+    [Fact]
     public void One_alert_per_user_day_and_reason()
     {
         var gate = new ProbeLockGate(false);

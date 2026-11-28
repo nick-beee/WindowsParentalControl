@@ -14,8 +14,10 @@ public enum ProbeLockKind
 }
 
 /// <summary>What the service writes for one "would lock" decision.</summary>
-/// <param name="WriteEvent">Write one <c>PROBE_WOULD_LOCK</c> event now (at most one per user and minute).</param>
-/// <param name="Decisions">The number of decisions since the last event, this one included.</param>
+/// <param name="WriteEvent">Write one <c>PROBE_WOULD_LOCK</c> event now (at most one per user, reason and minute; for a
+/// program that is never suspended, one per exe and minute).</param>
+/// <param name="Decisions">The number of decisions of the same user and reason (and exe) since its last event, this one
+/// included.</param>
 /// <param name="Alert">Send one Telegram alert (one per user, day and reason; for a program that is never suspended,
 /// one per exe and day).</param>
 public readonly record struct WouldLockReport(bool WriteEvent, int Decisions, bool Alert);
@@ -27,7 +29,9 @@ public readonly record struct WouldLockReport(bool WriteEvent, int Decisions, bo
 /// clears them at the switch to on; this gate decides the lock of a program that is never suspended and the full-set lock,
 /// and limits the reports of all four reasons:
 /// <list type="bullet">
-/// <item>at most one <c>PROBE_WOULD_LOCK</c> event per Restricted User and minute, with the number of decisions;</item>
+/// <item>at most one <c>PROBE_WOULD_LOCK</c> event per Restricted User, reason and minute (for a program that is never
+/// suspended, per exe), with the number of decisions. So a strike at each sample does not hide the event of another
+/// reason or another exe in the same minute;</item>
 /// <item>one alert per Restricted User, day and reason; the budget lock and the strike are one reason (blind
 /// samples);</item>
 /// <item>for a program that is never suspended, one alert per exe and day that names the exe path.</item>
@@ -38,7 +42,7 @@ public sealed class ProbeLockGate
 {
     public static readonly TimeSpan EventInterval = TimeSpan.FromMinutes(1);
 
-    private readonly Dictionary<int, (TimeSpan At, int Pending)> _events = new();
+    private readonly Dictionary<(int UserId, ProbeLockKind Reason, string Exe), (TimeSpan At, int Pending)> _events = new();
     private readonly HashSet<(int UserId, DateOnly Day, ProbeLockKind Kind, string Exe)> _alerts = [];
     private DateOnly _alertDay;
 
@@ -71,26 +75,26 @@ public sealed class ProbeLockGate
             _alertDay = today;
         }
 
+        // D12 names three reasons: blind samples (the budget lock and the strike are one reason), a program that is
+        // never suspended (one event and one alert per exe), and a full set.
+        var reason = kind == ProbeLockKind.Strike ? ProbeLockKind.Budget : kind;
+        var exe = reason == ProbeLockKind.NeverSuspended ? (exePath ?? "").ToUpperInvariant() : "";
+
+        var eventKey = (userId, reason, exe);
         var writeEvent = true;
         var decisions = 1;
-        if (_events.TryGetValue(userId, out var last))
+        if (_events.TryGetValue(eventKey, out var last))
         {
             decisions = last.Pending + 1;
             if (monotonicNow >= last.At && monotonicNow - last.At < EventInterval)
             {
                 writeEvent = false;
-                _events[userId] = (last.At, decisions);
+                _events[eventKey] = (last.At, decisions);
             }
         }
-        if (writeEvent) _events[userId] = (monotonicNow, 0);
+        if (writeEvent) _events[eventKey] = (monotonicNow, 0);
 
-        // D12 names three reasons: blind samples (the budget lock and the strike are one reason), a program that is
-        // never suspended (one alert per exe), and a full set.
-        var reason = kind == ProbeLockKind.Strike ? ProbeLockKind.Budget : kind;
-        var alertKey = reason == ProbeLockKind.NeverSuspended
-            ? (userId, today, reason, (exePath ?? "").ToUpperInvariant())
-            : (userId, today, reason, "");
-        var alert = _alerts.Add(alertKey);
+        var alert = _alerts.Add((userId, today, reason, exe));
         return new WouldLockReport(writeEvent, decisions, alert);
     }
 }
