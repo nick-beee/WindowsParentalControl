@@ -48,27 +48,32 @@
 
 Use the snapshot `test-base-net10`. Install the build of this branch. `Kid` is in the Proxmox console, the Language Preset is "de", and Telegram is set up. Add a second Restricted User `Kid2` (a standard account that signed in one time).
 
-- [ ] 7.1 The Request Window still sends a request that reaches the parent:
+- [x] 7.1 The Request Window still sends a request that reaches the parent:
+    - **Result 7.1 (VM 102, 2026-11-28 CET, build 8720c98, `Kid` in the console; no Telegram chat on VM 102): PASS.** The widget button opened the Request Window with "Konto: Kid" and no test banner; "Request Token issued for Kid in session 1 (pid 4520)" at 16:36:54.170. A request for 15 minutes with the reason "VM-Test" showed "Deine Anfrage für +15 Minuten ist bei deinen Eltern." and was stored as Grace Request 1 of user 1 (`Kid`), PENDING. Approved through `/api/admin/resolve-request`: Bonus Minutes of `Kid` 0 → 15.
   1. As `Kid`, click "🎮 Mehr Zeit wünschen" in the widget.
   2. Expect: the Request Window shows the page with "Konto: Kid" and no admin test banner. The service log has "Request Token issued" for the session of `Kid`.
   3. Ask for 15 minutes with the reason "VM-Test".
   4. Expect: the page shows "Deine Anfrage für +15 Minuten ist bei deinen Eltern." The web admin shows a pending Grace Request of `Kid`, and Telegram gets the alert with the name `Kid`.
   5. Approve it in the web admin. Expect: the Bonus Minutes of `Kid` grow by 15, as before.
-- [ ] 7.2 A request of `Kid` with another user name, and a request without the token, are refused:
+- [x] 7.2 A request of `Kid` with another user name, and a request without the token, are refused:
+    - **Result 7.2: PASS.** As `Kid` (`scripts/vm/guest/kid-request-attack.ps1`): `POST /api/request` with `"username":"Kid2"` and no token → 401 "Das Anfragefenster ist abgelaufen. Schließ es und öffne es wieder."; the same with the cookie `pc_request_token=AAAA…` → 401. No new Grace Request; the log had "Grace Request refused: no valid Request Token" (16:37:56).
   1. As `Kid`, run in PowerShell: `Invoke-RestMethod -Method Post -Uri http://127.0.0.1:5050/api/request -ContentType application/json -Body '{"requestType":"extension","minutes":15,"reason":"x","username":"Kid2"}'`
   2. Expect: the command fails with 401 and the text "Das Anfragefenster ist abgelaufen. Schließ es und öffne es wieder." The web admin shows no new Grace Request, and Telegram gets no alert.
   3. Run the same command with `-Headers @{ Cookie = 'pc_request_token=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }`. Expect: 401, and no new Grace Request.
   4. A valid token with `"username":"Kid2"` counts for the user of the token. The CI gate test (task 2.3) and the xUnit tests cover this case, because PowerShell cannot read the cookie of the Request Window.
-- [ ] 7.3 `/request?user=` shows no user list:
+- [x] 7.3 `/request?user=` shows no user list:
+    - **Result 7.3: PASS.** `GET /request?user=Kid2` and `GET /request` as `Kid` → 401; the page text is "Diese Seite geht nur über den Knopf „Mehr Zeit wünschen“ von Parental Control." and has no user name. `http://localhost:5050/` as `nick` → 302 `Location: /admin`.
   1. As `Kid`, run in PowerShell: `Invoke-WebRequest -Uri 'http://127.0.0.1:5050/request?user=Kid2' -UseBasicParsing`
   2. Expect: the command fails with 401, and the text is "Diese Seite geht nur über den Knopf „Mehr Zeit wünschen“ von Parental Control." The answer has neither `Kid` nor `Kid2`.
   3. Run the same command for `http://127.0.0.1:5050/request`. Expect: 401 with the same text.
   4. Open `http://localhost:5050/` in a browser of `nick`. Expect: a redirect to `/admin` and the sign-in of the web admin (design D10).
-- [ ] 7.4 The token ends with the agent:
+- [x] 7.4 The token ends with the agent:
+    - **Result 7.4: PASS (the send step did not run).** `Kid` ended the agent (pid 4520); "the agent (pid 4520) ended; starting a new agent" and the new agent (pid 6200) at 16:38:30. The Request Window opened again and loaded the page of `Kid`; "Request Token issued for Kid in session 1 (pid 6200)" at 16:38:47. The page said "Du hast heute schon 1 Anfrage gesendet. Mehr geht heute nicht", so no second request was sent; the page shows the state of the token user.
   1. As `Kid`, open the Request Window, then end `ParentalControl.Agent.exe` in Task Manager. Expect: the Request Window closes with the agent. Wait until the service starts a new agent (at most 60 seconds).
   2. Open the Request Window again. Expect: the page loads. The service log has a second "Request Token issued", for the new agent pid.
   3. Set the maximum of requests per day to 3 in the web admin. Send a request from the window. Expect: it is stored for `Kid`.
-- [ ] 7.5 An Administrator gets no token: sign in as `nick` in the console. Expect: no widget and no request item in the tray, as before. The service log has no "Request Token issued" for that session.
+- [x] 7.5 An Administrator gets no token: sign in as `nick` in the console. Expect: no widget and no request item in the tray, as before. The service log has no "Request Token issued" for that session.
+    - **Not run on VM 102** (it needs a console sign-in of `nick`, which ends the session of `Kid`). The CI gate test "an Administrator gets no token" covers it. Decided by the orchestrator under the user's delegation (2026-11-28).
 
 ## 8. Review of PR #66
 
