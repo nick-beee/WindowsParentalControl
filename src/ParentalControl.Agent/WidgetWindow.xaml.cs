@@ -7,6 +7,7 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using ParentalControl.Domain.Messages;
+using ParentalControl.Domain.Sessions;
 using MediaColor = System.Windows.Media.Color;
 using WinFormsScreen = System.Windows.Forms.Screen;
 
@@ -21,6 +22,7 @@ public partial class WidgetWindow : Window
 
     private int _remainingSeconds;
     private bool _isLocked;
+    private LockReason _lockReason;
     private bool _isCurfewRestricted;
     private bool _isCollapsed;
     public bool IsCollapsed => _isCollapsed;
@@ -143,22 +145,24 @@ public partial class WidgetWindow : Window
             CurfewIcon.ToolTip = texts["widget_curfew_tooltip"];
             RequestBtn.Content = texts["widget_request_button"];
             DeclineTitleText.Text = texts["widget_declined_title"];
-            if (_isLocked) CurfewText.Text = texts["widget_locked"];
+            if (_isLocked) CurfewText.Text = texts[LockReasons.WidgetTextKey(_lockReason)];
         });
     }
 
-    public void UpdateData(int remainingSec, string curfew, bool isLocked, string username, bool isCurfewClamped = false)
+    /// <param name="lockReason">The Lock Reason of the status answer; <see cref="LockReason.None"/> if the session is not locked.</param>
+    public void UpdateData(int remainingSec, string curfew, LockReason lockReason, string username, bool isCurfewClamped = false)
     {
         Dispatcher.Invoke(() =>
         {
             _remainingSeconds = remainingSec;
-            _isLocked = isLocked;
+            _lockReason = lockReason;
+            _isLocked = lockReason != LockReason.None;
             _isCurfewRestricted = isCurfewClamped;
             UserTitleText.Text = !string.IsNullOrWhiteSpace(username) ? username : Environment.UserName;
 
             if (_isLocked)
             {
-                CurfewText.Text = _texts["widget_locked"];
+                CurfewText.Text = _texts[LockReasons.WidgetTextKey(_lockReason)];
                 CurfewIcon.Visibility = Visibility.Collapsed;
             }
             else

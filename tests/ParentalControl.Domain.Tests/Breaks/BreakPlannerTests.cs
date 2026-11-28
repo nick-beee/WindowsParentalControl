@@ -211,6 +211,22 @@ public class BreakPlannerTests
     }
 
     [Fact]
+    public void NoBreakAfterTheScheduleWindowEndWhenADeferralKeepsTheSessionUnlocked()
+    {
+        // The Schedule Window ended (BreakEnforcer gives 0 minutes and no end), but a Lock Deferral delays its lock.
+        var result = BreakPlanner.Tick(Rule, WithUse(45), At(0), Unlocked(untilOtherLock: 0));
+        Assert.Empty(result.Actions);
+        Assert.False(result.State.HasBreak);
+    }
+
+    [Fact]
+    public void BreakStartsWhenTheOtherLockIsLater()
+    {
+        var result = BreakPlanner.Tick(Rule, WithUse(45), At(0), Unlocked(untilOtherLock: 1));
+        Assert.IsType<StartBreak>(Assert.Single(result.Actions));
+    }
+
+    [Fact]
     public void NoBreakForALockedSession()
     {
         var tick = new BreakTick(SessionUnlocked: false, OtherLockInThisTick: false, MinutesUntilOtherLock: null, ScheduleEndUtc: null);

@@ -34,7 +34,8 @@ public sealed record AgentStatus(
     IReadOnlyList<AgentStatusApp>? suspendedApps,
     int suspendedAppsTotal,
     IReadOnlyList<AgentStatusApp>? pendingApps,
-    int pendingAppsTotal);
+    int pendingAppsTotal,
+    string? lockReason = null); // LockReasons.ToWire: null if the session is not locked
 
 #pragma warning restore IDE1006
 
