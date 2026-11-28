@@ -901,9 +901,13 @@ public sealed class SessionProbeHost : BackgroundService
         _logger.Warning("Session Probe of session {SessionId} ({Username}): unexpected end after the end wait{Item}",
             end.SessionId, name, end.BudgetItem ? ", a budget item" : "");
 
-        // The lock first, then the writes (D14).
-        if (end.Lock.Action != ProbeLockAction.None && user is not null)
-            ApplyBudgetDecision(end.SessionId, end.UserId, user.Sid, user.Username, end.Lock, today);
+        // The lock first, then the writes (D14). A failed user read does not stop the lock: the SID comes from the
+        // session tracker then (the event write needs it only).
+        if (end.Lock.Action != ProbeLockAction.None)
+        {
+            var sid = user?.Sid ?? (_tracker.ActiveSessions.TryGetValue(end.SessionId, out var session) ? session.UserSid : "");
+            ApplyBudgetDecision(end.SessionId, end.UserId, sid, name, end.Lock, today);
+        }
 
         if (user is not null)
             _health.TryWrite(() => EventRepository.LogEvent(user.Sid, EventType.PROBE_RESTART, $"Unexpected end of the Session Probe in session {end.SessionId}"),
@@ -1034,24 +1038,27 @@ public sealed class SessionProbeHost : BackgroundService
         {
             if (!_ready || !_owed.Remove(sessionId, out var kinds)) return;
             if (!_lockGate.Enforced || !_tracker.ActiveSessions.TryGetValue(sessionId, out var session)) return;
+            // A failed user read does not stop an owed lock: the Restricted User of the session is known in memory.
             var user = Safe(() => UserRepository.GetBySid(session.UserSid), null);
-            if (user is null) return;
+            if (user is not null && !user.IsRestricted) return;
+            if ((user?.Id ?? UserOf(sessionId)) is not { } userId) return;
+            var username = user?.Username ?? $"user {userId}";
             var today = ControlTime.Current.Today;
             var now = SessionProbePlatform.UnbiasedNow();
 
             var due = new List<string>();
-            if ((kinds.Contains(ProbeLockKind.Budget) || kinds.Contains(ProbeLockKind.Strike)) && _monitor.IsLockDue(user.Id, now, today))
+            if ((kinds.Contains(ProbeLockKind.Budget) || kinds.Contains(ProbeLockKind.Strike)) && _monitor.IsLockDue(userId, now, today))
                 due.Add("blind samples");
-            if (kinds.Contains(ProbeLockKind.FullSet) && _fullSetDay.GetValueOrDefault(user.Id) == today)
+            if (kinds.Contains(ProbeLockKind.FullSet) && _fullSetDay.GetValueOrDefault(userId) == today)
                 due.Add("full set");
             // A program that is never suspended: still due if it was over the allowance in the last 15 s and its category is
             // still exhausted.
-            if (kinds.Contains(ProbeLockKind.NeverSuspended) && _lastOver.TryGetValue(user.Id, out var last)
+            if (kinds.Contains(ProbeLockKind.NeverSuspended) && _lastOver.TryGetValue(userId, out var last)
                 && now - last.At <= TimeSpan.FromSeconds(15))
             {
                 var config = CategoryConfigCache.Current;
-                var dayLimits = config.Calculator.Evaluate(today, CategoryUsageForLocks(user.Id, today),
-                    Safe(() => UsageRepository.GetUsage(user.Id, today)?.BonusMinutes ?? 0, 0));
+                var dayLimits = config.Calculator.Evaluate(today, CategoryUsageForLocks(userId, today),
+                    Safe(() => UsageRepository.GetUsage(userId, today)?.BonusMinutes ?? 0, 0));
                 if (last.Exes.Any(exe => dayLimits.CategoryLimit(config.Resolver.Resolve(exe).Category)?.IsReached ?? false))
                     due.Add("a program that is never suspended");
             }
@@ -1071,9 +1078,9 @@ public sealed class SessionProbeHost : BackgroundService
                     _logger.Information("Owed probe lock of session {SessionId}: the session is locked already", sessionId);
                     return;
             }
-            if (due.Contains("blind samples")) _monitor.LockApplied(user.Id, today);
-            _logger.Warning("Owed probe lock of session {SessionId} ({Username}) applied: {Reason}", sessionId, user.Username, reason);
-            _health.TryWrite(() => EventRepository.LogEvent(user.Sid, EventType.PROBE_BLIND, $"Session locked after a Lock Deferral: {reason}"),
+            if (due.Contains("blind samples")) _monitor.LockApplied(userId, today);
+            _logger.Warning("Owed probe lock of session {SessionId} ({Username}) applied: {Reason}", sessionId, username, reason);
+            _health.TryWrite(() => EventRepository.LogEvent(session.UserSid, EventType.PROBE_BLIND, $"Session locked after a Lock Deferral: {reason}"),
                 "probe blind event", _logger);
         }
     });
