@@ -218,6 +218,7 @@ public sealed class CategoryEnforcer : IDisposable
                 records,
                 SessionTracker.GetAgentExecutablePath(),
                 Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                _blockEnforcer.ProtectedPrograms.TrustedWebView2,
                 held,
                 p => pendingClose.Contains((p.Pid, p.StartTimeUtc)),
                 _blockEnforcer.ProtectedPrograms,

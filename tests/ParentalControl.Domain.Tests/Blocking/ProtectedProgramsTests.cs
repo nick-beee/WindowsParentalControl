@@ -5,7 +5,8 @@ namespace ParentalControl.Domain.Tests.Blocking;
 public class ProtectedProgramsTests
 {
     private static readonly ProtectedPrograms Protected =
-        new(@"C:\Windows", [@"C:\Program Files\ParentalControl", @"C:\Program Files\ParentalControl\service\"]);
+        new(@"C:\Windows", [@"C:\Program Files\ParentalControl", @"C:\Program Files\ParentalControl\service\"],
+            new TrustedWebView2(@"C:\Program Files (x86)", @"C:\Program Files"));
 
     [Theory]
     [InlineData(@"C:\Windows\explorer.exe")]
@@ -13,7 +14,7 @@ public class ProtectedProgramsTests
     [InlineData(@"C:\Program Files\ParentalControl\service\ParentalControl.Service.exe")]
     [InlineData(@"C:\Program Files\ParentalControl\agent\ParentalControl.Agent.exe")]
     [InlineData(@"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\131.0\msedgewebview2.exe")]
-    [InlineData(@"D:\Apps\MSEdgeWebView2.exe")]
+    [InlineData(@"C:\Program Files\Microsoft\EdgeWebView\Application\131.0\MSEdgeWebView2.exe")]
     [InlineData(@"C:\Users\Kid\..\..\Windows\System32\cmd.exe")]
     public void Protected_exe(string path) => Assert.True(Protected.IsProtected(path));
 
@@ -23,6 +24,11 @@ public class ProtectedProgramsTests
     [InlineData(@"C:\Program Files\ParentalControlFake\x.exe")]
     [InlineData(@"C:\Program Files\Google\Chrome\Application\chrome.exe")]
     [InlineData(@"C:\Windows\..\Users\Kid\chrome.exe")]
+    // #48: a msedgewebview2.exe outside the Trusted WebView2 Runtime is an ordinary exe.
+    [InlineData(@"D:\Apps\MSEdgeWebView2.exe")]
+    [InlineData(@"C:\Users\Kid\Downloads\wv\msedgewebview2.exe")]
+    [InlineData(@"C:\Users\Kid\AppData\Local\Microsoft\EdgeWebView\Application\131.0\msedgewebview2.exe")]
+    [InlineData(@"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\..\..\..\..\Users\Kid\msedgewebview2.exe")]
     public void Not_protected_exe(string path) => Assert.False(Protected.IsProtected(path));
 
     [Theory]
@@ -35,7 +41,7 @@ public class ProtectedProgramsTests
     [Fact]
     public void Folders_are_canonical_and_without_duplicates()
     {
-        var p = new ProtectedPrograms(@"c:\windows\", [@"C:\Windows", null, "relative", @"C:\PC\"]);
+        var p = new ProtectedPrograms(@"c:\windows\", [@"C:\Windows", null, "relative", @"C:\PC\"], new TrustedWebView2(null, null));
         Assert.Equal([@"C:\windows\", @"C:\PC\"], p.Folders);
     }
 

@@ -261,6 +261,8 @@ public class CountedProcessesTests
         Assert.False(Trusted.IsTrusted(FakeWebView2));
         var s = Select(E(ProbeRole.Foreground, StudyP, Study), E(ProbeRole.Child, OtherP, FakeWebView2));
         Assert.Equal([AppCategory.Study, AppCategory.Unknown], Cats(s));
+        // It counts as itself, not as its parent, and is a suspend candidate (suspend-untrusted-webview2, #48).
+        Assert.Contains(FakeWebView2, s.ExesToRecord);
     }
 
     [Fact]
