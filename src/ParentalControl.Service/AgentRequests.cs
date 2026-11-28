@@ -55,7 +55,7 @@ public sealed class AgentRequests
     /// It clears a capture request only of that user.
     /// </summary>
     /// <param name="captureTaken">True if this status took the capture request of the parent.</param>
-    public object Status(AgentLaunchRecord record, out bool captureTaken)
+    public AgentStatus Status(AgentLaunchRecord record, out bool captureTaken)
     {
         captureTaken = false;
         var user = UserRepository.GetBySid(record.UserSid);
@@ -65,16 +65,24 @@ public sealed class AgentRequests
 
         if (user is null || !user.IsRestricted)
         {
-            return new
-            {
-                username = user?.Username,
-                isRestricted = false,
-                remainingSeconds = 0,
-                curfew = AgentTexts.For(language)["status_unrestricted"],
-                isLocked = false,
-                language,
-                activePrompt = activePromptObj,
-            };
+            return new AgentStatus(
+                username: AgentStatusLimits.Text(user?.Username, AgentStatusLimits.MaxShortChars),
+                isRestricted: false,
+                remainingSeconds: 0,
+                curfew: AgentStatusLimits.Text(AgentTexts.For(language)["status_unrestricted"], AgentStatusLimits.MaxShortChars),
+                isLocked: false,
+                isCurfewClamped: false,
+                lastDeclinedId: null,
+                lastDeclinedReason: null,
+                lastDeclinedTime: null,
+                captureRequested: false,
+                watchIntervalSeconds: 0,
+                language: AgentStatusLimits.Text(language, AgentStatusLimits.MaxShortChars),
+                activePrompt: activePromptObj,
+                suspendedApps: null,
+                suspendedAppsTotal: 0,
+                pendingApps: null,
+                pendingAppsTotal: 0);
         }
 
         var moment = ControlTime.Current.Read(); // control-clock: the day of the Control Time Zone
@@ -131,32 +139,29 @@ public sealed class AgentRequests
         }
 
         // The Suspended Apps (the mute and the resume at the end of the session) and the Pending Suspensions (the agent
-        // minimizes their windows). Both name only processes of the child.
-        var suspendedApps = SuspensionRepository.GetForUser(user.Id)
-            .Select(r => new { pid = r.Pid, startTimeUtc = DateTime.SpecifyKind(r.StartTimeUtc, DateTimeKind.Utc) })
-            .ToArray();
-        var pendingApps = _categoryEnforcer.GetPendingApps(user.Id)
-            .Select(p => new { pid = p.Pid, startTimeUtc = DateTime.SpecifyKind(p.StartTimeUtc, DateTimeKind.Utc) })
-            .ToArray();
+        // minimizes their windows). Both name only processes of the child. Each list has a cap, so that the answer
+        // always fits in one frame (AgentStatusLimits).
+        var suspended = AgentStatusLimits.Apps(SuspensionRepository.GetForUser(user.Id).Select(r => (r.Pid, r.StartTimeUtc)));
+        var pending = AgentStatusLimits.Apps(_categoryEnforcer.GetPendingApps(user.Id).Select(p => (p.Pid, p.StartTimeUtc)));
 
-        return new
-        {
-            username = user.Username,
-            isRestricted = true,
-            remainingSeconds,
-            suspendedApps,
-            pendingApps,
-            curfew,
-            isLocked,
-            isCurfewClamped,
-            lastDeclinedId,
-            lastDeclinedReason,
-            lastDeclinedTime,
-            captureRequested,
-            watchIntervalSeconds = watchInterval,
-            language,
-            activePrompt = activePromptObj,
-        };
+        return new AgentStatus(
+            username: AgentStatusLimits.Text(user.Username, AgentStatusLimits.MaxShortChars),
+            isRestricted: true,
+            remainingSeconds: remainingSeconds,
+            curfew: AgentStatusLimits.Text(curfew, AgentStatusLimits.MaxShortChars),
+            isLocked: isLocked,
+            isCurfewClamped: isCurfewClamped,
+            lastDeclinedId: lastDeclinedId,
+            lastDeclinedReason: AgentStatusLimits.Text(lastDeclinedReason, AgentStatusLimits.MaxReasonChars),
+            lastDeclinedTime: lastDeclinedTime,
+            captureRequested: captureRequested,
+            watchIntervalSeconds: watchInterval,
+            language: AgentStatusLimits.Text(language, AgentStatusLimits.MaxShortChars),
+            activePrompt: activePromptObj,
+            suspendedApps: suspended.Apps,
+            suspendedAppsTotal: suspended.Total,
+            pendingApps: pending.Apps,
+            pendingAppsTotal: pending.Total);
     }
 
     /// <summary>Gives a capture request back after its status answer did not reach the agent.</summary>
@@ -167,7 +172,7 @@ public sealed class AgentRequests
             state.CaptureRequested = true;
     }
 
-    private static object? ActivePrompt(User user)
+    private static AgentStatusPrompt? ActivePrompt(User user)
     {
         var activePrompt = SessionPromptRepository.GetActivePrompt(user.Username);
         if (activePrompt is null || activePrompt.UserSid != user.Sid) return null;
@@ -175,15 +180,8 @@ public sealed class AgentRequests
             ? activePrompt.CustomOptions.Split('|', StringSplitOptions.RemoveEmptyEntries)
                 .Select(s => s.Trim()).Where(s => !string.IsNullOrEmpty(s)).ToList()
             : SettingsRepository.GetPromptResponsePresets();
-        return new
-        {
-            id = activePrompt.Id,
-            message = activePrompt.Message,
-            urgency = activePrompt.Urgency,
-            targetDisplay = activePrompt.TargetDisplay,
-            timeoutSeconds = 120,
-            options,
-        };
+        return AgentStatusLimits.Prompt(activePrompt.Id, activePrompt.Message, activePrompt.Urgency, activePrompt.TargetDisplay,
+            timeoutSeconds: 120, options);
     }
 
     /// <summary>
