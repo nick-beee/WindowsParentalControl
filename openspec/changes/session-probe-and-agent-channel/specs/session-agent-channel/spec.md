@@ -68,7 +68,7 @@ The status answer on an Agent Channel SHALL contain only the prompts, the captur
 - **THEN** the agent of the child still gets the capture request with its next poll
 
 ### Requirement: One Session Agent per session
-The service SHALL start one Session Agent per session and SHALL keep a handle to its process. It SHALL start a new agent within 60 seconds after that process ended, and SHALL NOT start one while it runs. A process of the child SHALL NOT be able to stop the start of the agent, also not with a mutex, a pipe or a process with the name or the exe of the agent.
+The service SHALL start one Session Agent per session and SHALL keep a handle to its process. It SHALL start a new agent within 60 seconds after that process ended or its channel closed, and SHALL NOT start one while its channel is open. A process of the child SHALL NOT be able to stop the start of the agent, also not with a mutex, a pipe or a process with the name or the exe of the agent.
 
 #### Scenario: Mutex of the child
 - **WHEN** a process of the child creates the mutex `Global\ParentalControlAgent_Kid` before the sign-in of the child
