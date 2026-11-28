@@ -105,35 +105,48 @@ public static class UpdateReleasePolicy
 
         using (doc)
         {
-            var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object)
-                return UpdateSelection.Refuse("The release data is not a JSON object.");
-            if (GetBool(root, "draft") || GetBool(root, "prerelease"))
-                return UpdateSelection.Refuse("The release is a draft or a prerelease.");
-
-            var tag = GetString(root, "tag_name") ?? "";
-            if (!TryParseVersion(tag, out var latest))
-                return UpdateSelection.Refuse("The release tag is not a version (vX.Y.Z).");
-            if (!TryParseVersion(currentVersion, out var current))
-                return UpdateSelection.Refuse("The installed version is not a version (X.Y.Z).");
-            if (latest <= current)
-                return UpdateSelection.Refuse($"The release {latest} is not above the installed version {current}.");
-
-            var assets = ReadAssets(root);
-            var installer = FindAsset(assets, repo, tag, InstallerFileName);
-            if (installer is null)
-                return UpdateSelection.Refuse($"The release has no {InstallerFileName} on the release URL of {repo}.");
-            if (installer.Size <= 0 || installer.Size > MaxInstallerBytes)
-                return UpdateSelection.Refuse($"The size of {InstallerFileName} is not valid.");
-
-            var checksum = FindAsset(assets, repo, tag, ChecksumFileName);
-            if (checksum is null)
-                return UpdateSelection.Refuse($"The release has no {ChecksumFileName} on the release URL of {repo}.");
-            if (checksum.Size <= 0 || checksum.Size > MaxChecksumBytes)
-                return UpdateSelection.Refuse($"The size of {ChecksumFileName} is not valid.");
-
-            return UpdateSelection.Accept(new UpdateCandidate(tag, latest.ToString(3), installer, checksum));
+            try
+            {
+                return SelectFromRoot(doc.RootElement, repo, currentVersion);
+            }
+            catch (InvalidOperationException)
+            {
+                // GetString of a string with a lone surrogate (for example "\ud800") throws this exception.
+                // Fail closed: no update.
+                return UpdateSelection.Refuse("The release data has a string that is not valid UTF-16.");
+            }
         }
+    }
+
+    private static UpdateSelection SelectFromRoot(JsonElement root, string repo, string currentVersion)
+    {
+        if (root.ValueKind != JsonValueKind.Object)
+            return UpdateSelection.Refuse("The release data is not a JSON object.");
+        if (GetBool(root, "draft") || GetBool(root, "prerelease"))
+            return UpdateSelection.Refuse("The release is a draft or a prerelease.");
+
+        var tag = GetString(root, "tag_name") ?? "";
+        if (!TryParseVersion(tag, out var latest))
+            return UpdateSelection.Refuse("The release tag is not a version (vX.Y.Z).");
+        if (!TryParseVersion(currentVersion, out var current))
+            return UpdateSelection.Refuse("The installed version is not a version (X.Y.Z).");
+        if (latest <= current)
+            return UpdateSelection.Refuse($"The release {latest} is not above the installed version {current}.");
+
+        var assets = ReadAssets(root);
+        var installer = FindAsset(assets, repo, tag, InstallerFileName);
+        if (installer is null)
+            return UpdateSelection.Refuse($"The release has no {InstallerFileName} on the release URL of {repo}.");
+        if (installer.Size <= 0 || installer.Size > MaxInstallerBytes)
+            return UpdateSelection.Refuse($"The size of {InstallerFileName} is not valid.");
+
+        var checksum = FindAsset(assets, repo, tag, ChecksumFileName);
+        if (checksum is null)
+            return UpdateSelection.Refuse($"The release has no {ChecksumFileName} on the release URL of {repo}.");
+        if (checksum.Size <= 0 || checksum.Size > MaxChecksumBytes)
+            return UpdateSelection.Refuse($"The size of {ChecksumFileName} is not valid.");
+
+        return UpdateSelection.Accept(new UpdateCandidate(tag, latest.ToString(3), installer, checksum));
     }
 
     /// <summary>
@@ -200,8 +213,8 @@ public static class UpdateReleasePolicy
     }
 
     private static string? GetString(JsonElement e, string name) =>
-        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
     private static bool GetBool(JsonElement e, string name) =>
-        e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
+        e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.True;
 }

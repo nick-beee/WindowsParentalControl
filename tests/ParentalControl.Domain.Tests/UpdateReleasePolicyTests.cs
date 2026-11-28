@@ -224,6 +224,38 @@ public class UpdateReleasePolicyTests
     public void Select_refuses_bad_release_data(string json) =>
         Assert.False(UpdateReleasePolicy.Select(json, Repo, "1.5.0").IsAccepted);
 
+    // Odd release JSON must give "no update", never an exception (issue #57).
+
+    [Fact]
+    public void Select_refuses_a_tag_with_a_lone_surrogate() =>
+        Assert.False(UpdateReleasePolicy.Select("{\"tag_name\":\"\\ud800\"}", Repo, "1.5.0").IsAccepted);
+
+    [Fact]
+    public void Select_refuses_an_asset_name_with_a_lone_surrogate()
+    {
+        var json = "{\"tag_name\":\"v1.6.0\",\"assets\":[{\"name\":\"\\ud800\",\"browser_download_url\":\"x\",\"size\":1}]}";
+        Assert.False(UpdateReleasePolicy.Select(json, Repo, "1.5.0").IsAccepted);
+    }
+
+    [Fact]
+    public void Select_refuses_an_asset_url_with_a_lone_surrogate()
+    {
+        var json = "{\"tag_name\":\"v1.6.0\",\"assets\":[{\"name\":\"ParentalControlSetup.exe\",\"browser_download_url\":\"\\udc00\",\"size\":1}]}";
+        Assert.False(UpdateReleasePolicy.Select(json, Repo, "1.5.0").IsAccepted);
+    }
+
+    [Fact]
+    public void Select_refuses_a_root_that_is_an_array_of_objects() =>
+        Assert.False(UpdateReleasePolicy.Select("[{\"tag_name\":\"v1.6.0\"}]", Repo, "1.5.0").IsAccepted);
+
+    [Fact]
+    public void Select_refuses_when_assets_is_a_number() =>
+        Assert.False(UpdateReleasePolicy.Select("{\"tag_name\":\"v1.6.0\",\"assets\":5}", Repo, "1.5.0").IsAccepted);
+
+    [Fact]
+    public void Select_refuses_when_an_asset_entry_is_a_number() =>
+        Assert.False(UpdateReleasePolicy.Select("{\"tag_name\":\"v1.6.0\",\"assets\":[5]}", Repo, "1.5.0").IsAccepted);
+
     // ── Checksum file ──
 
     private const string Hash = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
