@@ -37,7 +37,7 @@ A rule that maps an exe to one App Category. It matches the exact exe file name,
 An optional weekday and weekend minute value on an App Rule. It replaces the Category Limit for the exes of that rule, but it compares against the same Category Usage. Example: Games 120 minutes and Minecraft 180 minutes. Then the other games stop when all games together reach 120 minutes, and Minecraft stops when all games together reach 180 minutes.
 
 ## Category Usage
-The whole minutes that a Restricted User spends with an exe of one App Category as the Foreground Window on one day. The Session Agent samples give the time. System and a locked session add no time.
+The whole minutes that a Restricted User spends with an exe of one App Category as a Counted Process on one day. The Session Probe samples give the time, under the gap rule. System and a locked session add no time. No data of the Session Agent adds time.
 
 ## Category Limit
 The daily limit of an App Category: the weekend value on Saturday and Sunday, the weekday value on the other days, plus today's Bonus Minutes. A category can have no limit.
@@ -49,13 +49,13 @@ A process of a Restricted User that the service suspends (`NtSuspendProcess`) fo
 A process that the service suspends 10 seconds later. In this time the Session Agent minimizes the windows of the process while it still runs, because the window of a suspended process cannot be minimized. The service suspends the process at the end of the 10 seconds, also if the agent does not answer. It drops a Pending Suspension without a suspension if the exe has time left again and is not a Blocked Program, the process ended, a Session End Hold of the session started, or a Session End Guard covers the process. Each suspension starts as a Pending Suspension, also a suspension because of a block. A Blocked Start is closed and has no Pending Suspension.
 
 ## Session End Hold
-A short time (60 seconds) after the service resumed the Suspended Apps of a session because the session ends. During the hold the service suspends no process of that session, also no process of a Blocked Program. The hold ends when the session ends (a confirmed hold) or when its time is over while the session still exists (an unconfirmed hold). An unconfirmed hold writes an event and alerts the parent at most once per day. The request of the Session Agent has no authentication, so the service grants at most one unconfirmed hold per Restricted User in 15 minutes. A refused request starts a Session End Guard.
+A short time (60 seconds) after the service resumed the Suspended Apps of a session because the session ends. During the hold the service suspends no process of that session, also no process of a Blocked Program. The hold ends when the session ends (a confirmed hold) or when its time is over while the session still exists (an unconfirmed hold). An unconfirmed hold writes an event and alerts the parent at most once per day. The child controls the Session Agent that sends the request, so the service grants at most one unconfirmed hold per Restricted User in 15 minutes. A refused request starts a Session End Guard.
 
 ## Session End Guard
 A short time (60 seconds) after the service refused a Session End Hold. The Session Agent already resumed the Suspended Apps for the end of the session, and the service does not suspend these processes again during the guard. A guard covers only an eligible process: a recorded process that the service suspended, or saw suspended while no guard covered it, and did not resume itself since. A covered process is not eligible until the service suspends it again or sees it suspended again. Without an eligible process no guard starts. A guard does not resume a process and does not stop a new suspension. It ends when the session ends or when its time is over; then the covered processes are suspended again. A guard that ends by its time while the session still exists is unconfirmed. A guard that starts after an unconfirmed guard of the user in 15 minutes is repeated: the service writes an event and alerts the parent at most once per day. A guard never locks the session, and it does not count against the limit of holds.
 
 ## Lock Deferral
-A time (75 seconds) after the Session Agent reported that the session of a Restricted User ends, or before a Forced Logoff. During the deferral the service does not apply the Enforced Workstation Lock of a limit, a Break, a Schedule Window end or a suspension fallback to that session, because a lock in the first seconds of a sign-out makes Windows end a program before it can ask to save. A lock that becomes due in this time is owed: at the end, if the session still exists, the service checks the session again at once and locks it if a lock is still due. The deferral ends when the session ends or when its time is over. A request during a deferral does not extend it. The request has no authentication, so after a deferral that owed a lock and ended while the session still existed, the user gets no deferral for 15 minutes; a Forced Logoff is never refused. The delayed lock of the parent from the admin page waits for the end of the deferral; the lock from Telegram does not wait. The deferral uses a monotonic time, not the wall clock.
+A time (75 seconds) after the Session Agent reported that the session of a Restricted User ends, or before a Forced Logoff. During the deferral the service does not apply the Enforced Workstation Lock of a limit, a Break, a Schedule Window end or a suspension fallback to that session, because a lock in the first seconds of a sign-out makes Windows end a program before it can ask to save. A lock that becomes due in this time is owed: at the end, if the session still exists, the service checks the session again at once and locks it if a lock is still due. The deferral ends when the session ends or when its time is over. A request during a deferral does not extend it. The child controls the Session Agent that sends the request, so after a deferral that owed a lock and ended while the session still existed, the user gets no deferral for 15 minutes; a Forced Logoff is never refused. The delayed lock of the parent from the admin page waits for the end of the deferral; the lock from Telegram does not wait. The deferral uses a monotonic time, not the wall clock.
 
 ## Blocked Program
 An exe whose App Rule has the block on. The rule precedence of App Rules decides the block, so a file rule without the block allows an exe below a blocked folder. An exe below the Windows folder, an exe below the Parental Control install folder and `msedgewebview2.exe` are never a Blocked Program. The rule keeps its App Category and App Limit; they apply again when the parent removes the block.
@@ -104,3 +104,53 @@ A window of the Session Agent that shows the child request page of the local ser
 
 ## Agent Window Budget
 At most 5 minutes in any 60 minutes of unlocked time in which the Session Agent, as a counted process of a Session Probe sample, adds no Category Usage and does not count toward the lock of a program that is never suspended. Only the agent's own time is exempt; another process in the same sample still counts. It does not change the Allowance Time, Continuous Use, a Break or the Schedule Window. It reads only probe samples, never data of the Session Agent.
+
+## Session-End End
+An end of a Session Probe that the service did not ask for, after which the sign-out of its session, the end of the session or a stop of the service comes within 90 seconds. Windows ends the probe at a sign-out before the service knows about it. The service needs no new probe for it, and it gives no event, no alert and no budget item. Data of the Session Agent never decides it.
+
+## Benign End
+An end of a Session Probe within 15 seconds after a resume from sleep or hibernation (the resume window). The service starts a new probe at once, and the end gives no event and no budget item.
+
+## Session Probe
+A console program (`ParentalControl.Probe.exe` in `{app}\probe`) that the service starts as SYSTEM, with a restricted token, in the session of each Restricted User. It samples the Foreground Window, the focus window, the windows of other processes below the Foreground Window and the window below the cursor, at random intervals of at most 10 seconds. It sends the window handles and the thread and process ids of each sample to the service through an anonymous pipe. It opens no process and writes no file. The child cannot end, suspend or open it. The service ends it at the sign-out of its session and at the service stop, and starts a new one after an end that it did not ask for.
+
+## Agent Channel
+A named pipe that the service creates for each start of the Session Agent, with access for SYSTEM only. The service opens the client end itself and gives it to the agent as an inherited handle (`--channel`). The agent sends its status polls, prompt answers, screen captures and session-end requests through it. The service takes the user and the session of a message from the launch record of the agent, never from the message. The channel proves which agent process got the handle, not that its data is true, so no limit reads it. It replaces the HTTP routes below `/api/agent/`.
+
+## Counted Process
+A process of a Session Probe sample that adds Category Usage. These are the entries of a sample:
+- The Foreground Window, the focus window and each window of another process below the Foreground Window count, except an entry in System.
+- The window below the cursor counts only if it has `noActivate`, except in System. Without `noActivate` it counts no time, but its exe can be suspended.
+- A trusted WebView2 process (`msedgewebview2.exe` in a folder of the Evergreen WebView2 Runtime) counts in the same role as its creator: the first parent process that is not a trusted WebView2. Each other `msedgewebview2.exe` counts by its App Rule.
+- The Session Agent counts in Unknown, except during an active Interactive Session Prompt of the user and within the Agent Window Budget. Below the cursor it counts nothing. Only the agent that the service started (its launch record) gets these exemptions; a copy of the agent exe that the child started is a normal Unknown exe.
+
+The service adds the time of a sample at most one time to each App Category of its Counted Processes.
+
+## Blind Sample
+A sample of the Session Probe that shows that a window or a desktop is there, but that the service cannot attribute to an exe. It is one of these:
+- The input desktop cannot be opened or set (`blind: desktop`).
+- A window is in front, but it gives no thread (`blind: window`).
+- More than 8 other processes have visible windows below the Foreground Window, or the walk passed 4096 windows (`blind: children`).
+- An entry is Unreadable: the access is denied, or the process is in another session.
+
+A Blind Sample counts toward the lock of the budget. After the first such lock of a Restricted User on a day, each Blind Sample of that day locks at once (the strike). Both locks are Probe Locks. The service ignores a Blind Sample if the session is not active or is locked.
+
+## Budget Item
+An item that counts toward the lock of the budget like a Blind Sample, but never triggers the strike, because an honest action or a real probe bug can also cause it. It is one of these:
+- A sample with an Ended entry (the window closed between the sample and the read) in a role that would count time.
+- The gap item of the gap rule: a gap of more than 12 seconds whose two samples are not the same, and each gap of more than 60 seconds. A gap over an end of the Session Probe is no gap item.
+- A long sample: a sample that takes more than 12 seconds, for the gap that ends at it.
+- From the 3rd unexpected end of the Session Probe within 10 minutes, each further unexpected end. A Session-End End and a Benign End are no Budget Item.
+
+A sample adds at most one Budget Item. At the 6th Blind Sample or Budget Item of a Restricted User within 10 minutes of unlocked, connected time, the service locks the session. The service ignores a Budget Item if the session is not active or is locked.
+
+## Probe Lock
+An Enforced Workstation Lock that comes from the data of the Session Probe. It is one of these:
+- The lock at the 6th Blind Sample or Budget Item within 10 minutes, and the strike.
+- The lock of a program that is never suspended after 60 seconds in an exhausted App Category.
+- The lock of a full set of suspend candidates (`ForegroundHistory`).
+
+A Probe Lock applies only if the parent switched the probe locks on. Else the service is in Shadow Mode. The locks of the Allowance Time, the Schedule Window, a Break, the Data Folder Lockdown and the Storage Lockdown are not Probe Locks.
+
+## Shadow Mode
+The state of the service while the probe locks are off: the setting `probe_locks_enforced` is not "1". A new install and the update to the release of the Session Probe start in Shadow Mode. At each decision for a Probe Lock, the service does not lock. It writes the event `PROBE_WOULD_LOCK` with the reason and alerts the parent, at most one time for each Restricted User, day and reason (for a program that is never suspended, for each exe and day). The budget and the strike advance as if the service had locked. The counting from the Session Probe and the suspensions work as in normal operation. Only the parent switches the probe locks on, in the web admin.

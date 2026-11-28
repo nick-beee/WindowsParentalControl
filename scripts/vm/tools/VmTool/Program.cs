@@ -47,6 +47,42 @@ switch (cmd)
             Console.WriteLine(string.Join(" | ", Enumerable.Range(0, r.FieldCount).Select(i => r.IsDBNull(i) ? "NULL" : r.GetValue(i).ToString())));
         break;
     }
+    case "limit":
+    {
+        // limit <category> <minutes|none>: the same limit on weekdays and weekends.
+        var category = Enum.Parse<AppCategory>(args[1], true);
+        int? minutes = args[2] == "none" ? null : int.Parse(args[2]);
+        CategoryRepository.SetLimit(category, new DailyLimit(minutes, minutes));
+        Console.WriteLine($"{category} limit {minutes?.ToString() ?? "none"}");
+        break;
+    }
+    case "rule":
+    {
+        // rule folder|file <pattern> <category>
+        var match = Enum.Parse<RuleMatchType>(args[1], true);
+        var id = AppRuleRepository.Insert(match, args[2], Enum.Parse<AppCategory>(args[3], true), null);
+        Console.WriteLine($"rule {id}: {match} {args[2]} -> {args[3]}");
+        break;
+    }
+    case "setting":
+        // setting <key> <value>, for example: setting probe_locks_enforced 1
+        SettingsRepository.Set(args[1], args[2]);
+        Console.WriteLine($"{args[1]}={args[2]}");
+        break;
+    case "events":
+        // events [type]: the events of the last 2 hours
+        foreach (var e in EventRepository.GetEvents(from: DateTime.Now.AddHours(-2)))
+            if (args.Length < 2 || e.EventType.ToString() == args[1])
+                Console.WriteLine($"{e.Timestamp:HH:mm:ss} {e.Username} {e.EventType} {e.Details}");
+        break;
+    case "prompt":
+    {
+        // prompt <user> <text>: an Interactive Session Prompt of the parent, as the admin page sends it.
+        var user = UserRepository.GetByUsername(args[1])!;
+        var id = SessionPromptRepository.Create(user.Sid, user.Username, args[2]);
+        Console.WriteLine($"prompt {id} for {user.Username}");
+        break;
+    }
     case "records":
         foreach (var r in SuspensionRepository.GetAll()) Console.WriteLine(r);
         break;

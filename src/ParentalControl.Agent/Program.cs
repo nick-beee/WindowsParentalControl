@@ -1,12 +1,13 @@
+using System.Globalization;
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
-using System.Security.Principal;
+using Microsoft.Win32.SafeHandles;
+using ParentalControl.Core.Platform;
 
 namespace ParentalControl.Agent;
 
 internal static class Program
 {
-    private static Mutex? _mutex;
-
     // The highest shutdown level for applications: Windows sends WM_QUERYENDSESSION to the agent before the other
     // programs of the session (default level 0x280). SHUTDOWN_NORETRY keeps the agent out of the "This app is
     // preventing" list.
@@ -16,15 +17,47 @@ internal static class Program
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool SetProcessShutdownParameters(uint level, uint flags);
 
+    private const uint HandleFlagInherit = 0x1;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
+
     [STAThread]
-    private static void Main(string[] args)
+    private static int Main(string[] args)
     {
-        // 1. Prevent duplicate agent instances for the same user session.
-        var mutexName = $"Global\\ParentalControlAgent_{Environment.UserName}";
-        _mutex = new Mutex(true, mutexName, out var createdNew);
-        if (!createdNew)
+        // 1. Only the service starts the agent (session-probe-and-agent-channel, design D7 and D9): it gives the agent
+        // the client end of its Agent Channel. Without a channel, or with a channel whose server does not run in
+        // session 0, the agent exits before it shows any window. This check is a guard for the user interface only;
+        // the service takes the identity of each message from its own launch record.
+        if (!TryReadChannelHandle(args, out var handle))
         {
-            return;
+            AgentLog.Logger.Information("Agent started without --channel: exit");
+            return 1;
+        }
+        if (!AgentChannelPlatform.IsServiceChannel(handle, out var refusal))
+        {
+            AgentLog.Logger.Warning("Agent channel refused ({Reason}): exit", refusal);
+            return 2;
+        }
+        // The service passed an inheritable duplicate. Clear the flag before the agent starts any process (the request
+        // page in the browser, WebView2), so that no child of the agent inherits the channel.
+        if (!SetHandleInformation(handle, HandleFlagInherit, 0))
+            AgentLog.Logger.Warning("SetHandleInformation on the channel failed: error {Error}", Marshal.GetLastWin32Error());
+
+        AgentChannelClient channel;
+        try
+        {
+            var pipe = new SafePipeHandle(handle, ownsHandle: true);
+            // The overload with isConnected is the only one with a handle in .NET 10; it gives no SYSLIB0063 warning
+            // there. .NET 11 makes it obsolete (SYSLIB0063) and adds the constructor with 3 arguments
+            // (PipeDirection, bool isAsync, SafePipeHandle): switch to that one at the move to net11.
+            // The handle was opened with FILE_FLAG_OVERLAPPED (S12), so the asynchronous stream can bind it.
+            channel = new AgentChannelClient(new NamedPipeClientStream(PipeDirection.InOut, isAsync: true, isConnected: true, pipe));
+        }
+        catch (Exception ex)
+        {
+            AgentLog.Logger.Warning(ex, "Agent channel could not be opened: exit");
+            return 3;
         }
 
         // 2. Get the end-session query before the Suspended Apps, so that the agent can resume them first.
@@ -50,11 +83,39 @@ internal static class Program
                 e.ReasonSessionEnding, controllerRef?.IsSessionEndQueryHandled(now) ?? false);
         };
 
-        using var controller = new AgentController(app);
-        controllerRef = controller;
-        app.Run();
+        // If the channel breaks (the service stopped or closed it), the agent exits. A new service run starts a new agent.
+        channel.Broken += reason =>
+        {
+            AgentLog.Logger.Information("Agent channel broken ({Reason}): exit", reason);
+            app.Dispatcher.BeginInvoke(() => app.Shutdown());
+        };
 
-        if (sessionEndingMs is { } endingMs)
-            controller.WaitForSessionEndQuery(TimeSpan.FromSeconds(3), endingMs);
+        using (channel)
+        using (var controller = new AgentController(app, channel))
+        {
+            controllerRef = controller;
+            channel.Start();
+            app.Run();
+
+            if (sessionEndingMs is { } endingMs)
+                controller.WaitForSessionEndQuery(TimeSpan.FromSeconds(3), endingMs);
+        }
+        return 0;
+    }
+
+    /// <summary>Reads the handle value of <c>--channel &lt;value&gt;</c>.</summary>
+    private static bool TryReadChannelHandle(string[] args, out IntPtr handle)
+    {
+        handle = IntPtr.Zero;
+        for (var i = 0; i + 1 < args.Length; i++)
+        {
+            if (args[i] == "--channel"
+                && long.TryParse(args[i + 1], NumberStyles.None, CultureInfo.InvariantCulture, out var value) && value > 0)
+            {
+                handle = new IntPtr(value);
+                return true;
+            }
+        }
+        return false;
     }
 }

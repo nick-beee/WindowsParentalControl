@@ -39,6 +39,17 @@ public sealed class ControlClock
     /// <summary>Midnight of the current control day (kind Unspecified).</summary>
     public DateTime StartOfToday => Today.ToDateTime(TimeOnly.MinValue);
 
+    /// <summary>
+    /// The UTC start of the last <paramref name="days"/> days of the Control Time Zone, today included: the start of the
+    /// day <c>Today - (days - 1)</c>. For example the "last 7 days" of the <c>PROBE_WOULD_LOCK</c> events on the settings
+    /// page (session-probe-and-agent-channel, design D14).
+    /// </summary>
+    public DateTime StartOfLastDaysUtc(int days)
+    {
+        if (days < 1) throw new ArgumentOutOfRangeException(nameof(days));
+        return ToUtc(Today.AddDays(1 - days), TimeOnly.MinValue);
+    }
+
     /// <summary>Converts a UTC instant to the time of the Control Time Zone (kind Unspecified).</summary>
     public DateTime ToControl(DateTime utc) =>
         DateTime.SpecifyKind(TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), Zone), DateTimeKind.Unspecified);

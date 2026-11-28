@@ -6,6 +6,12 @@
     <OutputType>exe</OutputType>
     <RollForward>Major</RollForward>
   </PropertyGroup>
+  <!-- The test switches of the probe and the test hooks of SessionProbeHost exist only in a build for VM 102:
+       dotnet build or publish -p:VmTest=true (compile symbol VM_TEST, design D15). build.ps1, release.yml and ci.yml
+       build without it, so the release has none of them. -->
+  <PropertyGroup Condition="'$(VmTest)' == 'true'">
+    <DefineConstants>$(DefineConstants);VM_TEST</DefineConstants>
+  </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.15" />
     <PackageReference Include="System.Management" Version="10.0.15" />

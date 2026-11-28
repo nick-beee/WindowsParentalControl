@@ -5,12 +5,16 @@ namespace ParentalControl.Domain.Categories;
 /// which the Session Agent is a counted process of a Session Probe sample are exempt. Exempt time adds no Category
 /// Usage for the entry of the agent and does not count toward the lock of a program that is never suspended.
 /// <para>
-/// The window moves only with the intervals of unlocked samples. Locked time, sleep, hibernation and time without a
-/// session do not move it. The clock is monotonic, so the Control Time Zone has no effect. The state is in memory.
+/// The window moves with the unlocked time between two samples: the gap since the last sample, also if the sample
+/// counts no time (for example only System programs). The caller passes that gap as zero after an unlock, a resume, a
+/// sleep that the backstop finds, and a planned start (<c>SampleCredit.Gap</c>), and it does not call the budget for a
+/// locked sample. So locked time, sleep, hibernation and time without a session do not move the window. The exempt
+/// seconds of a sample are at most its counted interval, and they are the last seconds of the advance. The clock is
+/// monotonic, so the Control Time Zone has no effect. The state is in memory.
 /// </para>
 /// <para>
 /// No service code calls this class before the Session Probe (PR #43, task 6.1). It must never get its input from the
-/// unauthenticated agent routes. Not thread-safe: one caller per session.
+/// unauthenticated agent routes. One instance per Restricted User (all sessions of the user share it); not thread-safe.
 /// </para>
 /// </summary>
 public sealed class AgentWindowBudget
@@ -42,31 +46,38 @@ public sealed class AgentWindowBudget
     /// <summary>
     /// Records one sample and gives the exempt seconds for the entry of the Session Agent in it.
     /// </summary>
-    /// <param name="monotonicNow">A monotonic time of the sample, for example <c>Environment.TickCount64</c>.</param>
-    /// <param name="intervalSeconds">The interval that the sample counts.</param>
+    /// <param name="monotonicNow">A monotonic time of the sample, for example the <c>t</c> of the probe. The window
+    /// never moves more than the time since the last sample of the user, so two sessions of one user do not move it
+    /// twice.</param>
+    /// <param name="gap">The unlocked time since the last sample of the session (<c>SampleCredit.Gap</c>): zero after an
+    /// unlock, a resume, a sleep or a planned start. The window moves by this time.</param>
+    /// <param name="intervalSeconds">The interval that the sample counts (the gap rule). It caps the exempt seconds.</param>
     /// <param name="agentCounted">The Session Agent is a counted process of the sample, in any role.</param>
-    /// <param name="unlocked">The session is unlocked.</param>
+    /// <param name="unlocked">The session is unlocked. Else the window does not move.</param>
     /// <returns>0 to <paramref name="intervalSeconds"/>; the rest of the interval counts as usual.</returns>
-    public int Sample(TimeSpan monotonicNow, int intervalSeconds, bool agentCounted, bool unlocked)
+    public int Sample(TimeSpan monotonicNow, TimeSpan gap, int intervalSeconds, bool agentCounted, bool unlocked)
     {
         if (intervalSeconds < 0) throw new ArgumentOutOfRangeException(nameof(intervalSeconds));
 
         var advance = 0;
-        if (unlocked)
+        if (unlocked && gap > TimeSpan.Zero)
         {
-            // The gap since the last sample, but never more than the interval: a sleep or a long pause between two
-            // samples does not move the window. A repeated sample at the same time moves nothing.
+            var gapSeconds = (int)Math.Round(gap.TotalSeconds);
+            // A repeated sample at the same time moves nothing.
             advance = _lastSample is { } last
-                ? (int)Math.Clamp(Math.Round((monotonicNow - last).TotalSeconds), 0, intervalSeconds)
-                : intervalSeconds;
+                ? (int)Math.Clamp(Math.Round((monotonicNow - last).TotalSeconds), 0, gapSeconds)
+                : gapSeconds;
         }
-        _lastSample = monotonicNow;
+        if (_lastSample is not { } previous || monotonicNow > previous) _lastSample = monotonicNow;
 
+        // The exempt seconds are the last seconds of the advance, at most the counted interval: the budget then stays
+        // used as long as possible (fail closed).
+        var exemptFrom = advance - Math.Min(intervalSeconds, advance);
         var exempt = 0;
         for (var i = 0; i < advance; i++)
         {
             _unlockedSeconds++;
-            if (!agentCounted) continue;
+            if (!agentCounted || i < exemptFrom) continue;
             Expire(_unlockedSeconds);
             if (_exempt.Count >= MaxExemptSeconds) continue;
             _exempt.Enqueue(_unlockedSeconds);

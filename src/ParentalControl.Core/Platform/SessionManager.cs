@@ -231,22 +231,37 @@ public static class SessionManager
         return result;
     }
 
-    public static bool LaunchProcessInSession(int sessionId, string exePath, string? arguments = null)
+    /// <summary>
+    /// Starts <paramref name="exePath"/> as the user of the session (the Session Agent). Returns the process with its
+    /// handle, pid, start time and the user SID from <c>TokenUser</c> of the token that started it, or null (see
+    /// <paramref name="error"/>). The caller disposes the result.
+    /// <para>
+    /// The environment is the user's, without each <c>DOTNET_*</c>, <c>COMPlus_*</c>, <c>CORECLR_*</c> and
+    /// <c>WEBVIEW2_*</c> variable (session-probe-and-agent-channel, design D5 and D7). If
+    /// <paramref name="inheritHandle"/> is set, the process inherits only an inheritable duplicate of it
+    /// (<c>PROC_THREAD_ATTRIBUTE_HANDLE_LIST</c>), and <c>{handle}</c> in <paramref name="arguments"/> becomes its
+    /// value. The start holds <see cref="ProcessLaunchLock"/>.
+    /// </para>
+    /// </summary>
+    public static LaunchedProcess? LaunchProcessInSession(int sessionId, string exePath, string? arguments, IntPtr inheritHandle,
+        out string? error)
     {
+        error = null;
         if (!File.Exists(exePath))
         {
-            return false;
+            error = "The exe does not exist.";
+            return null;
         }
 
         var hUserToken = IntPtr.Zero;
         var hPrimaryToken = IntPtr.Zero;
-        var lpEnvironment = IntPtr.Zero;
 
         try
         {
             if (!NativeMethods.WTSQueryUserToken((uint)sessionId, out hUserToken))
             {
-                return false;
+                error = $"WTSQueryUserToken: {Marshal.GetLastWin32Error()}";
+                return null;
             }
 
             if (!NativeMethods.DuplicateTokenEx(
@@ -257,46 +272,22 @@ public static class SessionManager
                     NativeMethods.TokenPrimary,
                     out hPrimaryToken))
             {
-                return false;
+                error = $"DuplicateTokenEx: {Marshal.GetLastWin32Error()}";
+                return null;
             }
 
-            if (!NativeMethods.CreateEnvironmentBlock(out lpEnvironment, hPrimaryToken, false))
-            {
-                lpEnvironment = IntPtr.Zero;
-            }
-
-            var si = new NativeMethods.STARTUPINFO();
-            si.cb = Marshal.SizeOf<NativeMethods.STARTUPINFO>();
-            si.lpDesktop = @"winsta0\default";
-
-            var workingDir = Path.GetDirectoryName(exePath);
-            var cmdLine = string.IsNullOrEmpty(arguments) ? $"\"{exePath}\"" : $"\"{exePath}\" {arguments}";
-
-            var success = NativeMethods.CreateProcessAsUserW(
-                hPrimaryToken,
-                null,
-                cmdLine,
-                IntPtr.Zero,
-                IntPtr.Zero,
-                false,
-                NativeMethods.CREATE_UNICODE_ENVIRONMENT,
-                lpEnvironment,
-                workingDir,
-                ref si,
-                out var pi);
-
-            if (success)
-            {
-                if (pi.hProcess != IntPtr.Zero) NativeMethods.CloseHandle(pi.hProcess);
-                if (pi.hThread != IntPtr.Zero) NativeMethods.CloseHandle(pi.hThread);
-            }
-
-            return success;
+            var environment = LaunchEnvironment.Build(ProcessLauncher.EnvironmentOf(hPrimaryToken), forProbe: false);
+            var workingDir = Path.GetDirectoryName(exePath) ?? Environment.SystemDirectory;
+            return ProcessLauncher.Launch(hPrimaryToken, exePath, arguments, inheritHandle, 0, environment,
+                systemOnlyObjects: false, workingDir);
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            error = $"{ex.Message} ({ex.NativeErrorCode})";
+            return null;
         }
         finally
         {
-            if (lpEnvironment != IntPtr.Zero)
-                NativeMethods.DestroyEnvironmentBlock(lpEnvironment);
             if (hPrimaryToken != IntPtr.Zero)
                 NativeMethods.CloseHandle(hPrimaryToken);
             if (hUserToken != IntPtr.Zero)

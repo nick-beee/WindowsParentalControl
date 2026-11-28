@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The Session Probe (session-probe-and-agent-channel, design D2, D3, D4). The service starts it as SYSTEM in each
+       session of a Restricted User. A console program without a console (DETACHED_PROCESS), no window, no COM, no
+       file writes, no reference to another project of the solution. build.ps1 publishes it self-contained into
+       {app}\probe. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <!-- N21: the runtime ignores DOTNET_STARTUP_HOOKS, also if the environment strip of the service has a bug. -->
+    <StartupHookSupport>false</StartupHookSupport>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <ApplicationIcon>..\..\icon.ico</ApplicationIcon>
+  </PropertyGroup>
+  <!-- The test switches of the probe and the test hooks of SessionProbeHost exist only in a build for VM 102:
+       dotnet build or publish -p:VmTest=true (compile symbol VM_TEST, design D15). build.ps1, release.yml and ci.yml
+       build without it, so the release has none of them. -->
+  <PropertyGroup Condition="'$(VmTest)' == 'true'">
+    <DefineConstants>$(DefineConstants);VM_TEST</DefineConstants>
+  </PropertyGroup>
+</Project>

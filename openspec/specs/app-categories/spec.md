@@ -103,8 +103,8 @@ The web admin SHALL let the parent set the weekday and weekend limit of each cat
 - **THEN** the system refuses the request
 
 ### Requirement: Exe data is untrusted
-The system SHALL treat the exe path and name that it gets from the Session Agent as untrusted text: it SHALL use them only to match rules and to show them escaped in the admin pages.
+The system SHALL treat the exe path, the exe name and the window title that it gets from the Session Probe or the Session Agent as untrusted text: it SHALL use them only to match rules and to show them escaped in the admin pages.
 
 #### Scenario: Script in a window title
-- **WHEN** the agent reports a window title or path that contains `<script>`
+- **WHEN** the Session Probe reports a window title or path that contains `<script>`
 - **THEN** the admin page shows the text as text and runs no script

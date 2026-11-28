@@ -18,7 +18,7 @@ If the system cannot store counted Allowance Time or Category Usage, it SHALL ke
 - **THEN** the database has the minutes of all 3 ticks, and no minute counts two times
 
 #### Scenario: Agent sample during a failure
-- **WHEN** the Session Agent reports a sample of a Games exe while the database cannot write
+- **WHEN** the Session Probe reports a sample with a Games exe as a counted process while the database cannot write
 - **THEN** the seconds of the sample stay in the Pending Usage and are not lost
 
 ### Requirement: A failed write never skips a lock

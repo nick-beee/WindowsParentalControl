@@ -67,6 +67,16 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
+      # The VM build (-p:VmTest=true, compile symbol VM_TEST) of the probe and the service must compile too; the step
+      # above built the release form without the test hooks.
+      - name: Build the VM test form
+        shell: pwsh
+        run: |
+          foreach ($p in 'ParentalControl.Probe', 'ParentalControl.Service') {
+            dotnet build "src/$p/$p.csproj" -c Debug -p:SkipAdminSpaBuild=true -p:VmTest=true
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
       # The tests are a console program with Debug.Assert, so they run in Debug.
       # A failed assert stops the process with a non-zero exit code.
       - name: Test

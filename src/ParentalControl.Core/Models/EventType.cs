@@ -20,5 +20,11 @@ public enum EventType
     BREAK_ENDED,
     PROGRAM_BLOCKED,
     TIME_ZONE_CHANGE,
-    STORAGE_LOCKDOWN
+    STORAGE_LOCKDOWN,
+    // session-probe-and-agent-channel (design D5, D6, D6a, D12): the Session Probe.
+    PROBE_OUTAGE,
+    PROBE_BLIND,
+    PROBE_RESTART,
+    PROBE_GAP,
+    PROBE_WOULD_LOCK
 }

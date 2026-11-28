@@ -45,15 +45,17 @@ An enhanced screen time, application telemetry, and schedule curfew management s
   - Configurable monitor targeting and interactive visual corner preview in Settings, persisted per-user in `%LOCALAPPDATA%\ParentalControl\widget.json` without requiring administrator elevation.
 - **Session Tray Agent (`ParentalControl.Agent.exe`)**:
   - Native WPF message loop running in standard user sessions without dispatcher lag.
-  - Samples `GetForegroundWindow()` every 60s and posts telemetry to the service API.
-  - Automatic admin bypass (exits immediately if run under an elevated Administrator account).
+  - Does no foreground sampling: the Session Probe (below) gives the samples, and no limit reads data of the agent (design D10 of `session-probe-and-agent-channel`).
+  - Talks to the service only through its Agent Channel: a named pipe for SYSTEM only, whose client end the service gives to the agent at its start (`--channel`). The old HTTP routes of the agent are gone (404). An agent start without the channel of the service exits at once.
+  - For a user who is not restricted (an Administrator), the agent shows no widget, but it shows the Interactive Session Prompts.
 
 ### 6. Anti-Bypass, Session Tracking & Auto-Heal Architecture
 - **Non-Destructive Enforced Workstation Lock**: When daily quotas or curfew limits expire, the service enforces a workstation lock (`WTSDisconnectSession`) rather than a destructive logoff (`WTSLogoffSession`), preserving open documents, school work, and game state safely in memory.
 - **Enforcement on Unlock**: Re-evaluates curfew and daily quota immediately upon unlock (`SessionUnlock`, `ConsoleConnect`, `RemoteConnect`). If expired while locked, displays an unskippable 5-second modal warning and immediately re-locks the desktop.
 - **Monotonic Clock Tampering Watchdog**: `UsageMonitorWorker` continuously compares monotonic CPU uptime (`Environment.TickCount64`) against wall-clock time (`DateTime.UtcNow`). Detected clock rollbacks or advances > 60s trigger security audit events, instant session lock, and Telegram alerts.
 - **Disconnected Session Monitoring**: Captures `WTSDisconnected` sessions across fast user switching and lock screens; service maintains state without accumulating usage during lock.
-- **LocalSystem Agent Auto-Spawner**: Service uses `WTSQueryUserToken`, `DuplicateTokenEx`, and `CreateProcessAsUserW` targeting `winsta0\default` to spawn or revive `ParentalControl.Agent.exe` on service startup, user unlock, and monitor ticks (recovers automatically even if killed via Task Manager or during upgrades).
+- **LocalSystem Agent Auto-Spawner**: Service uses `WTSQueryUserToken`, `DuplicateTokenEx`, and `CreateProcessAsUserW` targeting `winsta0\default` to spawn or revive `ParentalControl.Agent.exe` with a new Agent Channel on service startup, user unlock, and monitor ticks (recovers automatically even if killed via Task Manager or during upgrades). The service is the only process that starts the agent: one launch record per session decides whether an agent runs, so a process of the child with the agent name or a held mutex cannot stop it.
+- **Session Probe (`ParentalControl.Probe.exe`)**: The service starts a small console program as SYSTEM, with a restricted token, in the session of each Restricted User. It samples the Foreground Window, the focus window, embedded windows of other processes and the window below the cursor at random intervals of at most 10 seconds, and sends the handles and ids to the service through an anonymous pipe. The child cannot end, suspend or open it. Category Usage comes only from these samples. A desktop or a process that the service cannot read gives a blind sample; too many blind samples and budget items lock the session. These probe locks start in shadow mode (`probe_locks_enforced` off): the service only logs and reports each lock that it would apply, until the parent switches them on in the web admin (ADR 0011).
 - **Non-Destructive Installer Upgrades**: Inno Setup installer stops the service, updates files, and restarts without deleting the service registration, eliminating Windows error 1072 (`ERROR_SERVICE_MARKED_FOR_DELETE`).
 
 ### 7. Silent Screen Capture & Web Admin Watch Mode
@@ -118,6 +120,8 @@ An enhanced screen time, application telemetry, and schedule curfew management s
 |  - UsageMonitorWorker (60s tick, curfew warnings, agent watchdog, lock)         |
 |  - SessionTracker (tracks active/disconnected sessions, unlock verification)  |
 |  - AgentSpawner (WTSQueryUserToken + CreateProcessAsUserW into winsta0\default)|
+|  - SessionProbeHost (Session Probe as SYSTEM per session, samples via pipe)   |
+|  - AgentChannelHost (one SYSTEM-only named pipe per Session Agent)            |
 |  - TelegramWorker (polls callback queries, grants bonus minutes)              |
 |  - WebServerHost (Kestrel :5050 — /request portal, /admin ActivityWatch UI)   |
 +------------------------------------+------------------------------------------+
@@ -285,12 +289,16 @@ dotnet publish src/ParentalControl.Admin -c Release -r win-x64 --self-contained 
 
 # 3. Publish Session Agent
 dotnet publish src/ParentalControl.Agent -c Release -r win-x64 --self-contained true -o publish/agent
+
+# 4. Publish the Session Probe (no test switches: -p:VmTest=false)
+dotnet publish src/ParentalControl.Probe -c Release -r win-x64 --self-contained true -p:VmTest=false -o publish/probe
 ```
 
 Binaries will be placed in:
 - `publish/service/ParentalControl.Service.exe`
 - `publish/admin/ParentalControl.Admin.exe`
 - `publish/agent/ParentalControl.Agent.exe`
+- `publish/probe/ParentalControl.Probe.exe`
 
 ---
 
@@ -301,14 +309,14 @@ If [Inno Setup 6](https://jrsoftware.org/isdownload.php) is installed, run the a
 powershell.exe -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-The script publishes all three components and compiles the final setup executable:
+The script publishes all four components and compiles the final setup executable:
 - `installer/Output/ParentalControlSetup.exe`
 
 The installer automatically:
-1. Installs files to `C:\Program Files\ParentalControl\`
+1. Installs files to `C:\Program Files\ParentalControl\` (`service`, `admin`, `agent` and `probe`).
 2. Registers and starts `ParentalControl.Service` as an auto-start Windows Service under `LocalSystem`.
-3. Configures `ParentalControl.Agent.exe` in `HKLM\Software\Microsoft\Windows\CurrentVersion\Run` to start at user logon.
-4. Auto-spawns the Agent into active user sessions on install/reinstall without requiring user logout.
+3. Deletes the value `ParentalControlAgent` below `HKLM\Software\Microsoft\Windows\CurrentVersion\Run` that versions up to 1.5.0 set. The service is the only process that starts the agent.
+4. The service starts the Agent and the Session Probe in active user sessions on install/reinstall without requiring user logout. The uninstaller stops the service and ends each agent and probe that is left.
 5. Creates Start Menu and Desktop shortcuts for the Admin UI.
 
 ---

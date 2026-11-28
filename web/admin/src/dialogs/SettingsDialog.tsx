@@ -30,6 +30,9 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           msgProgramBlocked: s.msgProgramBlocked ?? '',
           // The service sends the notice if the key is absent (default on).
           notifyBlockedTelegram: s.notifyBlockedTelegram ?? true,
+          // Off while the key does not exist (shadow mode, session-probe-and-agent-channel D12).
+          probeLocksEnforced: s.probeLocksEnforced ?? false,
+          probeWouldLockEvents: s.probeWouldLockEvents ?? 0,
         })
       })
       .catch((e: unknown) => active && setLoadError(errorMessage(e)))
@@ -59,6 +62,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         msgBreakRunning: settings.msgBreakRunning,
         msgProgramBlocked: settings.msgProgramBlocked,
         notifyBlockedTelegram: settings.notifyBlockedTelegram,
+        probeLocksEnforced: settings.probeLocksEnforced,
       })
       notify.ok(t.settingsSaved)
       onClose()
@@ -110,6 +114,11 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             <input type="checkbox" checked={settings.notifyBlockedTelegram} onChange={(e) => update('notifyBlockedTelegram', e.target.checked)} />
             <span>{t.notifyBlockedTelegram}</span>
           </label>
+          <label className="check">
+            <input type="checkbox" checked={settings.probeLocksEnforced} onChange={(e) => update('probeLocksEnforced', e.target.checked)} />
+            <span>{t.probeLocksEnforced}</span>
+          </label>
+          <p className="muted">{t.probeWouldLockEvents(settings.probeWouldLockEvents)}</p>
           <div>
             <label className="field" htmlFor="cfg-presets">
               {t.promptPresetsLabel}
