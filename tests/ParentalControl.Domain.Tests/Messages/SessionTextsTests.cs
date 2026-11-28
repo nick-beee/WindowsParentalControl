@@ -52,4 +52,17 @@ public class SessionTextsTests
     public void GermanDeclineWithReason() =>
         Assert.Equal("Deine Eltern haben deine Anfrage abgelehnt: „Mach zuerst deine Hausaufgaben.“",
             SessionTexts.For("de").Format("declined_with_reason", ("reason", SessionTexts.For("de")["decline_reason_1"])));
+
+    [Theory]
+    [InlineData("de", "Parental Control — Computer gesperrt",
+        "Du hast pausierte Programme immer wieder fortgesetzt. Darum bleibt der Computer heute gesperrt. Deine Eltern können die Sperre beenden.")]
+    [InlineData("en", "Parental Control — Computer Locked",
+        "You resumed paused programs again and again. So the computer stays locked today. Your parent can end the lock.")]
+    public void ResumeLockTexts(string preset, string title, string body)
+    {
+        // Spec: category-limits "Messages, event and alert of a Resume Lock".
+        Assert.Equal(title, SessionTexts.For(preset)["resume_lock_title"]);
+        Assert.Equal(body, SessionTexts.For(preset)["resume_lock_body"]);
+        Assert.DoesNotContain("resume_lock", SessionTexts.For("id")["resume_lock_body"]);
+    }
 }

@@ -9,6 +9,7 @@ The Mac scripts use the SSH alias `winvm` and the Proxmox host `root@192.168.1.9
 | Script | What it does |
 |---|---|
 | `shot.sh <out.png>` | Takes a screenshot of the VM console (`screendump`) and converts it to PNG with `magick`. |
+| `qclick.py <x> <y> [move]` | Runs on pve2: an absolute mouse click (or move) on the VM console through the QMP socket. See `docs/vm.md`. |
 | `typekeys.py [vmid]` | Reads text on stdin and prints one `qm sendkey` line per character. Pipe the output to the Proxmox host. |
 | `kid-run.sh <script.ps1> [args]` | Copies a script from `guest/` to `C:\Users\Public` and runs it as `Kid` in the console session, through a scheduled task with `/ru Kid /it`. |
 | `spike.sh deploy\|conf\|kid\|kidcmd\|log` | The spike of `session-probe-and-agent-channel` (task group 1): publishes the spike tools, sets the config of the spike service, runs `SpikeKid` or a command line as `Kid`, prints the service log. The usage is at the top of the script. |
@@ -43,7 +44,7 @@ python3 scripts/vm/typekeys.py < "$SECRET_FILE" | ssh root@192.168.1.98 "sh -s"
 | Tool | What it does |
 |---|---|
 | `VmTool` | Reads and changes the service database: `restrict`, `usage`, `set-usage`, `records`, `limits`, `sql`, `totp setup [secret]` (sets up the admin sign-in as the Admin app does, with a fixed test secret by default), `totp code` (prints the next code that the login accepts), `msg`. Run it as `nick`: `dotnet run --project scripts\vm\tools\VmTool -- usage Kid`. |
-| `TestGame` | A window with a running clock and a 440 Hz tone. A suspended copy shows a frozen clock. The argument `sound=off` starts it without the tone. |
+| `TestGame` | A window with a running clock and a 440 Hz tone. A suspended copy shows a frozen clock. The argument `sound=off` starts it without the tone. The argument `cpu=on` uses about 20 ms of CPU time every 250 ms, also while it is minimized, so that a resumed copy shows a clear CPU growth (`lock-after-repeated-resume`, design D10). |
 | `AudioState` | Writes the audio sessions of the user with pid and mute state to a file. Run it as Kid to check the mute of a Suspended App. |
 | `EndSessionSpike` | Checks the end-session behaviour of Windows (task group 1 of `resume-suspended-apps-at-session-end`): a hidden agent window that logs `WM_QUERYENDSESSION`, test games that log it, suspend, resume and minimize modes, and a test service that logs `PRESHUTDOWN`. The usage is at the top of `Program.cs`. |
 

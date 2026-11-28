@@ -3,7 +3,10 @@ namespace ParentalControl.Domain.Categories;
 /// <summary>A process in a session, as the service sees it in one tick.</summary>
 /// <param name="ExePath">The full exe path, or null if the service cannot read it.</param>
 /// <param name="IsSuspended">True if all threads of the process are suspended.</param>
-public sealed record SessionProcess(int Pid, DateTime StartTimeUtc, string? ExePath, int SessionId, bool IsSuspended);
+/// <param name="CpuTime">The user-mode CPU time of the process, or null if the service cannot read it. Only the
+/// count of a Child Resume uses it (<see cref="ChildResumeEvidence"/>).</param>
+public sealed record SessionProcess(int Pid, DateTime StartTimeUtc, string? ExePath, int SessionId, bool IsSuspended,
+    TimeSpan? CpuTime = null);
 
 /// <summary>Why the service suspended a process.</summary>
 public enum SuspensionReason
