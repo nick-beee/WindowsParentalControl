@@ -459,4 +459,225 @@ public class ResumeLocksTests
         Assert.False(locks.IsLocked(Kid));
         Assert.Equal(0, locks.ChildResumes(Kid));
     }
+
+    // --- A script that suspends the game before each check and resumes it after (design D11) ---
+
+    /// <summary>The game as a check sees it suspended, with <paramref name="cpu"/> as its user-mode CPU time.</summary>
+    private static ResumedProcess Seen(ResumedProcess p, TimeSpan? cpu) => p with { CpuTime = cpu };
+
+    [Fact]
+    public void Self_suspending_script_counts_on_each_check_and_starts_a_Resume_Lock()
+    {
+        // The service suspended the game (Suspend = Ok). The script resumes it about 2 s after each check and suspends it
+        // about 2 s before the next one, so each check sees it suspended, but it played about 56 s in between.
+        var game = P(10);
+        var locks = Watching(game);
+        var cpu = SuspendedCpu;
+
+        for (var i = 0; i < 3; i++)
+        {
+            cpu += TimeSpan.FromSeconds(20);
+            var check = locks.Check([], [Seen(game, cpu)], T0.AddMinutes(i + 1), Today, NoBonus);
+            Assert.Equal([Kid], check.Counted);
+            Assert.Equal(i == 2, check.Started.Count == 1);
+            Assert.True(locks.IsWatched(game.Pid, game.StartTimeUtc));
+        }
+
+        Assert.True(locks.IsLocked(Kid));
+        Assert.Equal([Game], locks.LockedExes(Kid));
+    }
+
+    [Fact]
+    public void Truly_suspended_process_seen_suspended_does_not_count()
+    {
+        var game = P(10);
+        var locks = Watching(game);
+
+        for (var i = 1; i <= 10; i++)
+            Assert.Empty(locks.Check([], [Seen(game, SuspendedCpu)], T0.AddMinutes(i), Today, NoBonus).Counted);
+        Assert.Equal(0, locks.ChildResumes(Kid));
+    }
+
+    [Fact]
+    public void Small_growth_while_suspended_moves_the_baseline_and_never_adds_up_to_a_count()
+    {
+        // One clock tick (15.625 ms) per check, for 10 checks: 156 ms in total, but never 50 ms since the last baseline.
+        var game = P(10);
+        var locks = Watching(game);
+        var cpu = SuspendedCpu;
+
+        for (var i = 1; i <= 10; i++)
+        {
+            cpu += TimeSpan.FromMilliseconds(15.625);
+            Assert.Empty(locks.Check([], [Seen(game, cpu)], T0.AddMinutes(i), Today, NoBonus).Counted);
+        }
+    }
+
+    [Fact]
+    public void Unwatched_process_seen_suspended_is_watched_without_a_count()
+    {
+        var game = P(10);
+        var locks = new ResumeLocks();
+
+        var check = locks.Check([], [Seen(game, PlayedCpu)], T0, Today, NoBonus);
+
+        Assert.Empty(check.Counted);
+        Assert.True(locks.IsWatched(game.Pid, game.StartTimeUtc));
+        // The next check sees no growth since then.
+        Assert.Empty(locks.Check([], [Seen(game, PlayedCpu)], T0.AddMinutes(1), Today, NoBonus).Counted);
+    }
+
+    [Fact]
+    public void Failed_read_of_a_process_seen_suspended_does_not_count_and_keeps_the_baseline()
+    {
+        var game = P(10);
+        var locks = Watching(game);
+
+        Assert.Empty(locks.Check([], [Seen(game, null)], T0, Today, NoBonus).Counted);
+        Assert.Equal([Kid], locks.Check([], [Seen(game, PlayedCpu)], T0.AddMinutes(1), Today, NoBonus).Counted);
+    }
+
+    [Fact]
+    public void Running_and_seen_suspended_processes_of_one_user_count_once_in_one_check()
+    {
+        var game = P(10);
+        var video = P(11, Video);
+        var locks = Watching(game, video);
+
+        var check = locks.Check([game], [Seen(video, PlayedCpu)], T0, Today, NoBonus);
+
+        Assert.Equal([Kid], check.Counted);
+        Assert.Equal(1, locks.ChildResumes(Kid));
+    }
+
+    [Fact]
+    public void The_30_second_gap_applies_across_both_paths_and_keeps_the_evidence()
+    {
+        var game = P(10);
+        var video = P(11, Video);
+        var locks = Watching(game, video);
+
+        Assert.Equal([Kid], locks.Check([game], T0, Today, NoBonus).Counted);
+        // 15 s later the video shows evidence while suspended: no count, but its old baseline stays.
+        Assert.Empty(locks.Check([], [Seen(video, PlayedCpu)], T0.AddSeconds(15), Today, NoBonus).Counted);
+        // At the next regular check the same evidence counts.
+        Assert.Equal([Kid], locks.Check([], [Seen(video, PlayedCpu)], T0.AddSeconds(60), Today, NoBonus).Counted);
+        Assert.Equal(2, locks.ChildResumes(Kid));
+    }
+
+    [Fact]
+    public void Process_resumed_by_the_service_is_not_counted_when_seen_suspended_later()
+    {
+        // A hold: the service resumes the game for the end of the session; after it, the service suspends it again.
+        var game = P(10);
+        var locks = Watching(game);
+        locks.MarkResumedByService(game.Pid, game.StartTimeUtc);
+
+        Assert.Empty(locks.Check([], [Seen(game, PlayedCpu)], T0, Today, NoBonus).Counted);
+    }
+
+    // --- Release clears the gap (review of PR #62) ---
+
+    [Fact]
+    public void Release_clears_the_30_second_gap()
+    {
+        var game = P(10);
+        var locks = Watching(game);
+        for (var i = 0; i < 3; i++)
+            ResumeAgain(locks, game, T0.AddMinutes(i));
+        Assert.True(locks.IsLocked(Kid));
+
+        locks.Release(Today, _ => 15, AllDue);
+        var check = ResumeAgain(locks, game, T0.AddMinutes(2).AddSeconds(10), _ => 15);
+
+        Assert.Equal([Kid], check.Counted);
+        Assert.Equal(1, locks.ChildResumes(Kid));
+    }
+
+    // --- The stored Resume Lock (design D6) ---
+
+    [Fact]
+    public void LockState_gives_the_stored_form_of_a_running_lock()
+    {
+        var game = P(10);
+        var locks = Watching(game);
+        for (var i = 0; i < 3; i++)
+            ResumeAgain(locks, game, T0.AddMinutes(i), _ => 5);
+
+        Assert.Equal([Game], locks.LockState(Kid)!.ExePaths);
+        Assert.Equal(Today, locks.LockState(Kid)!.Day);
+        Assert.Equal(5, locks.LockState(Kid)!.BonusAtStart);
+        Assert.Null(locks.LockState(OtherKid));
+    }
+
+    [Fact]
+    public void Restored_lock_runs_without_a_start_and_keeps_its_exes_due()
+    {
+        var locks = new ResumeLocks();
+
+        Assert.True(locks.Restore(new ResumeLockState(Kid, Today, 0, [Game])));
+
+        Assert.True(locks.IsLocked(Kid));
+        Assert.Empty(locks.Release(Today, NoBonus, AllDue));
+        Assert.True(locks.IsLocked(Kid));
+    }
+
+    [Fact]
+    public void Restored_lock_ends_on_a_new_day()
+    {
+        var locks = new ResumeLocks();
+        locks.Restore(new ResumeLockState(Kid, Today.AddDays(-1), 0, [Game]));
+
+        Assert.Equal([new ResumeLockEnd(Kid, ResumeLockEndReason.NewDay)], locks.Release(Today, NoBonus, AllDue));
+        Assert.Null(locks.LockState(Kid));
+    }
+
+    [Fact]
+    public void Restored_lock_ends_after_new_Bonus_Minutes()
+    {
+        var locks = new ResumeLocks();
+        locks.Restore(new ResumeLockState(Kid, Today, 5, [Game]));
+
+        Assert.Empty(locks.Release(Today, _ => 5, AllDue));
+        Assert.Equal([new ResumeLockEnd(Kid, ResumeLockEndReason.BonusMinutes)], locks.Release(Today, _ => 20, AllDue));
+    }
+
+    [Fact]
+    public void Restored_lock_ends_when_no_exe_is_still_due()
+    {
+        var locks = new ResumeLocks();
+        locks.Restore(new ResumeLockState(Kid, Today, 0, [Game]));
+
+        Assert.Equal([new ResumeLockEnd(Kid, ResumeLockEndReason.NoReasonLeft)], locks.Release(Today, NoBonus, (_, _) => false));
+    }
+
+    [Fact]
+    public void Restore_keeps_a_running_lock_and_refuses_a_lock_without_exes()
+    {
+        var locks = new ResumeLocks();
+        Assert.True(locks.Restore(new ResumeLockState(Kid, Today, 0, [Game])));
+
+        Assert.False(locks.Restore(new ResumeLockState(Kid, Today, 9, [Video])));
+        Assert.False(locks.Restore(new ResumeLockState(OtherKid, Today, 0, [])));
+        Assert.Equal([Game], locks.LockedExes(Kid));
+        Assert.Equal(0, locks.LockState(Kid)!.BonusAtStart);
+        Assert.False(locks.IsLocked(OtherKid));
+    }
+
+    [Fact]
+    public void Child_Resume_during_a_restored_lock_adds_its_exe_and_reports_it()
+    {
+        var video = P(11, Video);
+        var game = P(10);
+        var locks = Watching(video, game);
+        locks.Restore(new ResumeLockState(Kid, Today, 0, [Game]));
+
+        var check = locks.Check([video], T0, Today, NoBonus);
+
+        Assert.Empty(check.Started);
+        Assert.Equal([Kid], check.Extended);
+        Assert.Equal([Game, Video], locks.LockedExes(Kid));
+        // The same exe again adds nothing new.
+        Assert.Empty(locks.Check([game], T0.AddMinutes(1), Today, NoBonus).Extended);
+    }
 }

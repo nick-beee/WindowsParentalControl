@@ -222,8 +222,8 @@ public static class ProcessControl
         Suspend(pid, expectedStartUtc, out detail, out _);
 
     /// <summary>
-    /// Suspends the process if it still has the expected start time. <paramref name="cpuAfter"/> is the CPU time (user +
-    /// kernel) of the process, read on the same handle after the suspension, or null (lock-after-repeated-resume D10).
+    /// Suspends the process if it still has the expected start time. <paramref name="cpuAfter"/> is the user-mode CPU time
+    /// of the process, read on the same handle after the suspension, or null (lock-after-repeated-resume D10).
     /// </summary>
     public static ProcessOpResult Suspend(int pid, DateTime expectedStartUtc, out string detail, out TimeSpan? cpuAfter)
     {
@@ -395,10 +395,14 @@ public static class ProcessControl
         }
     }
 
-    /// <summary>The CPU time (user + kernel) of the process, or null. Windows charges it in clock ticks.</summary>
+    /// <summary>
+    /// The user-mode CPU time of the process, or null. Windows charges it in clock ticks. The kernel time is not used: a
+    /// suspended thread cannot run user code, but a kernel APC or a late system call of a suspended process adds kernel
+    /// time (lock-after-repeated-resume D10).
+    /// </summary>
     private static TimeSpan? QueryCpu(IntPtr handle) =>
-        NativeMethods.GetProcessTimes(handle, out _, out _, out var kernel, out var user) && kernel >= 0 && user >= 0
-            ? TimeSpan.FromTicks(kernel + user)
+        NativeMethods.GetProcessTimes(handle, out _, out _, out _, out var user) && user >= 0
+            ? TimeSpan.FromTicks(user)
             : null;
 
     private static DateTime? QueryStart(IntPtr handle) =>

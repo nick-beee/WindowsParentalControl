@@ -366,6 +366,9 @@ public sealed class AgentRequests
             _logger.Information("Session end request of the agent in session {SessionId} ignored: no Restricted User", record.SessionId);
             return;
         }
+        // The agent resumed the Suspended Apps before it sent this request. Unwatch them before the deferral and the
+        // gate of the enforcer, so that a tick in between does not count a Child Resume (lock-after-repeated-resume D12).
+        _categoryEnforcer.UnwatchSessionForEnd(record.SessionId);
         _sessionLocker.OnSessionEnding(record.SessionId, user.Id, user.Username, trusted: false, $"agent {message.Reason}");
         var result = _categoryEnforcer.ResumeSessionForEnd(record.SessionId, user, trusted: false, $"agent {message.Reason}");
         _logger.Information("Session end request of the agent in session {SessionId} ({Username}): {Result}",

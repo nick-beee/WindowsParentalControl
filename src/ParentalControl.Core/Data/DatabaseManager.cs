@@ -349,6 +349,14 @@ public static class DatabaseManager
                 PRIMARY KEY (user_id, date, file_name)
             );
 
+            CREATE TABLE IF NOT EXISTS resume_locks (
+                user_id INTEGER PRIMARY KEY,
+                day TEXT NOT NULL,
+                bonus_at_start INTEGER NOT NULL,
+                exe_paths TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events (timestamp);
             CREATE INDEX IF NOT EXISTS idx_events_user_timestamp ON events (user_sid, timestamp);
             CREATE INDEX IF NOT EXISTS idx_grace_user_date ON grace_requests (user_id, date);

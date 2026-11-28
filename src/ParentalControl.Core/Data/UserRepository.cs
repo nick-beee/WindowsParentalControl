@@ -103,6 +103,7 @@ public static class UserRepository
             DELETE FROM limits WHERE user_id = @id;
             DELETE FROM break_rules WHERE user_id = @id;
             DELETE FROM break_state WHERE user_id = @id;
+            DELETE FROM resume_locks WHERE user_id = @id;
             DELETE FROM users WHERE id = @id;
             """;
         cmd.Parameters.AddWithValue("@id", user.Id);

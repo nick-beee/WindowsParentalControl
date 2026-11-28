@@ -17,20 +17,20 @@ public enum ResumeEvidence
 }
 
 /// <summary>
-/// Decides whether a recorded process that the thread check sees running really ran after the service last saw it
-/// suspended (issue #24, change <c>lock-after-repeated-resume</c>, design D10). Only <see cref="ResumeEvidence.Ran"/>
-/// lets a Child Resume count. Each other result gives no count; the planner still suspends the process again.
+/// Decides whether a recorded process really ran after the service last saw it suspended (issue #24, change
+/// <c>lock-after-repeated-resume</c>, design D10, D11). Only <see cref="ResumeEvidence.Ran"/> lets a Child Resume count.
+/// Each other result gives no count; the planner still suspends a running process again.
 /// </summary>
 /// <remarks>
 /// The thread check (<see cref="ThreadSuspension"/>) can see a suspended process as running, for example when a
 /// suspended thread runs a kernel APC for a moment, or when a thread keeps a kernel wait after the suspension. Such a
-/// thread uses almost no CPU time. A process that the child resumes and uses for some seconds uses much more.
-/// Windows charges the CPU time of a thread in clock ticks (usually 15.625 ms), so one tick can come from a thread that
+/// thread uses almost no CPU time, and a suspended thread cannot run user code, so the service reads the user-mode CPU
+/// time only. A process that the child resumes and uses for some seconds uses much more. Windows charges the CPU time of a thread in clock ticks (usually 15.625 ms), so one tick can come from a thread that
 /// ran for some microseconds. <see cref="MinCpuGrowth"/> is more than 3 ticks.
 /// </remarks>
 public static class ChildResumeEvidence
 {
-    /// <summary>The CPU time (user + kernel) that a process must use after its suspension to count as resumed.</summary>
+    /// <summary>The user-mode CPU time that a process must use after its suspension to count as resumed.</summary>
     public static readonly TimeSpan MinCpuGrowth = TimeSpan.FromMilliseconds(50);
 
     /// <param name="suspendedCpu">The CPU time when the service last saw the process suspended, or null.</param>
