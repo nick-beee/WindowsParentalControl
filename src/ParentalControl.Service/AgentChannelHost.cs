@@ -213,8 +213,10 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
     {
         private readonly AgentChannelHost _host;
         private readonly NamedPipeServerStream _stream;
-        private readonly AgentChannelCodec _codec = new();
+        private readonly AgentChannelCodec _codec;
         private readonly ChannelRateLimit _rate = new();
+        // Set by the capture admission inside Feed: the 10th dropped message closes the channel after the Feed.
+        private bool _rateClosed;
         private readonly CancellationTokenSource _closed = new();
         private int _disposed;
         private bool _loggedHandlerError;
@@ -226,6 +228,35 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
             Record = record;
             Process = process;
             _stream = stream;
+            _codec = new AgentChannelCodec(AdmitCapture);
+        }
+
+        // The rate limit and the quota of a capture before the codec allocates its JPEG buffer. A capture message
+        // counts against the rate limit here, not again in the loop.
+        private CaptureAdmission AdmitCapture()
+        {
+            switch (_rate.Offer(TimeSpan.FromMilliseconds(Environment.TickCount64)))
+            {
+                case ChannelRateDecision.Drop:
+                    return CaptureAdmission.Drop;
+                case ChannelRateDecision.Close:
+                    _rateClosed = true;
+                    return CaptureAdmission.Drop;
+            }
+            try
+            {
+                return _host._requests.AdmitCapture(Record);
+            }
+            catch (Exception ex)
+            {
+                if (!_loggedHandlerError)
+                {
+                    _loggedHandlerError = true;
+                    Log.Error(ex, "Agent Channel of session {SessionId}: the capture check failed (later errors of this channel are not logged)",
+                        Record.SessionId);
+                }
+                return CaptureAdmission.Refuse("error");
+            }
         }
 
         public AgentLaunchRecord Record { get; }
@@ -249,6 +280,7 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
             var buffer = new byte[16 * 1024];
             var messages = new List<AgentMessage>();
             long? frameDeadline = null;
+            long deadlineFrame = 0;
             string? fault = null;
             try
             {
@@ -290,20 +322,36 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
                         fault = "bad frame: " + _codec.Error;
                         break;
                     }
+                    if (_rateClosed)
+                    {
+                        fault = "10 dropped messages (rate limit)";
+                        break;
+                    }
+                    // Each frame gets its own 10 s from its first byte; the JPEG frame of a capture is a new frame.
                     if (_codec.IsInsideFrame || _codec.ExpectsCaptureBytes)
-                        frameDeadline ??= Environment.TickCount64 + (long)FrameTimeout.TotalMilliseconds;
+                    {
+                        if (frameDeadline is null || deadlineFrame != _codec.FramesStarted)
+                        {
+                            frameDeadline = Environment.TickCount64 + (long)FrameTimeout.TotalMilliseconds;
+                            deadlineFrame = _codec.FramesStarted;
+                        }
+                    }
                     else
                         frameDeadline = null;
 
                     foreach (var message in messages)
                     {
-                        switch (_rate.Offer(TimeSpan.FromMilliseconds(Environment.TickCount64)))
+                        // A capture took its place in the rate limit at its JSON frame (AdmitCapture).
+                        if (message is not AgentCapture)
                         {
-                            case ChannelRateDecision.Drop:
-                                continue;
-                            case ChannelRateDecision.Close:
-                                fault = "10 dropped messages (rate limit)";
-                                break;
+                            switch (_rate.Offer(TimeSpan.FromMilliseconds(Environment.TickCount64)))
+                            {
+                                case ChannelRateDecision.Drop:
+                                    continue;
+                                case ChannelRateDecision.Close:
+                                    fault = "10 dropped messages (rate limit)";
+                                    break;
+                            }
                         }
                         if (fault is not null) break;
                         _captureTaken = false;
@@ -367,7 +415,7 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
                 {
                     AgentStatusRequest => StatusAnswer(message.Id, type),
                     AgentPromptAnswer answer => Answer(new { id = message.Id, type, ok = _host._requests.AnswerPrompt(Record, answer) }),
-                    AgentCapture capture => Answer(new { id = message.Id, type, ok = true, result = _host._requests.StoreCapture(Record, capture) }),
+                    AgentCapture capture => Answer(new { id = message.Id, type, ok = true, result = Capture(capture) }),
                     // The answer does not say whether the deferral or the hold was granted (design D8).
                     AgentSessionEnding ending => SessionEndingAnswer(ending, type),
                     _ => Answer(new { id = message.Id, type, ok = false }),
@@ -400,6 +448,13 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
                 if (captureTaken) _host._requests.RestoreCaptureRequest(Record);
                 throw;
             }
+        }
+
+        private string Capture(AgentCapture capture)
+        {
+            if (capture.Refused is null) return _host._requests.StoreCapture(Record, capture);
+            _host._requests.CaptureSkipped(Record, capture);
+            return capture.Refused;
         }
 
         private byte[] SessionEndingAnswer(AgentSessionEnding ending, string type)

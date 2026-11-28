@@ -17,8 +17,40 @@ public sealed record AgentStatusRequest(long Id) : AgentMessage(Id);
 public sealed record AgentPromptAnswer(long Id, int PromptId, string Response, string? Reason, int TurnaroundSeconds)
     : AgentMessage(Id);
 
-/// <summary>A screen capture (<c>capture</c>): a JSON frame, then the JPEG bytes as a second frame.</summary>
-public sealed record AgentCapture(long Id, string Trigger, int Width, int Height, byte[] Jpeg) : AgentMessage(Id);
+/// <summary>
+/// A screen capture (<c>capture</c>): a JSON frame, then the JPEG bytes as a second frame. If the service refused the
+/// capture before the JPEG frame (<see cref="CaptureAdmission"/>), <see cref="Refused"/> has the reason and
+/// <see cref="Jpeg"/> is empty: the codec skipped the JPEG bytes without a buffer.
+/// </summary>
+public sealed record AgentCapture(long Id, string Trigger, int Width, int Height, byte[] Jpeg, string? Refused = null)
+    : AgentMessage(Id);
+
+/// <summary>
+/// The decision of the service on a <c>capture</c> JSON frame, before the codec allocates the buffer of its JPEG frame
+/// (review of task groups 5 and 6): the rate limit and the daily quota of the captures.
+/// </summary>
+public sealed record CaptureAdmission
+{
+    private CaptureAdmission(long maxBytes, string? refused, bool dropped)
+    {
+        MaxBytes = maxBytes;
+        Refused = refused;
+        Dropped = dropped;
+    }
+
+    /// <summary>The largest JPEG frame that the service takes now. A larger frame is skipped and refused as "tooLarge".</summary>
+    public long MaxBytes { get; }
+
+    /// <summary>The reason of a refusal (for example "quota"); the service answers it.</summary>
+    public string? Refused { get; }
+
+    /// <summary>Over the rate limit: the codec skips the JPEG frame and gives no message, so the service gives no answer.</summary>
+    public bool Dropped { get; }
+
+    public static CaptureAdmission Allow(long maxBytes) => new(Math.Min(maxBytes, CaptureQuota.MaxBytesPerCapture), null, false);
+    public static CaptureAdmission Refuse(string reason) => new(0, reason, false);
+    public static CaptureAdmission Drop { get; } = new(0, null, true);
+}
 
 /// <summary>A session-end request (<c>sessionEnding</c>). <see cref="Reason"/> is "shutdown" or "logoff".</summary>
 public sealed record AgentSessionEnding(long Id, string Reason) : AgentMessage(Id);
@@ -41,17 +73,32 @@ public sealed class AgentChannelCodec
     public const int MaxJsonDepth = 8;
 
     private readonly byte[] _header = new byte[HeaderBytes];
+    private readonly Func<CaptureAdmission>? _admitCapture;
     private int _headerFill;
     private byte[]? _body;
     private int _bodyFill;
-    private (long Id, string Trigger, int Width, int Height)? _pendingCapture;
+    // The bytes of a refused JPEG frame that the codec still skips (no buffer), or -1.
+    private long _skipLeft = -1;
+    private (long Id, string Trigger, int Width, int Height, CaptureAdmission Admission)? _pendingCapture;
+    private (long Id, string Trigger, int Width, int Height, string? Refused)? _skipping;
+
+    /// <param name="admitCapture">Called for each <c>capture</c> JSON frame, before the JPEG frame: the rate limit and
+    /// the quota. Null takes each capture up to <see cref="CaptureQuota.MaxBytesPerCapture"/>.</param>
+    public AgentChannelCodec(Func<CaptureAdmission>? admitCapture = null)
+    {
+        _admitCapture = admitCapture;
+    }
 
     /// <summary>The reason of the first error, or null. After an error the channel must close.</summary>
     public string? Error { get; private set; }
 
     /// <summary>True between the first byte of a frame and its last byte. The service closes a channel whose frame
     /// does not arrive within 10 seconds.</summary>
-    public bool IsInsideFrame => _headerFill > 0 || _body is not null;
+    public bool IsInsideFrame => _headerFill > 0 || _body is not null || _skipLeft >= 0;
+
+    /// <summary>The number of frames whose first byte arrived. The service starts the frame deadline again for each
+    /// new frame.</summary>
+    public long FramesStarted { get; private set; }
 
     /// <summary>True if the next frame must be the JPEG of a <c>capture</c>.</summary>
     public bool ExpectsCaptureBytes => _pendingCapture is not null;
@@ -68,8 +115,23 @@ public sealed class AgentChannelCodec
         if (Error is not null) return false;
         while (!data.IsEmpty)
         {
+            if (_skipLeft >= 0)
+            {
+                // A refused JPEG frame: skip its bytes without a buffer.
+                var skip = (int)Math.Min(_skipLeft, data.Length);
+                _skipLeft -= skip;
+                data = data[skip..];
+                if (_skipLeft > 0) break;
+                _skipLeft = -1;
+                var refused = _skipping!.Value;
+                _skipping = null;
+                if (refused.Refused is not null)
+                    messages.Add(new AgentCapture(refused.Id, refused.Trigger, refused.Width, refused.Height, [], refused.Refused));
+                continue;
+            }
             if (_body is null)
             {
+                if (_headerFill == 0) FramesStarted++;
                 var take = Math.Min(HeaderBytes - _headerFill, data.Length);
                 data[..take].CopyTo(_header.AsSpan(_headerFill));
                 _headerFill += take;
@@ -80,6 +142,17 @@ public sealed class AgentChannelCodec
                 var limit = _pendingCapture is null ? MaxJsonFrameBytes : CaptureQuota.MaxBytesPerCapture;
                 if (length == 0 || length > limit)
                     return Fail($"frame length {length} is outside 1..{limit}");
+                if (_pendingCapture is { } capture
+                    && (capture.Admission.Dropped || capture.Admission.Refused is not null || length > capture.Admission.MaxBytes))
+                {
+                    // The service refused the capture before its JPEG: no buffer for it.
+                    _pendingCapture = null;
+                    _headerFill = 0;
+                    _skipLeft = length;
+                    _skipping = (capture.Id, capture.Trigger, capture.Width, capture.Height,
+                        capture.Admission.Dropped ? null : capture.Admission.Refused ?? "tooLarge");
+                    continue;
+                }
                 _body = new byte[length];
                 _bodyFill = 0;
             }
@@ -144,8 +217,9 @@ public sealed class AgentChannelCodec
                     if (!TryString(root, "trigger", 32, out var trigger)) return Fail("capture trigger is not valid");
                     TryInt(root, "width", out var width);
                     TryInt(root, "height", out var height);
+                    var admission = _admitCapture?.Invoke() ?? CaptureAdmission.Allow(CaptureQuota.MaxBytesPerCapture);
                     _pendingCapture = (id, string.IsNullOrWhiteSpace(trigger) ? "MANUAL" : trigger!,
-                        Math.Max(0, width), Math.Max(0, height));
+                        Math.Max(0, width), Math.Max(0, height), admission);
                     return true;
                 case "sessionEnding":
                     TryString(root, "reason", 32, out var endReason);
@@ -202,6 +276,7 @@ public sealed class AgentChannelCodec
     {
         Error ??= reason;
         _body = null;
+        _skipLeft = -1;
         return false;
     }
 }
@@ -217,29 +292,38 @@ public enum ChannelRateDecision
 
 /// <summary>
 /// The rate limit of one Agent Channel (design D7, S7): at most 5 messages per second and 30 per 10 seconds. Over the
-/// limit the service drops the message; at the 10th dropped message it closes the channel. Monotonic time only.
-/// Not thread-safe: one limit per channel.
+/// limit the service drops the message; at the 10th dropped message within <see cref="DropWindow"/> it closes the
+/// channel. Old drops leave the window, so rare bursts of an honest agent never add up to a close. Monotonic time
+/// only. Not thread-safe: one limit per channel.
 /// </summary>
 public sealed class ChannelRateLimit
 {
     public const int MaxPerSecond = 5;
     public const int MaxPerTenSeconds = 30;
     public const int MaxDrops = 10;
+    public static readonly TimeSpan DropWindow = TimeSpan.FromSeconds(60);
 
     private readonly Queue<TimeSpan> _accepted = new();
+    private readonly Queue<TimeSpan> _drops = new();
+    private bool _closed;
 
-    public int Drops { get; private set; }
+    /// <summary>The dropped messages in the window of the last offer.</summary>
+    public int Drops => _drops.Count;
 
     public ChannelRateDecision Offer(TimeSpan monotonicNow)
     {
-        if (Drops >= MaxDrops) return ChannelRateDecision.Close;
+        if (_closed) return ChannelRateDecision.Close;
         while (_accepted.Count > 0 && monotonicNow - _accepted.Peek() >= TimeSpan.FromSeconds(10))
             _accepted.Dequeue();
+        while (_drops.Count > 0 && monotonicNow - _drops.Peek() >= DropWindow)
+            _drops.Dequeue();
         var lastSecond = _accepted.Count(t => monotonicNow - t < TimeSpan.FromSeconds(1));
         if (_accepted.Count >= MaxPerTenSeconds || lastSecond >= MaxPerSecond)
         {
-            Drops++;
-            return Drops >= MaxDrops ? ChannelRateDecision.Close : ChannelRateDecision.Drop;
+            _drops.Enqueue(monotonicNow);
+            if (_drops.Count < MaxDrops) return ChannelRateDecision.Drop;
+            _closed = true;
+            return ChannelRateDecision.Close;
         }
         _accepted.Enqueue(monotonicNow);
         return ChannelRateDecision.Accept;

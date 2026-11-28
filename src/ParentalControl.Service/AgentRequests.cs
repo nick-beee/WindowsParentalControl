@@ -243,6 +243,40 @@ public sealed class AgentRequests
     }
 
     /// <summary>
+    /// The check of a <c>capture</c> JSON frame before the codec allocates the buffer of its JPEG frame: the user of the
+    /// launch record and the daily quota. <see cref="StoreCapture"/> checks the quota again with a reservation.
+    /// </summary>
+    public CaptureAdmission AdmitCapture(AgentLaunchRecord record)
+    {
+        var user = UserRepository.GetBySid(record.UserSid);
+        if (user is null) return CaptureAdmission.Refuse("unknownUser");
+        CaptureQuotaDecision quota;
+        int filesToday;
+        long bytesToday;
+        lock (_captureReservations)
+        {
+            (filesToday, bytesToday) = ScreenCaptureRepository.GetDayTotals(user.Id, ControlTime.Current.StartOfToday);
+            _captureReservations.TryGetValue(user.Id, out var reserved);
+            quota = CaptureQuota.Check(filesToday + reserved.Files, bytesToday + reserved.Bytes);
+        }
+        if (quota.Allowed) return CaptureAdmission.Allow(quota.MaxBytes);
+        if (_captureRefusals.Count(user.Id, ControlTime.Current.Today))
+            _logger.Warning("Capture refused for {Username} before its JPEG: the daily quota is used ({Outcome}: {Files} files, {Bytes} bytes). " +
+                            "Later refusals today are not logged.", user.Username, quota.Outcome, filesToday, bytesToday);
+        return CaptureAdmission.Refuse("quota");
+    }
+
+    /// <summary>Logs a capture that the codec skipped because its JPEG frame was larger than the admission allowed.</summary>
+    public void CaptureSkipped(AgentLaunchRecord record, AgentCapture capture)
+    {
+        if (capture.Refused != "tooLarge") return;
+        var user = UserRepository.GetBySid(record.UserSid);
+        if (user is not null && _captureRefusals.Count(user.Id, ControlTime.Current.Today))
+            _logger.Warning("Capture refused for {Username}: the JPEG frame is larger than the quota allows. Later refusals today are not logged.",
+                user.Username);
+    }
+
+    /// <summary>
     /// Stores a screen capture of the agent for the user of the launch record, under the daily quota (design D8).
     /// <c>admin_ip</c> is NULL. Returns the outcome for the answer.
     /// </summary>

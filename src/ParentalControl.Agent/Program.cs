@@ -17,6 +17,11 @@ internal static class Program
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool SetProcessShutdownParameters(uint level, uint flags);
 
+    private const uint HandleFlagInherit = 0x1;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
+
     [STAThread]
     private static int Main(string[] args)
     {
@@ -34,13 +39,19 @@ internal static class Program
             AgentLog.Logger.Warning("Agent channel refused ({Reason}): exit", refusal);
             return 2;
         }
+        // The service passed an inheritable duplicate. Clear the flag before the agent starts any process (the request
+        // page in the browser, WebView2), so that no child of the agent inherits the channel.
+        if (!SetHandleInformation(handle, HandleFlagInherit, 0))
+            AgentLog.Logger.Warning("SetHandleInformation on the channel failed: error {Error}", Marshal.GetLastWin32Error());
 
         AgentChannelClient channel;
         try
         {
             var pipe = new SafePipeHandle(handle, ownsHandle: true);
             // The overload with isConnected is the only one with a handle in .NET 10; it gives no SYSLIB0063 warning
-            // there. The handle was opened with FILE_FLAG_OVERLAPPED (S12), so the asynchronous stream can bind it.
+            // there. .NET 11 makes it obsolete (SYSLIB0063) and adds the constructor with 3 arguments
+            // (PipeDirection, bool isAsync, SafePipeHandle): switch to that one at the move to net11.
+            // The handle was opened with FILE_FLAG_OVERLAPPED (S12), so the asynchronous stream can bind it.
             channel = new AgentChannelClient(new NamedPipeClientStream(PipeDirection.InOut, isAsync: true, isConnected: true, pipe));
         }
         catch (Exception ex)

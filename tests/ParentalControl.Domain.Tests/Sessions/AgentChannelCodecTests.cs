@@ -168,6 +168,103 @@ public class AgentChannelCodecTests
     }
 }
 
+// Review of task groups 5 and 6: the rate limit and the quota of a capture apply before the JPEG buffer, and each frame
+// has its own deadline.
+public class AgentChannelCodecCaptureAdmissionTests
+{
+    private static byte[] Json(string json) => AgentChannelCodec.Frame(Encoding.UTF8.GetBytes(json));
+
+    private static byte[] Jpeg(int length)
+    {
+        var frame = new byte[4 + length];
+        BinaryPrimitives.WriteUInt32LittleEndian(frame, (uint)length);
+        return frame;
+    }
+
+    [Fact]
+    public void Refused_capture_skips_the_jpeg_without_a_buffer_and_answers_the_reason()
+    {
+        var calls = 0;
+        var codec = new AgentChannelCodec(() => { calls++; return CaptureAdmission.Refuse("quota"); });
+        var messages = new List<AgentMessage>();
+        Assert.True(codec.Feed(Json("""{"type":"capture","id":7,"width":10,"height":20}"""), messages));
+        Assert.Equal(1, calls);
+        var jpeg = Jpeg(1_000_000);
+        Assert.True(codec.Feed(jpeg.AsSpan(0, 500_000), messages));
+        Assert.True(codec.IsInsideFrame);
+        Assert.Equal(0, codec.BufferedCapacity);
+        Assert.Empty(messages);
+        Assert.True(codec.Feed(jpeg.AsSpan(500_000), messages));
+        var capture = Assert.IsType<AgentCapture>(Assert.Single(messages));
+        Assert.Equal(7, capture.Id);
+        Assert.Equal("quota", capture.Refused);
+        Assert.Empty(capture.Jpeg);
+        Assert.False(codec.IsInsideFrame);
+        Assert.False(codec.ExpectsCaptureBytes);
+
+        messages.Clear();
+        Assert.True(codec.Feed(Json("""{"type":"status","id":8}"""), messages));
+        Assert.IsType<AgentStatusRequest>(Assert.Single(messages));
+    }
+
+    [Fact]
+    public void Dropped_capture_skips_the_jpeg_and_gives_no_message()
+    {
+        var codec = new AgentChannelCodec(() => CaptureAdmission.Drop);
+        var messages = new List<AgentMessage>();
+        Assert.True(codec.Feed([.. Json("""{"type":"capture","id":1}"""), .. Jpeg(1000), .. Json("""{"type":"status","id":2}""")], messages));
+        Assert.IsType<AgentStatusRequest>(Assert.Single(messages));
+        Assert.True(codec.EndOfStream());
+    }
+
+    [Fact]
+    public void Jpeg_over_the_admitted_bytes_is_skipped_as_too_large()
+    {
+        var codec = new AgentChannelCodec(() => CaptureAdmission.Allow(100));
+        var messages = new List<AgentMessage>();
+        Assert.True(codec.Feed([.. Json("""{"type":"capture","id":1}"""), .. Jpeg(101)], messages));
+        Assert.Equal("tooLarge", Assert.IsType<AgentCapture>(Assert.Single(messages)).Refused);
+
+        messages.Clear();
+        Assert.True(codec.Feed([.. Json("""{"type":"capture","id":2}"""), .. Jpeg(100)], messages));
+        var stored = Assert.IsType<AgentCapture>(Assert.Single(messages));
+        Assert.Null(stored.Refused);
+        Assert.Equal(100, stored.Jpeg.Length);
+    }
+
+    [Fact]
+    public void Jpeg_over_the_protocol_limit_still_closes_the_channel_when_refused()
+    {
+        var codec = new AgentChannelCodec(() => CaptureAdmission.Refuse("quota"));
+        codec.Feed(Json("""{"type":"capture","id":1}"""), []);
+        var header = new byte[4];
+        BinaryPrimitives.WriteUInt32LittleEndian(header, (uint)CaptureQuota.MaxBytesPerCapture + 1);
+        Assert.False(codec.Feed(header, []));
+        Assert.NotNull(codec.Error);
+    }
+
+    [Fact]
+    public void Truncated_skipped_jpeg_is_refused_at_the_end()
+    {
+        var codec = new AgentChannelCodec(() => CaptureAdmission.Refuse("quota"));
+        codec.Feed([.. Json("""{"type":"capture","id":1}"""), .. Jpeg(100).AsSpan(0, 50)], []);
+        Assert.False(codec.EndOfStream());
+    }
+
+    [Fact]
+    public void Each_frame_counts_as_started_at_its_first_byte()
+    {
+        var codec = new AgentChannelCodec();
+        var two = Json("""{"type":"status","id":1}""").Concat(Json("""{"type":"status","id":2}""")).ToArray();
+        codec.Feed(two.AsSpan(0, 1), []);
+        Assert.Equal(1, codec.FramesStarted);
+        var firstLength = Json("""{"type":"status","id":1}""").Length;
+        codec.Feed(two.AsSpan(1, firstLength), []);
+        Assert.Equal(2, codec.FramesStarted);
+        Assert.True(codec.IsInsideFrame);
+    }
+}
+
 public class ChannelRateLimitTests
 {
     private static TimeSpan Ms(int ms) => TimeSpan.FromMilliseconds(ms);
@@ -206,5 +303,32 @@ public class ChannelRateLimitTests
         Assert.Equal(9, decisions.Count(d => d == ChannelRateDecision.Drop));
         Assert.Equal(ChannelRateDecision.Close, decisions[14]);
         Assert.Equal(ChannelRateDecision.Close, limit.Offer(Ms(60_000)));
+    }
+
+    [Fact]
+    public void Drops_older_than_the_window_do_not_close_the_channel()
+    {
+        var limit = new ChannelRateLimit();
+        // Each minute one burst of 6 messages: 5 accepted, 1 dropped. After an hour, 60 drops, but never 10 in a window.
+        for (var minute = 0; minute < 60; minute++)
+        {
+            var start = minute * 61_000;
+            var decisions = Enumerable.Range(0, 6).Select(i => limit.Offer(Ms(start + i))).ToList();
+            Assert.Equal(1, decisions.Count(d => d == ChannelRateDecision.Drop));
+            Assert.DoesNotContain(ChannelRateDecision.Close, decisions);
+        }
+        Assert.Equal(1, limit.Drops);
+    }
+
+    [Fact]
+    public void Ten_drops_within_the_window_close_the_channel()
+    {
+        var limit = new ChannelRateLimit();
+        var last = ChannelRateDecision.Accept;
+        // Bursts every 5 s: 5 accepted, 1 dropped each; the 10th drop comes at 45 s.
+        for (var burst = 0; burst < 10; burst++)
+            foreach (var i in Enumerable.Range(0, 6))
+                last = limit.Offer(Ms(burst * 5_000 + i));
+        Assert.Equal(ChannelRateDecision.Close, last);
     }
 }
