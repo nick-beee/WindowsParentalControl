@@ -9,7 +9,9 @@ namespace ParentalControl.Service;
 /// <summary>
 /// Enforces the blocks of the App Rules (add-blocked-programs). It reads the process starts of
 /// <see cref="ProcessStartWatcher"/> and closes a Blocked Start (<see cref="BlockDecision.Close"/>).
-/// It is the only caller of <see cref="ProcessControl.Terminate"/>. For each other blocked process it asks the
+/// It is the only caller of <see cref="ProcessControl.Terminate"/> for a program of the child (the hard rule). The only
+/// other caller is <see cref="SessionProbeHost"/>, which ends a leftover Session Probe of an earlier service run: a
+/// SYSTEM process at the probe path, a helper of the service, not a program of the child. For each other blocked process it asks the
 /// category enforcer for a tick, and the planner suspends the process with the reason Blocked.
 /// It also writes the parent report, the child message and the Telegram notice of a blocked program.
 /// <see cref="CategoryEnforcer"/> creates it, calls <see cref="Decide"/> and <see cref="Close"/> in each tick,

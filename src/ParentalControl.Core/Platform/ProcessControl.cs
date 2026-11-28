@@ -247,7 +247,8 @@ public static class ProcessControl
 
     /// <summary>
     /// Closes the process if it still has the expected start time. This is the only close of a program of the child:
-    /// the block enforcer calls it for a Blocked Start, and no other code calls it.
+    /// the block enforcer calls it for a Blocked Start. The only other caller is the Session Probe host, for a leftover
+    /// probe of an earlier service run (a SYSTEM process at the probe path, not a program of the child).
     /// </summary>
     public static ProcessOpResult Terminate(int pid, DateTime expectedStartUtc, out string detail) =>
         WithVerifiedHandle(pid, expectedStartUtc, NativeMethods.PROCESS_TERMINATE, out detail, handle =>
