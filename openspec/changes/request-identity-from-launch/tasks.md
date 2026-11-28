@@ -21,12 +21,12 @@
 ## 3. Agent
 
 - [x] 3.1 `AgentController` gives the Request Window a delegate that sends `requestToken` (timeout 3 seconds) and returns the token or null. `RequestWindow.StartAsync` calls it after the setup and before `Navigate`, sets the HttpOnly cookie `pc_request_token` for `127.0.0.1` with `SameSite = Strict`, and opens `/request` without a query. Without a token it shows `request_window_unavailable` (design D7).
-  - Done: `AgentController.FetchRequestTokenAsync`, `RequestWindow.StartAsync`.
+  - Done: `AgentController.FetchRequestTokenAsync`, `RequestWindow.StartAsync`. The window reads the cookie back (`GetCookiesAsync`) before `Navigate` and shows the fallback without it.
 
 ## 4. Web page
 
 - [x] 4.1 In `web/admin/src/request`: remove `username` from the request body (`api.ts`, `RequestApp.tsx`), remove `AdminTest` and the admin test banner, and update the tests and the fixture. Verify with `npm run lint`, `npm run typecheck` and `npm test`.
-  - Done. The unused CSS of the banner is gone too. A new test shows the 401 text of the service.
+  - Done. The unused CSS of the banner is gone too. A new test shows the 401 text of the service. `README.md` no longer tells the user to open `/request` in a browser.
 
 ## 5. Docs
 

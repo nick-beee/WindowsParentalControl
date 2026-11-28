@@ -159,6 +159,15 @@ public partial class RequestWindow : Window
         cookie.IsSecure = false; // the page is http://127.0.0.1
         cookie.SameSite = CoreWebView2CookieSameSiteKind.Strict;
         cookies.AddOrUpdateCookie(cookie);
+        // AddOrUpdateCookie has no completion: read the cookie back, so the first navigation never goes without it.
+        var stored = await cookies.GetCookiesAsync(RequestWindowUrlPolicy.PageUrl);
+        if (_closed || _fallbackShown) return;
+        if (!stored.Any(c => c.Name == RequestTokenStore.CookieName && c.Value == token))
+        {
+            AgentLog.Logger.Warning("Request Window: the Request Token cookie is not in place");
+            ShowFallback();
+            return;
+        }
 
         _navigateCalled = true;
         core.Navigate(RequestWindowUrlPolicy.PageUrl);

@@ -96,7 +96,8 @@ The Request Window shows `request_window_unavailable` for a 401 of its first nav
 - `AgentController.OpenRequestWindow` gives the window a delegate that sends `requestToken` on the channel (timeout 3 seconds) and returns the token, or null for a timeout, a dropped request, `ok: false` or a token of the wrong form.
 - `RequestWindow.StartAsync` calls the delegate after it has applied each setting, each event handler and the resource filter, and before `Navigate` (request-window, "The lockdown applies before the first navigation"). Without a token it shows `request_window_unavailable` and does not navigate.
 - The first URL is `http://127.0.0.1:5050/request` without a query (`RequestWindowUrlPolicy.PageUrl`).
-- No new WinAPI call. The WebView2 APIs: `CoreWebView2.CookieManager`, `CoreWebView2CookieManager.CreateCookie`, `CoreWebView2Cookie.IsHttpOnly`, `CoreWebView2Cookie.SameSite`, `CoreWebView2CookieManager.AddOrUpdateCookie`.
+- After `AddOrUpdateCookie` the window reads the cookies of the page URL back (`GetCookiesAsync`). Without the cookie of the token it shows `request_window_unavailable` and does not navigate.
+- No new WinAPI call. The WebView2 APIs: `CoreWebView2.CookieManager`, `CoreWebView2CookieManager.CreateCookie`, `CoreWebView2Cookie.IsHttpOnly`, `CoreWebView2Cookie.SameSite`, `CoreWebView2CookieManager.AddOrUpdateCookie`, `CoreWebView2CookieManager.GetCookiesAsync`.
 
 ### D8. Texts
 
@@ -108,7 +109,7 @@ The key `api_no_user` goes away: the route no longer searches for a user.
 
 ## Risks / Trade-offs
 
-- [The cookie is not in place at the first navigation] → `AddOrUpdateCookie` has no completion event. The first navigation then gets 401, and the window shows `request_window_unavailable`. A VM task checks that the window shows the page. If it fails, the fallback design is `NavigateWithWebResourceRequest` with a `Cookie` header for the first navigation.
+- [The cookie is not in place at the first navigation] → `AddOrUpdateCookie` has no completion event. So the window reads the cookie back with `GetCookiesAsync("http://127.0.0.1:5050/request")` before `Navigate`, and shows `request_window_unavailable` without a navigation if the cookie with the token is not there. VM task 7.1 checks that the window shows the page. If the cookie is never in place, the fallback design is `NavigateWithWebResourceRequest` with a `Cookie` header for the first navigation.
 - [Another process holds port 5050 while the service is down] → The squatter gets only the cookie of the child's own Request Window, and only the token of the child. That token proves only the child's identity to the real service, so the harm is nil. The port-squat warning of the service stays as it is.
 - [The child reads its token and sends requests from PowerShell] → The requests count as the child's requests, under the same limits per day and with the same approval of the parent. It is the same as a click in the window.
 - [A token of 60 minutes ends while the window is open] → The page shows `api_no_access`; the child closes and opens the window.

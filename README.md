@@ -18,7 +18,7 @@ An enhanced screen time, application telemetry, and schedule curfew management s
 - Cannot be silenced, minimized, or suppressed by Windows Focus Assist / Do Not Disturb.
 
 ### 3. Remote Grace Time Requests via Telegram Bot
-- Restricted user clicks "Request Screen Time..." in the tray, on the floating widget, or visits `http://localhost:5050/request`.
+- Restricted user clicks "Request Screen Time..." in the tray or on the floating widget. The Session Agent opens the request page (`/request`) in its own Request Window with a Request Token; the service takes the user from that token only (a browser without the token gets 401).
 - Selects extension (+15m, +30m, +1h) and enters an optional justification.
 - Configurable daily request quota per user (default: 1 submission per calendar day; customizable or disableable via Admin Settings).
 - **Offline-Safe**: Request form verifies internet connectivity and disables submission if the home PC is offline.
@@ -68,7 +68,7 @@ An enhanced screen time, application telemetry, and schedule curfew management s
 
 
 ### 8. Transparent User Portal ("Jadwal Main") & In-Place GitHub Updater
-- **"Jadwal Main" Segmented Day Strip**: Children visiting `http://localhost:5050/request` see a modern 7-day segmented strip with active day indicators, remaining quota, curfew windows, and pinned rejection notices so expectations are clear without exposing admin settings.
+- **"Jadwal Main" Segmented Day Strip**: Children who open the Request Window see a modern 7-day segmented strip with active day indicators, remaining quota, curfew windows, and pinned rejection notices so expectations are clear without exposing admin settings.
 - **Touch-Responsive Mobile UI**: Web Admin and User Portal feature touch-friendly horizontal table scrolling and responsive card layouts tailored for phones and tablets.
 - **Built-in GitHub Releases Updater**: Desktop Admin and Web Admin check `DarkTama/WindowsParentalControl` for new releases, display changelogs, download `ParentalControlSetup.exe`, and perform automated silent upgrades with service restart.
 
@@ -266,7 +266,7 @@ dotnet run --project src/ParentalControl.Agent
 - Hover to view live remaining minutes tooltip; double-click or right-click to toggle widget or open request portal.
 
 #### Step E: Test Browser Endpoints
-- **User Request Portal**: Open [http://localhost:5050/request](http://localhost:5050/request)
+- **User Request Portal**: Sign in as the restricted user and click the request button of the widget. A browser that opens `http://localhost:5050/request` directly gets 401: the page needs the Request Token of the Request Window.
   - Displays remaining time (clamped to curfew), curfew schedule, and request form.
   - Submitting sends a notification to your Telegram and records a pending request.
 - **ActivityWatch Web Admin Dashboard**: Open [http://localhost:5050/admin](http://localhost:5050/admin)
