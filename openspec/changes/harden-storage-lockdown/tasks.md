@@ -1,0 +1,50 @@
+# Tasks
+
+The checks of groups 1 to 4 run on the Mac (`dotnet build -p:EnableWindowsTargeting=true`, with and without `-p:VmTest=true`, and `dotnet test tests/ParentalControl.Domain.Tests`) and in CI (the step "Test" runs the console tests of `tests/ParentalControl.Tests` on `windows-latest`). All VM checks are in group 5. They run on test VM 102 as `Kid` in the Proxmox console (noVNC or SPICE), not over RDP. Before you install the service, check that the snapshot `test-base-net10` exists (`docs/vm.md`). Roll back to `test-base-net10` after the checks of group 5.
+
+## 1. Pure logic (Domain)
+
+- [x] 1.1 Add `StorageFailureKind`, `StorageFailureFacts`, `StorageFailure` and `StorageFailureClassifier` in `src/ParentalControl.Domain/DataFolder` (D1); verify xUnit tests pass for: SQLite 13 is `DiskFull`, an extended code with the primary code 13 (for example `13 | (1 << 8)`) is `DiskFull`, HResult `0x80070070` and `0x80070027` are `DiskFull`, SQLite 8 and access denied are `ReadOnly`, SQLite 5 and 6 are `Locked`, SQLite 10 and an I/O error without a code are `DiskError`, SQLite 11 is `DatabaseError`, and no code and no I/O error is `Internal`.
+- [x] 1.2 Add `StorageLockdownTexts` in the same folder (D2): the entry text of event 1015 and the alert text from the last failure and the free space; verify xUnit tests pass for: `DiskFull` says "disk is full" and "free space"; `Internal`, `ReadOnly` and `Locked` do not say "disk is full" or "free space", name the operation and the cause, and tell the parent to read event 1015 and the service log; an unknown failure (null) gives a text without "disk is full"; the free space shows in MB.
+- [x] 1.3 Add `FailedTickWindow` (D5) and use it in `StorageLockdownState` in place of `FailedTicksInRow`, with the flag `firstTick` (D6) and the last failure (D2); verify xUnit tests pass for: F-S-F-S-F enters at the fifth tick, F-F-S-F enters at the fourth tick, a failed tick every 6 minutes never enters, a failed tick exactly 10 minutes old is out of the window, a failed first tick enters at once, a good first tick does not enter, the exit clears the window, the entry keeps the last failure of the window; and rewrite `SuccessBetweenFailuresResetsTheCount` for the new rule.
+- [x] 1.4 Add `PendingUsage.Consistent` (D7); verify an xUnit test passes: a read inside `Consistent` waits for a store that runs on another thread, and the store waits for a read that runs.
+- [x] 1.5 Add `ControlClock.IsOutsideWindow` (D9); verify xUnit tests pass with the custom zone of `TestZones`: an end at 02:30 on the last Sunday of October is outside at 02:10 of the repeated hour, a normal end at 20:00 is inside at 19:59 and outside at 20:00, and a time before the start is outside.
+- [x] 1.6 Boundary tests (D11); verify xUnit tests pass for: a UTC step back of exactly 60 seconds is not clock back and 60 seconds and 1 tick is; 179.999 seconds add 2 minutes and 180 seconds are a gap of 1 minute; exactly 100 MB free leaves the Storage Lockdown and 1 byte less stays.
+
+## 2. Service
+
+- [x] 2.1 `StorageHealth`: classify each failure, keep the count and the last failure since the last tick (`TakeReport`), keep `TakeFailures` for the console tests, and add the optional `operation` of `TryWrite`; `UsageLedger` reports the operation "usage store"; verify the build.
+- [x] 2.2 `UsageMonitorWorker`: report the exceptions of `TickAllSessions` and `CheckLimits` as failures with their classification; pass the report, the first tick and the free space to `StorageLockdownState`; event 1015 and the alert from `StorageLockdownTexts`; verify the build.
+- [x] 2.3 `UsageMonitorWorker`: start the lock loop before the writes of the entry; the loop takes its token before `Task.Run` and disposes its source in `finally`; `StopLockLoop` only cancels (D8); verify the build.
+- [x] 2.4 `CategoryEnforcer.Suspend`: on a failed insert of the record, call `Fallback` with the reason "the suspension record could not be stored", and pass the label "suspension record" to `TryWrite` (D2, D4); keep the edit small (PR #62); verify the build.
+- [x] 2.5 `UsageLedger`: `AllowanceUsed(userId, day)` and `CategoryUsage` read inside `PendingUsage.Consistent`; the old overload reads the stored minutes again inside the gate; `UsageMonitorWorker`, `SessionTracker` and `BreakEnforcer` use the new overload (D7); verify the build and the console check of the ledger still compiles.
+- [x] 2.6 `UsageMonitorWorker.CheckSession` and the sign-in and unlock checks of `SessionTracker` use `ControlClock.IsOutsideWindow` (D9); verify the build.
+- [x] 2.7 The hook `PARENTAL_CONTROL_TEST_CHECK_FAIL` inside `#if VM_TEST` in `UsageMonitorWorker` (D12); add the file and the name to `ProbeSourceTests`; verify the build with and without `-p:VmTest=true` and that `ProbeSourceTests` pass.
+- [x] 2.8 Console checks in `tests/ParentalControl.Tests/ClockAndStorageChecks.cs`: with the write switch, `TakeReport` gives the kind `ReadOnly` and the operation of the failed write; verify it compiles on the Mac (the run is in CI).
+
+## 3. Documentation
+
+- [x] 3.1 `GLOSSARY.md`: the Storage Lockdown starts after 3 failed ticks within 10 minutes or a failed probe at the start, and also covers a limit check that cannot run; verify the terms match the spec delta.
+- [x] 3.2 `docs/vm.md`: the hook `PARENTAL_CONTROL_TEST_CHECK_FAIL`, and the text that the write hook gives ("read-only or access denied"); `docs/ROADMAP.md`: a line for #55.
+
+## 4. Mac checks
+
+- [x] 4.1 `dotnet build -p:EnableWindowsTargeting=true` and `dotnet build -p:EnableWindowsTargeting=true -p:VmTest=true` succeed.
+- [x] 4.2 `dotnet test tests/ParentalControl.Domain.Tests` passes.
+- [x] 4.3 `openspec validate --all --strict` passes.
+
+## 5. Integration checks on the VM
+
+Build and install with `scripts/vm/guest/deploy.ps1` (it builds with `-p:VmTest=true`). Set a test hook in the `Environment` value (REG_MULTI_SZ) of `HKLM\SYSTEM\CurrentControlSet\Services\ParentalControl.Service` as `nick`, then restart the service (`sc stop ParentalControl.Service` and `sc start ParentalControl.Service`). Remove the value after the test. Read the events with `powershell -NoProfile -Command "Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1015,1016} -MaxEvents 5 | Format-List TimeCreated,Id,Message"`.
+
+- [ ] 5.1 Write failure text: set `PARENTAL_CONTROL_TEST_WRITE_FAIL=C:\ProgramData\pc-write-fail.flag`, restart the service, sign in as `Kid`, then as `nick` create the file (`type nul > C:\ProgramData\pc-write-fail.flag`). Expected: within 3 ticks event 1015; its text names an operation (for example "storage probe" or "usage store") and the cause "read-only or access denied", and does not say "disk is full"; the alert line in the service log has the same cause. Delete the file; expected: event 1016 within 60 seconds.
+- [ ] 5.2 Fill and free in turns: with the hook of 5.1, create the file, wait for one failed tick in the service log ("Database write failed in this tick"), delete it, wait for one good tick, and repeat until 3 failed ticks; expected: event 1015 at the third failed tick, although good ticks came between them.
+- [ ] 5.3 Start on a failing database: with the file of 5.1 present, restart the service while `Kid` is signed in; expected: event 1015 in the first tick after the start (the log line "Usage monitor worker started" and event 1015 within 10 seconds), and the `Kid` session locks. Delete the file; expected: event 1016 within 60 seconds.
+- [ ] 5.4 Category limit with a failed record: give `Kid` a Games limit of 1 minute, start the test game (`scripts/vm/tools/TestGame`) as `Kid`, and create the file of 5.1 before the limit ends. Expected: when the limit ends, the service log shows "Could not suspend" with the reason "the suspension record could not be stored", the session locks, and the test game is still open and not suspended after the next sign-in. Unlock as `Kid`; expected: the session locks again within 15 seconds. Delete the file and unlock; expected: the test game is suspended and the session stays unlocked.
+- [ ] 5.5 Non-disk failure: set `PARENTAL_CONTROL_TEST_CHECK_FAIL=C:\ProgramData\pc-check-fail.flag`, restart the service, sign in as `Kid`, and create the file. Expected: within 3 ticks event 1015; its text names the operation "limit check" and "an internal error of the service (InvalidOperationException), not a database error", and does not say "disk is full" or "free space". Delete the file; expected: event 1016 within 60 seconds.
+- [ ] 5.6 Roll back VM 102 to `test-base-net10`; verify `ssh winvm` works and Parental Control is not installed.
+
+## Workflow follow-up
+
+- Run `/opsx:verify` after the VM checks, then `/opsx:archive`.
+- The final test on the child's PC is still the Storage Lockdown on a really full disk (`docs/ROADMAP.md`); event 1015 must then say "disk is full".
