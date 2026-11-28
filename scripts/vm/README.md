@@ -32,6 +32,8 @@ python3 scripts/vm/typekeys.py < "$SECRET_FILE" | ssh root@192.168.1.98 "sh -s"
 | `resume-process.ps1 <name>` | As Kid: resumes a suspended process with `NtResumeProcess`, as a child with a tool does. |
 | `samples.ps1 <exe path>` | Sends agent samples for an exe to `/api/agent/activity`. |
 | `kid-study-samples.ps1 [count]` | As Kid: sends a Study sample to `/api/agent/activity` every 5 s and logs each HTTP status to `C:\Users\Public\kid-study-samples.log` (task 8.1: the route gives 404). |
+| `decline.ps1 [user] [minutes]` | Sends a Grace Request for the user and declines it through the admin API, so that the agent shows the decline toast. Run `VmTool totp setup` one time before. |
+| `kid-mutex-runkey.ps1` | As Kid: adds a `Run` value that starts `kid-mutex.ps1` (copy it to `C:\Users\Public` first) at each sign-in of Kid. |
 | `grant.ps1 [userId] [minutes]` | Signs in with the next TOTP code from `VmTool totp code`, then grants Bonus Minutes through the admin API. Run `VmTool totp setup` one time before. |
 | `state.ps1` | Shows the service state, the suspended threads of the test programs and the end of the service log. |
 | `watch.ps1` | Shows the current app of the session from the dashboard API every 20 s. |
@@ -46,7 +48,7 @@ python3 scripts/vm/typekeys.py < "$SECRET_FILE" | ssh root@192.168.1.98 "sh -s"
 | `EndSessionSpike` | Checks the end-session behaviour of Windows (task group 1 of `resume-suspended-apps-at-session-end`): a hidden agent window that logs `WM_QUERYENDSESSION`, test games that log it, suspend, resume and minimize modes, and a test service that logs `PRESHUTDOWN`. The usage is at the top of `Program.cs`. |
 
 | `ProbeSpike` | The spike of the Session Probe (design D2–D4 of `session-probe-and-agent-channel`): a Windows service as LocalSystem that starts the sampler as SYSTEM in the session of `Kid`, reads its lines and reads each entry as D3b states, and a client for the Agent Channel test. Config and log: see `Host.cs`. |
-| `SpikeKid` | Helpers that run as `Kid` for the same spike: decoy, hung and long-title windows, `SetParent`, `WS_EX_NOACTIVATE`, desktops, a DACL on a process, CPU load, mouse input, a non-activating widget, a WebView2 app. The usage is at the top of `Program.cs`. |
+| `SpikeKid` | Helpers that run as `Kid` for the same spike: decoy, hung and long-title windows, `SetParent`, `WS_EX_NOACTIVATE`, desktops, a DACL on a process, CPU load, mouse input, a non-activating widget, a WebView2 app, a game window on a new thread again and again (`rethread`), a window of the class `Ghost` (`ghostclass`). The usage is at the top of `Program.cs`. |
 | `ChannelAttack` | As `Kid`: a test client of the Agent Channel (tasks 5.3 and 6.4 of `session-probe-and-agent-channel`). It copies the channel handle of the agent with `DuplicateHandle`, suspends the agent and sends hostile frames: `status [user]`, `prompt <id>`, `sessionend <sessionId> [count] [gap]`, `huge`, `noread [seconds]`, `resume`. Log: `C:\Users\Public\channel-attack.log`. |
 | `SpikeHook` | A startup hook DLL that writes a line when a process loads it (task 1.3). |
 | `SpikeWinHook` | A native hook DLL and a program that sets a global `WH_GETMESSAGE` and `WH_CBT` hook with it (task 1.3). Build it on the VM with `zig cc` (see the top of each file). |

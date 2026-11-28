@@ -24,6 +24,8 @@ using System.Threading;
 //   fgwatch <s>                        logs the Foreground Window every 200 ms
 //   widget [move=dragmove|poll]        a non-activating WPF widget as design D5 states
 //   wv2 [url=<u>]                      a WebView2 app with a button that opens a popup
+//   rethread [period=<ms>] [embed=<proc>] [total=<s>]   a game window on a new thread again and again (Rethread.cs)
+//   ghostclass [title=<t>]             a foreground window of the class Ghost (Rethread.cs)
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -74,6 +76,8 @@ internal static class Program
                 case "fgwatch": return Win.FgWatch(int.Parse(args[1]));
                 case "widget": return WidgetApp.Run(Kv(args, "move", "dragmove"));
                 case "wv2": return Wv2.Run(Kv(args, "url", "about:blank"));
+                case "rethread": return Rethread.Run(int.Parse(Kv(args, "period", "150")), Kv(args, "embed"), int.Parse(Kv(args, "total", "600")));
+                case "ghostclass": return Rethread.Ghost(Kv(args, "title", "Ghost game"));
                 default: Log("unknown mode"); return 2;
             }
         }
