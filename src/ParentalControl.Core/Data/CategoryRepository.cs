@@ -192,7 +192,12 @@ public static class CategoryRepository
         var last = Path.GetFileName(trimmed);
         if (last is "service" or "agent" or "admin")
             folders.Add(Path.GetDirectoryName(trimmed));
-        return new ProtectedPrograms(Environment.GetFolderPath(Environment.SpecialFolder.Windows), folders);
+        // The Trusted WebView2 Runtime (suspend-untrusted-webview2, design D1): one instance for the block, the
+        // suspension and the counting of the Session Probe.
+        var trustedWebView2 = new TrustedWebView2(
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles));
+        return new ProtectedPrograms(Environment.GetFolderPath(Environment.SpecialFolder.Windows), folders, trustedWebView2);
     });
 
     /// <summary>The programs of this computer that a block never closes or suspends.</summary>

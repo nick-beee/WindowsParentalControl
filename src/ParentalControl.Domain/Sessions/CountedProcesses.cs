@@ -143,33 +143,6 @@ public sealed record SampleSelection(
     ForegroundProcess? NextLastForeground);
 
 /// <summary>
-/// The test for a trusted WebView2 process (design D5 rule 3): <c>msedgewebview2.exe</c> below
-/// <c>Microsoft\EdgeWebView\Application\</c> in a Program Files folder. Only administrators can change these folders.
-/// </summary>
-public sealed class TrustedWebView2
-{
-    private readonly List<string> _folders = [];
-
-    public TrustedWebView2(string? programFilesX86, string? programFiles)
-    {
-        foreach (var root in new[] { programFilesX86, programFiles })
-        {
-            if (WindowsPath.CanonicalizeFolder(root) is not { } folder) continue;
-            var app = WindowsPath.CanonicalizeFolder(folder + @"Microsoft\EdgeWebView\Application");
-            if (app is not null && !_folders.Contains(app, StringComparer.OrdinalIgnoreCase)) _folders.Add(app);
-        }
-    }
-
-    public bool IsTrusted(string? exePath)
-    {
-        var canonical = WindowsPath.Canonicalize(exePath);
-        return canonical is not null
-               && string.Equals(WindowsPath.GetFileName(canonical), ProtectedPrograms.WebView2FileName, StringComparison.OrdinalIgnoreCase)
-               && _folders.Any(f => WindowsPath.IsBelow(canonical, f));
-    }
-}
-
-/// <summary>
 /// The counted processes of a Session Probe sample (design D5 steps 1 to 6, the ghost rule of design D4).
 /// </summary>
 public static class CountedProcesses

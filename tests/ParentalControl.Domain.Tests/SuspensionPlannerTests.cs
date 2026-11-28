@@ -13,6 +13,10 @@ public class SuspensionPlannerTests
     private const string Word = @"C:\Office\WINWORD.EXE";
     private const string Helper = @"C:\Users\Kid\AppData\Local\Updater\helper.exe";
     private const string WebView = @"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\131.0\msedgewebview2.exe";
+    private const string WebView64 = @"C:\Program Files\Microsoft\EdgeWebView\Application\131.0\msedgewebview2.exe";
+    private const string FakeWebView = @"C:\Users\Kid\Downloads\wv\msedgewebview2.exe";
+    private static readonly TrustedWebView2 Trusted = new(@"C:\Program Files (x86)", @"C:\Program Files");
+    private static readonly ProtectedPrograms Protected = new(WindowsFolder, [@"C:\Program Files\ParentalControl"], Trusted);
     private const string NewExe = @"C:\Users\Kid\Downloads\new.exe";
     private const string WindowsFolder = @"C:\Windows";
     private const string Explorer = @"C:\Windows\explorer.exe";
@@ -61,8 +65,8 @@ public class SuspensionPlannerTests
         IReadOnlySet<int>? held = null,
         IReadOnlySet<(int Pid, DateTime StartTimeUtc)>? guarded = null) =>
         SuspensionPlanner.Plan(new PlannerInput(
-            processes.ToList(), KidSessions, verdict, seen ?? Seen(Game, Minecraft, Word, Helper, WebView, NewExe, Agent, Explorer, TaskManager),
-            (records ?? []).ToList(), Agent, WindowsFolder, held, GuardedProcesses: guarded));
+            processes.ToList(), KidSessions, verdict, seen ?? Seen(Game, Minecraft, Word, Helper, WebView, WebView64, FakeWebView, NewExe, Agent, Explorer, TaskManager),
+            (records ?? []).ToList(), Agent, WindowsFolder, Trusted, held, GuardedProcesses: guarded));
 
     [Fact]
     public void Exhausted_category_suspends_its_process_and_not_a_Study_program()
@@ -106,7 +110,45 @@ public class SuspensionPlannerTests
     [Fact]
     public void WebView2_is_never_suspended()
     {
+        var plan = Plan([Proc(40, WebView), Proc(41, WebView64)], Verdict(Rules, Tuesday, 0, unknownUsed: 120));
+        Assert.Empty(plan.ToSuspend);
+    }
+
+    // suspend-untrusted-webview2 (#48): the planner and ProtectedPrograms use the same path test. If they differed, a
+    // copy could be neither suspended nor under the rule of a program that is never suspended (which reads
+    // ProtectedPrograms.IsProtected).
+    [Fact]
+    public void Trusted_WebView2_is_protected_and_not_suspended()
+    {
+        Assert.True(Protected.IsProtected(WebView));
         var plan = Plan([Proc(40, WebView)], Verdict(Rules, Tuesday, 0, unknownUsed: 120));
+        Assert.Empty(plan.ToSuspend);
+    }
+
+    [Fact]
+    public void Untrusted_WebView2_copy_is_suspended_and_not_protected()
+    {
+        Assert.False(Protected.IsProtected(FakeWebView));
+        var plan = Plan([Proc(45, FakeWebView), Proc(40, WebView)], Verdict(Rules, Tuesday, 0, unknownUsed: 120));
+        var action = Assert.Single(plan.ToSuspend);
+        Assert.Equal(45, action.Process.Pid);
+        Assert.Equal(AppCategory.Unknown, action.Category);
+        Assert.Equal(SuspensionReason.Limit, action.Reason);
+    }
+
+    [Fact]
+    public void Untrusted_WebView2_copy_with_time_left_keeps_running()
+    {
+        var plan = Plan([Proc(45, FakeWebView)], Verdict(Rules, Tuesday, 0, unknownUsed: 0));
+        Assert.Empty(plan.ToSuspend);
+    }
+
+    [Fact]
+    public void Recorded_untrusted_WebView2_copy_stays_suspended()
+    {
+        var plan = Plan([Proc(45, FakeWebView, suspended: true)], Verdict(Rules, Tuesday, 0, unknownUsed: 120),
+            records: [Record(45, FakeWebView, category: AppCategory.Unknown)]);
+        Assert.Empty(plan.ToResume);
         Assert.Empty(plan.ToSuspend);
     }
 
