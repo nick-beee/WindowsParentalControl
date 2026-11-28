@@ -219,16 +219,25 @@ The service SHALL accept at most 200 screen captures and 50 MB per user on one d
 - **THEN** the web server answers 404, writes no file and adds no row
 
 ### Requirement: Child-facing routes stay open
-The routes for the Restricted User (`/`, `/request`, `/api/request`) SHALL work without an Admin Session. The Agent Channel SHALL work without an Admin Session. None of them SHALL grant Bonus Minutes, resolve a Grace Request, or change a limit, an App Rule, a schedule, a setting or the admin credential.
+The routes for the Restricted User (`/request`, `/api/request`) SHALL work without an Admin Session. They SHALL need a valid Request Token instead (request-window, "The request routes take the user only from the Request Token"). The route `/` SHALL redirect to `/admin` without an Admin Session. The Agent Channel SHALL work without an Admin Session. None of them SHALL grant Bonus Minutes, resolve a Grace Request, or change a limit, an App Rule, a schedule, a setting or the admin credential.
 
 #### Scenario: Grace Request before the setup
-- **WHEN** the Restricted User sends a Grace Request on an install without the setup
+- **WHEN** the Restricted User sends a Grace Request from the Request Window on an install without the setup
 - **THEN** the system saves it as pending and sends it to the parent as before
 - **AND** the Bonus Minutes do not change until the parent approves it
 
 #### Scenario: Session Agent without a session
 - **WHEN** the Session Agent asks for its status through the Agent Channel
 - **THEN** the system answers as before, with no Admin Session
+
+#### Scenario: Request page without a token
+- **WHEN** a process sends `GET /request` without an Admin Session and without a Request Token
+- **THEN** the system answers 401, not a redirect to the admin login
+
+#### Scenario: Parent opens the root address
+- **WHEN** the parent opens `http://localhost:5050/` in a browser
+- **THEN** the system redirects to `/admin`, not to `/request`
+- **AND** the web admin asks for the sign-in if there is no Admin Session
 
 ### Requirement: Restricted User cannot read the admin secret
 The data folder (`C:\ProgramData\ParentalControl`, or the folder that the registry value names) and its files SHALL be owned by the Administrators group and accessible only to SYSTEM and the Administrators group. The service SHALL enforce this at each start, also for an existing folder, before it opens the database or a log file in the folder.
