@@ -19,7 +19,8 @@ if (-not (Get-Service $svc -ErrorAction SilentlyContinue)) {
 }
 # As the installer does (require-admin-sign-in SF2): run the restart actions also after a stop with an error code.
 sc.exe failureflag $svc 1 | Out-Null
-reg add HKLM\Software\Microsoft\Windows\CurrentVersion\Run /v ParentalControlAgent /t REG_SZ /d "`"$app\agent\ParentalControl.Agent.exe`"" /f | Out-Null
+# As the installer does: the service is the only process that starts the agent, so delete the Run value of an older deploy.
+Remove-ItemProperty -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run' -Name ParentalControlAgent -ErrorAction SilentlyContinue
 sc.exe start $svc | Out-Null
 Start-Sleep 5
 Get-Service $svc | Format-Table -AutoSize Name, Status
