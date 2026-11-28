@@ -54,7 +54,8 @@ A session lock or a logon must happen in the console, not over RDP. You can driv
 - The service log is in `C:\ProgramData\ParentalControl\logs\` (the newest file).
 - The database is in `C:\ProgramData\ParentalControl\`.
 - Test hook for the suspend fallback: set `PARENTAL_CONTROL_TEST_SUSPEND_FAIL=<exe file name>` in the `Environment` value of the service key, then restart the service. Remove the value after the test.
-- Test hook for the Storage Lockdown: set `PARENTAL_CONTROL_TEST_WRITE_FAIL=C:\ProgramData\pc-write-fail.flag` in the `Environment` value of the service key, then restart the service. While that file exists, each database write fails and each read works. Create the file as `nick` to start the failure, delete it to end it. Remove the value after the test.
+- Test hook for the Storage Lockdown: set `PARENTAL_CONTROL_TEST_WRITE_FAIL=C:\ProgramData\pc-write-fail.flag` in the `Environment` value of the service key, then restart the service. While that file exists, each database write fails and each read works. Create the file as `nick` to start the failure, delete it to end it. Remove the value after the test. The writes fail with `SQLITE_READONLY`, so event 1015 gives the cause "the database is read-only or access is denied", not "the disk is full" (`harden-storage-lockdown`, design D1).
+- Test hook for a non-disk failure (only in a build with `-p:VmTest=true`, as `scripts/vm/guest/deploy.ps1` makes it): set `PARENTAL_CONTROL_TEST_CHECK_FAIL=C:\ProgramData\pc-check-fail.flag` in the `Environment` value of the service key, then restart the service. While that file exists, the limit check of each unlocked session throws an `InvalidOperationException`. After 3 failed ticks, event 1015 names the operation "limit check" and "an internal error of the service, not a database error". Remove the value after the test.
 
 ## Time zone and disk tests
 

@@ -60,4 +60,39 @@ public class ElapsedTimeTests
     [Fact]
     public void SecondsComeFromTheMonotonicClock() =>
         Assert.Equal(42, ElapsedTime.Seconds(1000, 43_500));
+
+    // Boundary tests (harden-storage-lockdown, design D11).
+
+    [Fact]
+    public void StepBackOfExactlySixtySecondsIsNotClockBack()
+    {
+        var lastUtc = Utc(2026, 11, 26, 12);
+        var result = ElapsedTime.Measure(lastUtc, 0, lastUtc - ElapsedTime.BackTolerance, 60_000);
+        Assert.False(result.ClockBack);
+        Assert.Equal(1, result.Minutes);
+    }
+
+    [Fact]
+    public void StepBackOfSixtySecondsAndOneTickIsClockBack()
+    {
+        var lastUtc = Utc(2026, 11, 26, 12);
+        var result = ElapsedTime.Measure(lastUtc, 0, lastUtc - ElapsedTime.BackTolerance - TimeSpan.FromTicks(1), 60_000);
+        Assert.True(result.ClockBack);
+        Assert.Equal(0, result.Minutes);
+    }
+
+    [Fact]
+    public void TwoMinutesAddTwoMinutes()
+    {
+        var lastUtc = Utc(2026, 11, 26, 12);
+        Assert.Equal(new ElapsedResult(2, false, false, 2), ElapsedTime.Measure(lastUtc, 0, lastUtc.AddMinutes(2), 120_000));
+        Assert.Equal(new ElapsedResult(2, false, false, 2), ElapsedTime.Measure(lastUtc, 0, lastUtc.AddMinutes(3), 179_999));
+    }
+
+    [Fact]
+    public void ThreeMinutesAreAGapOfOneMinute()
+    {
+        var lastUtc = Utc(2026, 11, 26, 12);
+        Assert.Equal(new ElapsedResult(1, false, true, 3), ElapsedTime.Measure(lastUtc, 0, lastUtc.AddMinutes(3), 180_000));
+    }
 }

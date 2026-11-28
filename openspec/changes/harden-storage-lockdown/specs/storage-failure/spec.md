@@ -70,7 +70,7 @@ After 3 failed ticks within 10 minutes, the system SHALL enter the Storage Lockd
 - **AND** if the session still exists after the deferral, the system locks it within 3 seconds
 
 ### Requirement: End of the Storage Lockdown
-In the Storage Lockdown, the system SHALL try a write to the database every minute. It SHALL leave the Storage Lockdown when the write and the store of all Pending Usage succeed, no limit check of the tick failed, and the volume of the data folder has at least 100 MB free space. Then it SHALL enforce as normal in the same process.
+In the Storage Lockdown, the system SHALL try a write to the database every minute, and SHALL run the reads of the limit check also for each locked session. It SHALL leave the Storage Lockdown when the write and the store of all Pending Usage succeed, no limit check of the tick failed, and the volume of the data folder has at least 100 MB free space. Then it SHALL enforce as normal in the same process.
 
 #### Scenario: Parent frees space
 - **WHEN** the parent deletes the large file of the child, so the volume has 5 GB free space
@@ -85,7 +85,7 @@ In the Storage Lockdown, the system SHALL try a write to the database every minu
 - **THEN** the system leaves the Storage Lockdown
 
 #### Scenario: The limit check still fails
-- **WHEN** the writes succeed, but the limit check of each tick throws an error
+- **WHEN** the writes succeed, but the limit check throws an error in each tick, also for the locked session of the child
 - **THEN** the system stays in the Storage Lockdown
 
 ### Requirement: Report the Storage Lockdown

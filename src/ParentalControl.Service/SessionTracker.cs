@@ -259,14 +259,14 @@ public sealed class SessionTracker
 
         // control-clock: the day and the time of day come from the Control Time Zone, not from the system time zone.
         var moment = ControlTime.Current.Read();
-        var nowTime = moment.TimeOfDay;
         var today = moment.Today;
         var limit = ScheduleRepository.GetEffectiveLimit(user.Id, moment.DayOfWeek, today);
         UsageRecord? usage = null;
         var used = 0;
         if (limit is not null)
         {
-            if (nowTime < limit.ScheduleStart || nowTime >= limit.ScheduleEnd)
+            // An end in the repeated hour at the end of daylight saving time ends at its first instant (harden-storage-lockdown, D9).
+            if (ControlTime.Current.IsOutsideWindow(moment, limit.ScheduleStart, limit.ScheduleEnd))
             {
                 _logger.Information("Login denied (outside schedule): {Username}", username);
                 Thread.Sleep(300);
@@ -277,9 +277,9 @@ public sealed class SessionTracker
                 return;
             }
 
-            // The stored minutes plus the Pending Usage (storage-failure).
+            // The stored minutes plus the Pending Usage, read together (storage-failure; harden-storage-lockdown, D7).
             usage = UsageRepository.GetUsage(user.Id, today);
-            used = _ledger.AllowanceUsed(user.Id, today, usage);
+            used = _ledger.AllowanceUsed(user.Id, today);
             var totalAllowed = limit.DailyMinutes + (usage?.BonusMinutes ?? 0);
             if ((usage is not null || used > 0) && used >= totalAllowed)
             {
@@ -350,7 +350,7 @@ public sealed class SessionTracker
             if (user != null && user.IsRestricted && SettingsRepository.IsTelegramNotifySignOutEnabled() && _telegramBotService != null)
             {
                 var today = ControlTime.Current.Today;
-                var used = _ledger.AllowanceUsed(user.Id, today, UsageRepository.GetUsage(user.Id, today));
+                var used = _ledger.AllowanceUsed(user.Id, today);
                 _ = Task.Run(() => _telegramBotService.SendUserSignOutNotificationAsync(session.Username, Environment.MachineName, eventTime, used));
             }
         }
@@ -451,15 +451,14 @@ public sealed class SessionTracker
         {
             var moment = ControlTime.Current.Read();
             var today = moment.Today;
-            var nowTime = moment.TimeOfDay;
             var limit = ScheduleRepository.GetEffectiveLimit(user.Id, moment.DayOfWeek, today);
 
             if (limit is not null)
             {
                 var usage = UsageRepository.GetUsage(user.Id, today);
-                var used = _ledger.AllowanceUsed(user.Id, today, usage);
+                var used = _ledger.AllowanceUsed(user.Id, today);
                 var totalAllowed = limit.DailyMinutes + (usage?.BonusMinutes ?? 0);
-                var isCurfewExpired = nowTime < limit.ScheduleStart || nowTime >= limit.ScheduleEnd;
+                var isCurfewExpired = ControlTime.Current.IsOutsideWindow(moment, limit.ScheduleStart, limit.ScheduleEnd);
                 var isLimitExpired = (usage is not null || used > 0) && used >= totalAllowed;
 
                 if (isCurfewExpired || isLimitExpired)

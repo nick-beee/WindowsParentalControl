@@ -204,7 +204,7 @@ public sealed class BreakEnforcer
         if (limit is null) return (null, null);
 
         var usage = UsageRepository.GetUsage(userId, today);
-        var used = UsageLedger.Shared.AllowanceUsed(userId, today, usage);
+        var used = UsageLedger.Shared.AllowanceUsed(userId, today);
         var remainingDaily = Math.Max(0, limit.DailyMinutes + (usage?.BonusMinutes ?? 0) - used);
 
         var now = moment.TimeOfDay;

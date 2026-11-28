@@ -80,6 +80,20 @@ public sealed class ControlClock
 
         return TimeZoneInfo.ConvertTimeToUtc(local, Zone);
     }
+
+    /// <summary>
+    /// True if <paramref name="moment"/> is outside the Schedule Window from <paramref name="start"/> to
+    /// <paramref name="end"/> of its day: before the start, at or after the end, or at or after the UTC instant of the
+    /// end. An end in the hour that repeats at the end of daylight saving time gives the first of the two instants
+    /// (<see cref="ToUtc"/>), so the window stays closed when the local time goes back (harden-storage-lockdown, D9).
+    /// </summary>
+    public bool IsOutsideWindow(ControlMoment moment, TimeOnly start, TimeOnly end)
+    {
+        var time = moment.TimeOfDay;
+        if (time < start || time >= end)
+            return true;
+        return DateTime.SpecifyKind(moment.Utc, DateTimeKind.Utc) >= ToUtc(moment.Today, end);
+    }
 }
 
 /// <summary>One instant: the UTC time and the time of the Control Time Zone.</summary>

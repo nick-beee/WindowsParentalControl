@@ -419,11 +419,16 @@ public sealed class CategoryEnforcer : IDisposable
         var record = new SuspensionRecord(p.Pid, p.StartTimeUtc, p.SessionId, action.UserId, action.Category, action.ExePath, action.Reason);
 
         // Record before the suspension: a crash between the two then leaves no suspended process without a record.
-        // No suspension without a record (storage-failure): a failed write skips this process, and the tick counts as
-        // failed. The Storage Lockdown covers the gap.
+        // No suspension without a record (storage-failure): a failed write does not suspend this process, and the tick
+        // counts as failed. The session locks in its place (harden-storage-lockdown, D4). The operation label keeps the
+        // path of the exe out of event 1015 and the alert (D2).
         if (!action.IsRecorded &&
-            !_health.TryWrite(() => SuspensionRepository.Insert(record), $"suspension record of {action.ExePath}", _logger))
+            !_health.TryWrite(() => SuspensionRepository.Insert(record), $"suspension record of {action.ExePath}", _logger, "suspension record"))
+        {
+            var owner = users.GetValueOrDefault(action.UserId);
+            Fallback(action, owner, owner?.Username ?? action.UserId.ToString(), "the suspension record could not be stored");
             return;
+        }
 
         ProcessOpResult result;
         string detail;

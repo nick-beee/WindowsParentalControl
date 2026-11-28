@@ -7,59 +7,159 @@ public class StorageLockdownStateTests
     private static readonly DateOnly Day = new(2026, 11, 26);
     private const long FiveGb = 5L * 1024 * 1024 * 1024;
     private const long FiftyMb = 50L * 1024 * 1024;
+    private const long Minute = 60_000;
 
-    private static StorageTickOutcome Fail(StorageLockdownState s, DateOnly? day = null) =>
-        s.ReportTick(true, false, false, 0, day ?? Day);
+    /// <summary>A state with a monotonic clock that goes forward one minute at each report, as the normal tick.</summary>
+    private sealed class Ticks
+    {
+        public StorageLockdownState State { get; } = new();
+        public long NowMs { get; set; }
 
-    private static StorageTickOutcome Ok(StorageLockdownState s, long free = FiveGb, bool pendingEmpty = true) =>
-        s.ReportTick(false, true, pendingEmpty, free, Day);
+        public StorageTickOutcome Fail(DateOnly? day = null, StorageFailure? failure = null) =>
+            Report(tickFailed: true, retrySucceeded: false, pendingEmpty: false, free: 0, day, failure: failure);
+
+        public StorageTickOutcome Ok(long free = FiveGb, bool pendingEmpty = true) =>
+            Report(tickFailed: false, retrySucceeded: true, pendingEmpty, free);
+
+        public StorageTickOutcome Report(bool tickFailed, bool retrySucceeded, bool pendingEmpty, long? free,
+            DateOnly? day = null, bool startProbeFailed = false, StorageFailure? failure = null)
+        {
+            NowMs += Minute;
+            return State.ReportTick(tickFailed, retrySucceeded, pendingEmpty, free, day ?? Day, NowMs, startProbeFailed, failure);
+        }
+    }
 
     [Fact]
     public void TwoFailedTicksDoNotEnter()
     {
-        var s = new StorageLockdownState();
-        Fail(s);
-        Assert.False(Fail(s).Entered);
-        Assert.False(s.InLockdown);
+        var t = new Ticks();
+        t.Fail();
+        Assert.False(t.Fail().Entered);
+        Assert.False(t.State.InLockdown);
     }
 
     [Fact]
     public void ThreeFailedTicksEnter()
     {
-        var s = new StorageLockdownState();
-        Fail(s);
-        Fail(s);
-        Assert.True(Fail(s).Entered);
-        Assert.True(s.InLockdown);
-        Assert.False(Fail(s).Entered); // already in it
+        var t = new Ticks();
+        t.Fail();
+        t.Fail();
+        Assert.True(t.Fail().Entered);
+        Assert.True(t.State.InLockdown);
+        Assert.False(t.Fail().Entered); // already in it
     }
 
     [Fact]
-    public void SuccessBetweenFailuresResetsTheCount()
+    public void SuccessBetweenFailuresDoesNotResetTheCount()
     {
-        var s = new StorageLockdownState();
-        Fail(s);
-        Fail(s);
-        Ok(s);
-        Fail(s);
-        Fail(s);
-        Assert.False(s.InLockdown);
+        // S2 of issue #55: the child fills and frees the disk in turns. F-F-S-F enters at the fourth tick.
+        var t = new Ticks();
+        t.Fail();
+        t.Fail();
+        t.Ok();
+        Assert.True(t.Fail().Entered);
+    }
+
+    [Fact]
+    public void FillAndFreeInTurnsEntersAtTheThirdFailedTick()
+    {
+        var t = new Ticks();
+        t.Fail();
+        t.Ok();
+        t.Fail();
+        t.Ok();
+        Assert.True(t.Fail().Entered);
+    }
+
+    [Fact]
+    public void FailedTickEverySixMinutesNeverEnters()
+    {
+        var t = new Ticks();
+        for (var i = 0; i < 10; i++)
+        {
+            Assert.False(t.Fail().Entered);
+            for (var j = 0; j < 5; j++)
+                t.Ok();
+        }
+        Assert.False(t.State.InLockdown);
+    }
+
+    [Fact]
+    public void FailedTickExactlyTenMinutesOldDoesNotCount()
+    {
+        var t = new Ticks();
+        t.Fail();            // at 1 min
+        t.Fail();            // at 2 min
+        t.NowMs += 8 * Minute; // the next report is at 11 min: the tick of 1 min is exactly 10 minutes old
+        Assert.False(t.Fail().Entered);
+        Assert.Equal(2, t.State.FailedTicksInWindow);
+    }
+
+    [Fact]
+    public void FailedProbeOfTheFirstTickEntersAtOnce()
+    {
+        var t = new Ticks();
+        var outcome = t.Report(tickFailed: true, retrySucceeded: false, pendingEmpty: true, FiveGb, startProbeFailed: true);
+        Assert.True(outcome.Entered);
+        Assert.True(outcome.Alert);
+        Assert.True(t.State.InLockdown);
+    }
+
+    [Fact]
+    public void GoodFirstTickDoesNotEnter()
+    {
+        var t = new Ticks();
+        Assert.False(t.Report(tickFailed: false, retrySucceeded: true, pendingEmpty: true, FiveGb, startProbeFailed: false).Entered);
+        Assert.False(t.State.InLockdown);
+    }
+
+    [Fact]
+    public void EntryGivesTheLastFailure()
+    {
+        var t = new Ticks();
+        var full = new StorageFailure("usage store", StorageFailureKind.DiskFull, "SqliteException");
+        var check = new StorageFailure("limit check", StorageFailureKind.Internal, "InvalidOperationException");
+        t.Fail(failure: full);
+        t.Fail(failure: check);
+        var outcome = t.Fail(); // a failed retry without a new failure object: the last one stays
+        Assert.True(outcome.Entered);
+        Assert.Equal(check, outcome.Cause);
+    }
+
+    [Fact]
+    public void OldCauseIsDroppedWhenTheWindowIsEmpty()
+    {
+        var t = new Ticks();
+        t.Fail(failure: new StorageFailure("limit check", StorageFailureKind.Internal, "InvalidOperationException"));
+        for (var i = 0; i < 10; i++)
+            t.Ok();
+        Assert.Null(t.State.LastFailure);
     }
 
     [Fact]
     public void SuccessfulProbeWithFiftyMbFreeStaysIn()
     {
-        var s = Entered();
-        Assert.False(Ok(s, FiftyMb).Left);
-        Assert.True(s.InLockdown);
+        var t = Entered();
+        Assert.False(t.Ok(FiftyMb).Left);
+        Assert.True(t.State.InLockdown);
+    }
+
+    [Fact]
+    public void ExactlyHundredMbFreeLeavesAndOneByteLessStays()
+    {
+        var t = Entered();
+        Assert.False(t.Ok(StorageLockdownState.MinFreeBytes - 1).Left);
+        Assert.True(t.State.InLockdown);
+        Assert.True(t.Ok(StorageLockdownState.MinFreeBytes).Left);
+        Assert.False(t.State.InLockdown);
     }
 
     [Fact]
     public void SuccessfulProbeWithFiveGbFreeLeaves()
     {
-        var s = Entered();
-        Assert.True(Ok(s).Left);
-        Assert.False(s.InLockdown);
+        var t = Entered();
+        Assert.True(t.Ok().Left);
+        Assert.False(t.State.InLockdown);
     }
 
     [Fact]
@@ -67,61 +167,62 @@ public class StorageLockdownStateTests
     {
         // The lock loop writes a lock event that fails between two ticks; then the parent frees space. The retry of the
         // next tick works: the lockdown ends in that tick (spec "Parent frees space": within 60 seconds).
-        var s = Entered();
-        var outcome = s.ReportTick(tickFailed: true, retrySucceeded: true, pendingEmpty: true, FiveGb, Day);
+        var t = Entered();
+        var outcome = t.Report(tickFailed: true, retrySucceeded: true, pendingEmpty: true, FiveGb);
         Assert.True(outcome.Left);
-        Assert.False(s.InLockdown);
-        Assert.Equal(0, s.FailedTicksInRow);
+        Assert.False(t.State.InLockdown);
+        Assert.Equal(0, t.State.FailedTicksInWindow);
+        Assert.Null(t.State.LastFailure);
     }
 
     [Fact]
     public void FailedRetryStaysInWithFreeSpace()
     {
-        var s = Entered();
-        Assert.False(s.ReportTick(tickFailed: true, retrySucceeded: false, pendingEmpty: true, FiveGb, Day).Left);
-        Assert.True(s.InLockdown);
+        var t = Entered();
+        Assert.False(t.Report(tickFailed: true, retrySucceeded: false, pendingEmpty: true, FiveGb).Left);
+        Assert.True(t.State.InLockdown);
     }
 
     [Fact]
     public void FailuresAfterTheExitCountFromZero()
     {
-        var s = Entered();
-        s.ReportTick(tickFailed: true, retrySucceeded: true, pendingEmpty: true, FiveGb, Day);
-        Assert.False(Fail(s).Entered);
-        Assert.False(Fail(s).Entered);
-        Assert.True(Fail(s).Entered);
+        var t = Entered();
+        t.Report(tickFailed: true, retrySucceeded: true, pendingEmpty: true, FiveGb);
+        Assert.False(t.Fail().Entered);
+        Assert.False(t.Fail().Entered);
+        Assert.True(t.Fail().Entered);
     }
 
     [Fact]
     public void PendingUsageLeftOrUnknownFreeSpaceStaysIn()
     {
-        var s = Entered();
-        Assert.False(Ok(s, pendingEmpty: false).Left);
-        Assert.False(s.ReportTick(false, true, true, null, Day).Left);
-        Assert.True(s.InLockdown);
+        var t = Entered();
+        Assert.False(t.Ok(pendingEmpty: false).Left);
+        Assert.False(t.Report(false, true, true, null).Left);
+        Assert.True(t.State.InLockdown);
     }
 
     [Fact]
     public void FirstEntryOfADayAlertsTheSecondDoesNotTheNextDayDoes()
     {
-        var s = new StorageLockdownState();
-        Fail(s); Fail(s);
-        Assert.True(Fail(s).Alert);
-        Ok(s);
-        Fail(s); Fail(s);
-        var second = Fail(s);
+        var t = new Ticks();
+        t.Fail(); t.Fail();
+        Assert.True(t.Fail().Alert);
+        t.Ok();
+        t.Fail(); t.Fail();
+        var second = t.Fail();
         Assert.True(second.Entered);
         Assert.False(second.Alert);
-        Ok(s);
+        t.Ok();
         var next = Day.AddDays(1);
-        Fail(s, next); Fail(s, next);
-        Assert.True(Fail(s, next).Alert);
+        t.Fail(next); t.Fail(next);
+        Assert.True(t.Fail(next).Alert);
     }
 
-    private static StorageLockdownState Entered()
+    private static Ticks Entered()
     {
-        var s = new StorageLockdownState();
-        Fail(s); Fail(s); Fail(s);
-        return s;
+        var t = new Ticks();
+        t.Fail(); t.Fail(); t.Fail();
+        return t;
     }
 }

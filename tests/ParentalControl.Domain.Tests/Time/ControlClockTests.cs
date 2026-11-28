@@ -90,4 +90,51 @@ public class ControlClockTests
         Assert.Equal(new TimeOnly(23, 59), moment.TimeOfDay);
         Assert.Equal(Utc(2026, 11, 26, 22, 59), moment.Utc);
     }
+
+    // The Schedule Window end in the repeated hour (harden-storage-lockdown, design D9).
+
+    private static bool Outside(DateTime utc, TimeOnly start, TimeOnly end)
+    {
+        var clock = new ControlClock(WEurope, () => utc);
+        return clock.IsOutsideWindow(clock.Read(), start, end);
+    }
+
+    [Fact]
+    public void WindowEndInTheRepeatedHourEndsAtTheFirstInstant()
+    {
+        var start = new TimeOnly(0, 0);
+        var end = new TimeOnly(2, 30);
+        // 2026-10-25: 00:29 UTC is 02:29 CEST (inside), 00:30 UTC is the first 02:30 (outside).
+        Assert.False(Outside(Utc(2026, 10, 25, 0, 29), start, end));
+        Assert.True(Outside(Utc(2026, 10, 25, 0, 30), start, end));
+        // 01:10 UTC is 02:10 CET, the second time: the time of day is before the end, but the window stays closed.
+        Assert.True(Outside(Utc(2026, 10, 25, 1, 10), start, end));
+        Assert.True(Outside(Utc(2026, 10, 25, 1, 29), start, end));
+    }
+
+    [Fact]
+    public void NormalWindowEndOnTheDayOfTheChange()
+    {
+        var start = new TimeOnly(8, 0);
+        var end = new TimeOnly(20, 0);
+        // 2026-10-25 is CET after 03:00: 18:59 UTC is 19:59, 19:00 UTC is 20:00.
+        Assert.False(Outside(Utc(2026, 10, 25, 18, 59), start, end));
+        Assert.True(Outside(Utc(2026, 10, 25, 19, 0), start, end));
+    }
+
+    [Fact]
+    public void TimeBeforeTheStartIsOutside()
+    {
+        // 06:59 UTC on 2026-11-26 is 07:59 CET.
+        Assert.True(Outside(Utc(2026, 11, 26, 6, 59), new TimeOnly(8, 0), new TimeOnly(20, 0)));
+        Assert.False(Outside(Utc(2026, 11, 26, 7, 0), new TimeOnly(8, 0), new TimeOnly(20, 0)));
+    }
+
+    [Fact]
+    public void WindowEndInTheGapStillEndsByTheTimeOfDay()
+    {
+        // 2026-03-29: 02:30 does not exist. 01:00 UTC is 03:00 CEST, after the end by the time of day.
+        Assert.False(Outside(Utc(2026, 3, 29, 0, 59), new TimeOnly(0, 0), new TimeOnly(2, 30)));
+        Assert.True(Outside(Utc(2026, 3, 29, 1, 0), new TimeOnly(0, 0), new TimeOnly(2, 30)));
+    }
 }

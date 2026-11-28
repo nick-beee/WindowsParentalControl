@@ -41,6 +41,19 @@ static class ClockAndStorageChecks
             Debug.Assert(health.TakeFailures() == 1, "TryWrite should report one failure");
             Debug.Assert(health.TakeFailures() == 0, "TakeFailures should reset the count");
 
+            // harden-storage-lockdown D1, D2: the switch gives SQLITE_READONLY, so the kind is ReadOnly, not DiskFull, and
+            // the report names the operation label, not the text with the path.
+            Debug.Assert(!health.TryWrite(() => SettingsRepository.Set("storage_test", "x"), @"suspension record of C:\Games\game.exe", logger, "suspension record"),
+                "TryWrite should return false on a failed write");
+            var report = health.TakeReport();
+            Debug.Assert(report.Count == 1 && report.Last is not null, "TakeReport should give one failure and the last one");
+            Debug.Assert(report.Last!.Kind == ParentalControl.Domain.DataFolder.StorageFailureKind.ReadOnly, $"The write switch should be ReadOnly: {report.Last}");
+            Debug.Assert(report.Last.Operation == "suspension record", $"The report should name the operation label: {report.Last}");
+            Debug.Assert(report.Last.ExceptionType == "SqliteException", $"The report should name the exception type: {report.Last}");
+            Debug.Assert(StorageHealth.Classify("limit check", new InvalidOperationException("x")).Kind == ParentalControl.Domain.DataFolder.StorageFailureKind.Internal,
+                "An exception that is not a database error should be Internal");
+            Debug.Assert(health.TakeReport() == new StorageFailureReport(0, null), "TakeReport should reset the report");
+
             // 4.1: the ledger keeps the minutes in the Pending Usage while each write fails.
             var ledgerHealth = new StorageHealth();
             var ledger = new UsageLedger(UsageRepository.AddMinutes, CategoryUsageRepository.AddMinutes, ledgerHealth);

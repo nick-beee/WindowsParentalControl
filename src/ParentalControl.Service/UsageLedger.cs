@@ -16,15 +16,23 @@ public sealed class UsageLedger
     public static UsageLedger Shared { get; } = new(
         UsageRepository.AddMinutes, CategoryUsageRepository.AddMinutes, StorageHealth.Shared);
 
+    /// <summary>The operation of a failed store in event 1015 and the alert (harden-storage-lockdown, design D2).</summary>
+    public const string StoreOperation = "usage store";
+
     private readonly Action<int, DateOnly, int> _writeAllowance;
     private readonly Action<int, DateOnly, AppCategory, int> _writeCategory;
     private readonly StorageHealth _health;
+    private readonly Func<int, DateOnly, UsageRecord?> _readAllowance;
+    private readonly Func<int, DateOnly, IReadOnlyDictionary<AppCategory, int>> _readCategories;
 
-    public UsageLedger(Action<int, DateOnly, int> writeAllowance, Action<int, DateOnly, AppCategory, int> writeCategory, StorageHealth health)
+    public UsageLedger(Action<int, DateOnly, int> writeAllowance, Action<int, DateOnly, AppCategory, int> writeCategory, StorageHealth health,
+        Func<int, DateOnly, UsageRecord?>? readAllowance = null, Func<int, DateOnly, IReadOnlyDictionary<AppCategory, int>>? readCategories = null)
     {
         _writeAllowance = writeAllowance;
         _writeCategory = writeCategory;
         _health = health;
+        _readAllowance = readAllowance ?? UsageRepository.GetUsage;
+        _readCategories = readCategories ?? ((userId, day) => CategoryUsageRepository.GetForUserAndDate(userId, day));
     }
 
     public PendingUsage Pending { get; } = new();
@@ -58,15 +66,25 @@ public sealed class UsageLedger
         });
         LastError = error;
         if (error is not null)
-            _health.ReportFailure();
+            _health.ReportFailure(StoreOperation, error);
         return error is null;
     }
 
-    /// <summary>The used Allowance Time: the stored minutes plus the pending minutes.</summary>
-    public int AllowanceUsed(int userId, DateOnly day, UsageRecord? stored) =>
-        (stored?.MinutesUsed ?? 0) + Pending.AllowanceFor(userId, day);
+    /// <summary>
+    /// The used Allowance Time: the stored minutes plus the pending minutes. Both reads run while no store runs
+    /// (harden-storage-lockdown, design D7), so no minute counts two times or not at all.
+    /// </summary>
+    public int AllowanceUsed(int userId, DateOnly day) =>
+        Pending.Consistent(() => (_readAllowance(userId, day)?.MinutesUsed ?? 0) + Pending.AllowanceFor(userId, day));
 
-    /// <summary>The Category Usage of a day: the stored minutes plus the pending minutes.</summary>
+    /// <summary>
+    /// The used Allowance Time, for the callers that read the stored row first. It reads the stored minutes again
+    /// together with the pending minutes (design D7), so the minutes of <paramref name="stored"/> are not used: a store
+    /// between the read of <paramref name="stored"/> and this call cannot count a minute two times.
+    /// </summary>
+    public int AllowanceUsed(int userId, DateOnly day, UsageRecord? stored) => AllowanceUsed(userId, day);
+
+    /// <summary>The Category Usage of a day: the stored minutes plus the pending minutes, read while no store runs.</summary>
     public Dictionary<AppCategory, int> CategoryUsage(int userId, DateOnly day) =>
-        Pending.AddCategoriesTo(CategoryUsageRepository.GetForUserAndDate(userId, day), userId, day);
+        Pending.Consistent(() => Pending.AddCategoriesTo(_readCategories(userId, day), userId, day));
 }
