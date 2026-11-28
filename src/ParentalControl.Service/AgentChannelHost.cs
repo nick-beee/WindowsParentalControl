@@ -28,6 +28,11 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
     /// starts the new agent (the spec bound).</summary>
     internal static readonly TimeSpan RestartWaitLimit = TimeSpan.FromSeconds(40);
 
+    /// <summary>At most one early restart per session in this time. At a sign-out Windows ends the agent before the
+    /// service gets the sign-out notification, and it ends a new agent in that session too; without this bound each
+    /// end would start a new agent a few seconds later. The 60-second tick still keeps the spec bound.</summary>
+    internal static readonly TimeSpan EarlyRestartInterval = TimeSpan.FromSeconds(60);
+
     private readonly AgentRequests _requests;
     private readonly SessionTracker _tracker;
     private readonly Serilog.ILogger _logger;
@@ -35,6 +40,8 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
     private readonly ConcurrentDictionary<int, AgentChannel> _channels = new();
     // The sessions with a pending early restart: at most one per session.
     private readonly ConcurrentDictionary<int, byte> _pendingRestarts = new();
+    // The Environment.TickCount64 of the last early restart of each session.
+    private readonly ConcurrentDictionary<int, long> _lastEarlyRestart = new();
     private readonly WarningLimit _launchWarnings = new();
     // ShouldStart, the launch and Record are one step per session (AgentLaunchRegistry). One gate for all sessions is
     // enough: a start takes some 100 ms, and ProcessLaunchLock serializes the starts of the service anyway.
@@ -196,6 +203,7 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
             lock (_startGate)
             {
                 _registry.SessionEnded(sessionId);
+                _lastEarlyRestart.TryRemove(sessionId, out _);
                 if (_channels.TryRemove(sessionId, out var channel)) channel.Dispose();
             }
         }
@@ -208,9 +216,10 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
     /// <summary>
     /// The service closed a channel for a fault, or the agent ended. The spec wants a new agent within 60 s, also if
     /// injected code keeps the old process alive, so the record counts as ended and the next tick starts a new agent.
-    /// An early restart starts the new agent a few seconds after the old process ended (final review, item 6). It never
-    /// starts one while the old process runs: a faulty agent that stays alive then cannot make the service start an
-    /// agent every few seconds. That case waits for the tick, as before.
+    /// An early restart starts the new agent a few seconds after the old process ended (final review, item 6), at most
+    /// once per session in <see cref="EarlyRestartInterval"/>. It never starts one while the old process runs: a faulty
+    /// agent that stays alive then cannot make the service start an agent every few seconds. That case waits for the
+    /// tick, as before.
     /// </summary>
     private void OnFault(AgentChannel channel)
     {
@@ -224,7 +233,10 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
     private void ScheduleRestart(AgentChannel channel)
     {
         var sessionId = channel.Record.SessionId;
-        if (_stopping.IsCancellationRequested || !_pendingRestarts.TryAdd(sessionId, 0)) return;
+        if (_stopping.IsCancellationRequested) return;
+        if (_lastEarlyRestart.TryGetValue(sessionId, out var last)
+            && Environment.TickCount64 - last < (long)EarlyRestartInterval.TotalMilliseconds) return;
+        if (!_pendingRestarts.TryAdd(sessionId, 0)) return;
         _ = Task.Run(async () =>
         {
             try
@@ -240,6 +252,7 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
                         return;
                     _logger.Information("Agent Channel of session {SessionId}: the agent (pid {Pid}) ended; starting a new agent",
                         sessionId, channel.Record.Process.Pid);
+                    _lastEarlyRestart[sessionId] = Environment.TickCount64;
                     EnsureRunning(sessionId);
                     return;
                 }
