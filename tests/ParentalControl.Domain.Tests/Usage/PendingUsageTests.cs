@@ -106,4 +106,58 @@ public class PendingUsageTests
         Assert.Equal(1, pending.AllowanceFor(1, Today));
         Assert.Equal(0, pending.AllowanceFor(2, Today));
     }
+
+    // A consistent read of the stored and the pending minutes (harden-storage-lockdown, design D7).
+
+    [Fact]
+    public async Task ReadInsideConsistentWaitsForARunningStore()
+    {
+        var pending = new PendingUsage();
+        pending.AddAllowance(1, Today, 1);
+        var store = new FakeStore();
+        using var writing = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+
+        var storeTask = Task.Run(() => pending.StoreAll(e =>
+        {
+            store.Write(e); // committed, but not yet taken out of the Pending Usage
+            writing.Set();
+            release.Wait(TimeSpan.FromSeconds(10));
+        }));
+        Assert.True(writing.Wait(TimeSpan.FromSeconds(10)));
+
+        var readTask = Task.Run(() => pending.Consistent(() => store.Allowance(1, Today) + pending.AllowanceFor(1, Today)));
+        Assert.NotSame(readTask, await Task.WhenAny(readTask, Task.Delay(200))); // the read waits for the store
+
+        release.Set();
+        Assert.Null(await storeTask);
+        Assert.Equal(1, await readTask); // not 2: the minute counts one time
+    }
+
+    [Fact]
+    public async Task StoreWaitsForARunningRead()
+    {
+        var pending = new PendingUsage();
+        pending.AddAllowance(1, Today, 1);
+        var store = new FakeStore();
+        using var reading = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+
+        var readTask = Task.Run(() => pending.Consistent(() =>
+        {
+            var stored = store.Allowance(1, Today);
+            reading.Set();
+            release.Wait(TimeSpan.FromSeconds(10));
+            return stored + pending.AllowanceFor(1, Today);
+        }));
+        Assert.True(reading.Wait(TimeSpan.FromSeconds(10)));
+
+        var storeTask = Task.Run(() => pending.StoreAll(store.Write));
+        Assert.NotSame(storeTask, await Task.WhenAny(storeTask, Task.Delay(200))); // the store waits for the read
+
+        release.Set();
+        Assert.Equal(1, await readTask); // not 0: the minute is not lost
+        Assert.Null(await storeTask);
+        Assert.Equal(1, store.Allowance(1, Today));
+    }
 }

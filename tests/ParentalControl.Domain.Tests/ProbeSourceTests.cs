@@ -18,11 +18,12 @@ public class ProbeSourceTests
         "src/ParentalControl.Probe/Program.cs",
         "src/ParentalControl.Probe/Sampler.cs",
         "src/ParentalControl.Service/SessionProbeHost.cs",
+        "src/ParentalControl.Service/UsageMonitorWorker.cs", // the hook of a non-disk failure (harden-storage-lockdown, D12)
     ];
 
     // The names of the test switches and hooks. "NoHung" is also the name of the property that is false in a release.
     private static readonly Regex TestName = new(
-        @"PARENTAL_CONTROL_TEST_PROBE|TestSwitches|_switches\b|_testArgs|_testNoStart|_trace\b|TestProbe\w*Env|""(crash|hang|gap|stall|nohung)""|test switch");
+        @"PARENTAL_CONTROL_TEST_PROBE|PARENTAL_CONTROL_TEST_CHECK_FAIL|TestCheckFail(Env|File)\b|TestSwitches|_switches\b|_testArgs|_testNoStart|_trace\b|TestProbe\w*Env|""(crash|hang|gap|stall|nohung)""|test switch");
 
     [Fact]
     public void EachTestSwitchAndHookIsInsideIfVmTest()

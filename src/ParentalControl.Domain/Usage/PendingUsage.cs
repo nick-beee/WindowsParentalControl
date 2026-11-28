@@ -97,6 +97,17 @@ public sealed class PendingUsage
     }
 
     /// <summary>
+    /// Runs <paramref name="read"/> while no store runs (harden-storage-lockdown, design D7). A reader of a limit reads
+    /// the stored minutes and the pending minutes inside it, so a store cannot commit an entry and take it out of the
+    /// Pending Usage between the two reads: no minute counts two times or not at all.
+    /// </summary>
+    public T Consistent<T>(Func<T> read)
+    {
+        lock (_storeGate)
+            return read();
+    }
+
+    /// <summary>
     /// Writes each pending entry with <paramref name="write"/> and takes it out after the write returned. One write
     /// must be one statement, so a returned write is committed and no minute counts two times. Only one store runs at
     /// a time. Returns null if all entries are stored, else the first error (the failed entries stay pending).

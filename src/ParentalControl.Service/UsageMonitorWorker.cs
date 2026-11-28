@@ -19,6 +19,22 @@ public sealed class UsageMonitorWorker : BackgroundService
 
     private static readonly TimeSpan LockLoopInterval = TimeSpan.FromSeconds(2);
 
+    /// <summary>The operations of the failures of the tick, for event 1015 and the alert (harden-storage-lockdown, D2).</summary>
+    private const string CountOperation = "count of the session time";
+    private const string CheckOperation = "limit check";
+    private const string CategoryCheckOperation = "category check";
+    private const string ProbeOperation = "storage probe";
+
+#if VM_TEST
+    /// <summary>
+    /// The test hook of a non-disk failure (harden-storage-lockdown, design D12), only in a build with
+    /// <c>-p:VmTest=true</c>. If the variable names a file and the file exists, the limit check of each unlocked session
+    /// throws an <see cref="InvalidOperationException"/>.
+    /// </summary>
+    private const string TestCheckFailEnv = "PARENTAL_CONTROL_TEST_CHECK_FAIL";
+    private static readonly string? TestCheckFailFile = Environment.GetEnvironmentVariable(TestCheckFailEnv);
+#endif
+
     private readonly SessionTracker _sessionTracker;
     private readonly CategoryEnforcer _categoryEnforcer;
     private readonly BreakEnforcer _breakEnforcer;
@@ -40,6 +56,8 @@ public sealed class UsageMonitorWorker : BackgroundService
     private DateTime _lastWallTime = DateTime.UtcNow;
     private CancellationToken _stopping;
     private CancellationTokenSource? _lockLoop;
+    // The first report of the process: a failed probe write enters the Storage Lockdown at once (design D6).
+    private bool _firstStorageReport = true;
 
     public UsageMonitorWorker(SessionTracker sessionTracker, CategoryEnforcer categoryEnforcer, BreakEnforcer breakEnforcer,
         ControlTimeService controlTime, ParentAlertOutbox alerts, SessionLocker locker, Serilog.ILogger logger,
@@ -179,7 +197,8 @@ public sealed class UsageMonitorWorker : BackgroundService
             catch (Exception ex)
             {
                 readFailed = true;
-                _logger.Error(ex, "Error while counting the session time");
+                var failure = _health.ReportFailure(CountOperation, ex);
+                _logger.Error(ex, "Error while counting the session time ({Cause})", failure.Kind);
             }
 
             // 3. The checks of the Allowance Time and the Schedule Window, with the stored time plus the Pending Usage.
@@ -196,14 +215,17 @@ public sealed class UsageMonitorWorker : BackgroundService
                 _logger.Error(ex, "Error during the break check");
             }
 
-            // 4. App Categories: warnings, suspension and resume. An error here must not stop the session checks.
+            // 4. App Categories: warnings, suspension and resume. An error here must not stop the session checks. The
+            // check of a Category Limit is a limit check, so an error fails the tick (failed tick, review of PR #67).
             try
             {
                 _categoryEnforcer.Tick();
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "Error during the category check");
+                readFailed = true;
+                var failure = _health.ReportFailure(CategoryCheckOperation, ex);
+                _logger.Error(ex, "Error during the category check ({Cause})", failure.Kind);
             }
         }
         finally
@@ -268,8 +290,6 @@ public sealed class UsageMonitorWorker : BackgroundService
     {
         var allRead = true;
         var moment = ControlTime.Current.Read();
-        var today = moment.Today;
-        var now = moment.TimeOfDay;
 
         List<int> thresholds;
         try
@@ -285,7 +305,8 @@ public sealed class UsageMonitorWorker : BackgroundService
         {
             allRead = false;
             thresholds = [15, 5, 1];
-            _logger.Error(ex, "Could not read the alert intervals; using 15, 5, 1");
+            var failure = _health.ReportFailure(CheckOperation, ex);
+            _logger.Error(ex, "Could not read the alert intervals; using 15, 5, 1 ({Cause})", failure.Kind);
         }
 
         // Clean stale sessions from _sentAlerts
@@ -300,32 +321,80 @@ public sealed class UsageMonitorWorker : BackgroundService
 
         foreach (var (sessionId, session) in _sessionTracker.ActiveSessions)
         {
-            if (session.IsLocked) continue;
+            if (session.IsLocked)
+            {
+                // In the Storage Lockdown each session of a child is locked. The reads of the check still run, so the exit
+                // needs a limit check that works, not only a working write (harden-storage-lockdown, D3).
+                if (_storageLockdown.InLockdown && !ReadLimitsOfLockedSession(sessionId, session, moment))
+                    allRead = false;
+                continue;
+            }
             try
             {
-                CheckSession(sessionId, session, today, now, moment.DayOfWeek, thresholds);
+                ThrowIfTestCheckFail();
+                CheckSession(sessionId, session, moment, thresholds);
             }
             catch (Exception ex)
             {
+                // A limit that the service cannot check must not give free time: the tick fails (design D3).
                 allRead = false;
-                _logger.Error(ex, "Error during the limit check of {Username} (session {SessionId})", session.Username, sessionId);
+                var failure = _health.ReportFailure(CheckOperation, ex);
+                _logger.Error(ex, "Error during the limit check of {Username} (session {SessionId}, {Cause})", session.Username, sessionId, failure.Kind);
             }
         }
         return allRead;
     }
 
-    private void CheckSession(int sessionId, ActiveSession session, DateOnly today, TimeOnly now, DayOfWeek dayOfWeek, List<int> thresholds)
+    /// <summary>
+    /// The reads of the limit check for a locked session, without a lock, a message or a write. Returns false and reports
+    /// the failure if a read throws.
+    /// </summary>
+    private bool ReadLimitsOfLockedSession(int sessionId, ActiveSession session, Domain.Time.ControlMoment moment)
     {
+        try
+        {
+            ThrowIfTestCheckFail();
+            var user = UserRepository.GetBySid(session.UserSid);
+            if (user is null || !user.IsRestricted) return true;
+            var limit = ScheduleRepository.GetEffectiveLimit(user.Id, moment.DayOfWeek, moment.Today);
+            if (limit is null) return true;
+            _ = UsageRepository.GetUsage(user.Id, moment.Today);
+            _ = _ledger.AllowanceUsed(user.Id, moment.Today);
+            _ = ControlTime.Current.IsOutsideWindow(moment, limit.ScheduleStart, limit.ScheduleEnd);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            var failure = _health.ReportFailure(CheckOperation, ex);
+            _logger.Error(ex, "Error during the limit check of the locked session {SessionId} of {Username} ({Cause})", sessionId, session.Username, failure.Kind);
+            return false;
+        }
+    }
+
+    /// <summary>The test hook of a non-disk failure (design D12). Without <c>-p:VmTest=true</c> it does nothing.</summary>
+    private static void ThrowIfTestCheckFail()
+    {
+#if VM_TEST
+        if (!string.IsNullOrWhiteSpace(TestCheckFailFile) && File.Exists(TestCheckFailFile))
+            throw new InvalidOperationException($"forced by {TestCheckFailEnv}");
+#endif
+    }
+
+    private void CheckSession(int sessionId, ActiveSession session, Domain.Time.ControlMoment moment, List<int> thresholds)
+    {
+        var today = moment.Today;
+        var now = moment.TimeOfDay;
         var user = UserRepository.GetBySid(session.UserSid);
         if (user is null || !user.IsRestricted) return;
         _sessionTracker.EnsureAgentRunning(sessionId);
 
-        var limit = ScheduleRepository.GetEffectiveLimit(user.Id, dayOfWeek, today);
+        var limit = ScheduleRepository.GetEffectiveLimit(user.Id, moment.DayOfWeek, today);
         if (limit is null) return;
 
         var usage = UsageRepository.GetUsage(user.Id, today);
         var totalAllowed = limit.DailyMinutes + (usage?.BonusMinutes ?? 0);
-        var used = _ledger.AllowanceUsed(user.Id, today, usage);
+        // The stored plus the pending minutes, read together (harden-storage-lockdown, design D7).
+        var used = _ledger.AllowanceUsed(user.Id, today);
         var remainingDaily = Math.Max(0, totalAllowed - used);
 
         var remainingSchedule = now < limit.ScheduleEnd
@@ -352,7 +421,8 @@ public sealed class UsageMonitorWorker : BackgroundService
             return;
         }
 
-        if (now < limit.ScheduleStart || now >= limit.ScheduleEnd)
+        // An end in the repeated hour at the end of daylight saving time ends at its first instant (design D9).
+        if (ControlTime.Current.IsOutsideWindow(moment, limit.ScheduleStart, limit.ScheduleEnd))
         {
             if (_locker.ShouldDefer(sessionId, "Outside allowed schedule"))
                 return;
@@ -394,18 +464,21 @@ public sealed class UsageMonitorWorker : BackgroundService
 
     /// <summary>
     /// The probe write, the store of the Pending Usage and the failures of the tick go to the Storage Lockdown state
-    /// (design D8). It never restarts the service for a write failure.
+    /// (design D8 of harden-clock-and-disk; D2, D5, D6 of harden-storage-lockdown). It never restarts the service for a
+    /// write failure.
     /// </summary>
     private void ReportStorage(bool readFailed)
     {
+        var firstReport = _firstStorageReport;
+        _firstStorageReport = false;
         try
         {
-            var probeOk = _health.TryWrite(() => SettingsRepository.Set(KeyStorageProbe, DateTime.UtcNow.ToString("O")), "storage probe", _logger);
+            var probeOk = _health.TryWrite(() => SettingsRepository.Set(KeyStorageProbe, DateTime.UtcNow.ToString("O")), ProbeOperation, _logger);
             var storeOk = _ledger.Store();
-            var failures = _health.TakeFailures();
+            var report = _health.TakeReport();
             // The retry of this tick decides the exit; the failures since the last tick count only for the entry.
             var retrySucceeded = !readFailed && probeOk && storeOk;
-            var tickFailed = !retrySucceeded || failures > 0;
+            var tickFailed = !retrySucceeded || report.Count > 0;
 
             long? free;
             try
@@ -418,14 +491,16 @@ public sealed class UsageMonitorWorker : BackgroundService
             }
 
             var today = ControlTime.Current.Today;
-            var outcome = _storageLockdown.ReportTick(tickFailed, retrySucceeded, _ledger.Pending.IsEmpty, free, today);
+            var outcome = _storageLockdown.ReportTick(tickFailed, retrySucceeded, _ledger.Pending.IsEmpty, free, today,
+                Environment.TickCount64, startProbeFailed: firstReport && !probeOk, failure: report.Last);
 
             if (tickFailed && !outcome.Entered && !outcome.Left)
-                _logger.Warning("Database write failed in this tick ({Failures} failures, {InRow} failed ticks in a row, Storage Lockdown: {InLockdown}, free: {Free} bytes)",
-                    failures, _storageLockdown.FailedTicksInRow, _storageLockdown.InLockdown, free);
+                _logger.Warning("Database write failed in this tick ({Failures} failures, last: {Operation} {Cause}, {InWindow} failed ticks in {Window} min, Storage Lockdown: {InLockdown}, free: {Free} bytes)",
+                    report.Count, report.Last?.Operation, report.Last?.Kind, _storageLockdown.FailedTicksInWindow,
+                    FailedTickWindow.Length.TotalMinutes, _storageLockdown.InLockdown, free);
 
             if (outcome.Entered)
-                EnterStorageLockdown(free, outcome.Alert);
+                EnterStorageLockdown(outcome.Cause, free, outcome.Alert, firstReport);
             else if (outcome.Left)
                 LeaveStorageLockdown(free);
         }
@@ -435,30 +510,32 @@ public sealed class UsageMonitorWorker : BackgroundService
         }
     }
 
-    private void EnterStorageLockdown(long? free, bool alert)
+    /// <summary>
+    /// The entry: the lock loop first, then the writes (design D8 of harden-storage-lockdown). Event 1015 and the alert
+    /// name the operation and the cause of the last failure, and say "disk is full" only for a full disk (D2).
+    /// </summary>
+    private void EnterStorageLockdown(StorageFailure? cause, long? free, bool alert, bool atStart)
     {
-        var text = $"Parental Control cannot write its database ({FreeText(free)} free on the volume of the data folder). " +
-                   "It locks each session of a user who is not an administrator until an administrator frees space.";
+        StartLockLoop();
+        var text = StorageLockdownTexts.EntryEvent(cause, free);
+        if (atStart)
+            text = "The probe write at the start of the service failed. " + text;
         _logger.Error("Storage Lockdown entered: {Text}", text);
         DataFolderStartup.WriteEvent(EventLogEntryType.Error, StorageLockdownEntryEventId, text);
         _health.TryWrite(() => EventRepository.LogEvent("SYSTEM", EventType.STORAGE_LOCKDOWN, "Entered: " + text), "storage lockdown event", _logger);
-        StartLockLoop();
         if (alert)
-            _alerts.Post($"Parental Control on {Environment.MachineName}: the disk is full or the database cannot be written ({FreeText(free)} free). " +
-                         "Each session of a child is locked, and the programs stay open. Sign in as an administrator and free space on the disk.");
+            _alerts.Post(StorageLockdownTexts.Alert(Environment.MachineName, cause, free));
     }
 
     private void LeaveStorageLockdown(long? free)
     {
         StopLockLoop();
-        var text = $"Parental Control can write its database again ({FreeText(free)} free). The Storage Lockdown ended.";
+        var text = $"The cause of the Storage Lockdown ended: the database writes and the limit checks work again ({StorageLockdownTexts.Free(free)} free). The Storage Lockdown ended.";
         _logger.Information(text);
         DataFolderStartup.WriteEvent(EventLogEntryType.Information, StorageLockdownExitEventId, text);
         _health.TryWrite(() => EventRepository.LogEvent("SYSTEM", EventType.STORAGE_LOCKDOWN, "Ended: " + text), "storage lockdown event", _logger);
         // The sessions that the lockdown disconnected are locked; the unlock check of SessionTracker applies to them.
     }
-
-    private static string FreeText(long? free) => free is { } b ? $"{b / (1024 * 1024)} MB" : "unknown space";
 
     /// <summary>
     /// The lock loop of the Storage Lockdown: the Enforced Workstation Lock on each active session of a user who is not
@@ -470,30 +547,40 @@ public sealed class UsageMonitorWorker : BackgroundService
     {
         if (_lockLoop is not null) return;
         var cts = CancellationTokenSource.CreateLinkedTokenSource(_stopping);
+        // The loop uses only this token and disposes the source at its end; StopLockLoop only cancels it. So no code
+        // uses the token of a disposed source (design D8).
+        var token = cts.Token;
         _lockLoop = cts;
         _ = Task.Run(async () =>
         {
-            while (!cts.IsCancellationRequested)
+            try
             {
-                try
+                while (!token.IsCancellationRequested)
                 {
-                    var locked = DataFolderLockdown.LockSessions(id => _locker.Lock(id, "Storage Lockdown"));
-                    if (locked.Count > 0)
-                        _logger.Information("Storage Lockdown: locked session(s) {Sessions}", string.Join(", ", locked));
-                }
-                catch (Exception ex)
-                {
-                    _logger.Error(ex, "Error in the lock loop of the Storage Lockdown");
-                }
+                    try
+                    {
+                        var locked = DataFolderLockdown.LockSessions(id => _locker.Lock(id, "Storage Lockdown"));
+                        if (locked.Count > 0)
+                            _logger.Information("Storage Lockdown: locked session(s) {Sessions}", string.Join(", ", locked));
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "Error in the lock loop of the Storage Lockdown");
+                    }
 
-                try
-                {
-                    await Task.Delay(LockLoopInterval, cts.Token);
+                    try
+                    {
+                        await Task.Delay(LockLoopInterval, token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
                 }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
+            }
+            finally
+            {
+                cts.Dispose();
             }
         });
     }
@@ -502,8 +589,14 @@ public sealed class UsageMonitorWorker : BackgroundService
     {
         var cts = Interlocked.Exchange(ref _lockLoop, null);
         if (cts is null) return;
-        cts.Cancel();
-        cts.Dispose();
+        try
+        {
+            cts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // The loop already ended (the service stops) and disposed its source.
+        }
     }
 
     private void RunCleanupIfNeeded()
@@ -534,8 +627,8 @@ public sealed class UsageMonitorWorker : BackgroundService
         }
         catch (Exception ex)
         {
-            _health.ReportFailure();
-            _logger.Error(ex, "Database cleanup failed");
+            var failure = _health.ReportFailure("database cleanup", ex);
+            _logger.Error(ex, "Database cleanup failed ({Cause})", failure.Kind);
         }
     }
 }
