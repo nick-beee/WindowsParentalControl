@@ -10,6 +10,8 @@
 //                                           session-end requests with a field "sessionId" (another session)
 //   ChannelAttack huge                      a frame length of 2 GB
 //   ChannelAttack noread [seconds]          status polls (2 per second), never reads an answer
+//   ChannelAttack closeagent                closes the channel handle inside the agent (DUPLICATE_CLOSE_SOURCE) and
+//                                           keeps the agent suspended: its process lives on without a channel
 //   ChannelAttack resume                    resumes each agent process of the own session
 // The output goes to stdout and to C:\Users\Public\channel-attack.log.
 using System.Buffers.Binary;
@@ -41,6 +43,12 @@ try
     var (agentPid, handleValue) = FindAgents().FirstOrDefault(a => a.Handle != 0);
     if (agentPid == 0) { Log("no agent with --channel in this session"); return 2; }
     Log($"agent pid {agentPid}, channel handle {handleValue}");
+    if (command == "closeagent")
+    {
+        Channel.CloseInAgent(agentPid, handleValue);
+        Log("channel handle closed inside the agent; agent suspended");
+        return 0;
+    }
     using var channel = Channel.Steal(agentPid, handleValue);
     Log("handle duplicated; agent suspended");
     // The suspended agent still has one read pending; the first answer goes to it. Send a decoy first.
@@ -184,6 +192,26 @@ internal sealed class Channel : IDisposable
         }
     }
 
+    /// <summary>Suspends the agent, then moves its channel handle out of it and closes the copy.</summary>
+    public static void CloseInAgent(int agentPid, long handleValue)
+    {
+        var process = Native.OpenProcess(Native.PROCESS_DUP_HANDLE | Native.PROCESS_SUSPEND_RESUME, false, agentPid);
+        if (process == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error(), "OpenProcess of the agent");
+        try
+        {
+            var status = Native.NtSuspendProcess(process);
+            if (status != 0) throw new Win32Exception($"NtSuspendProcess 0x{status:X}");
+            if (!Native.DuplicateHandle(process, new IntPtr(handleValue), Native.GetCurrentProcess(), out var copy, 0, false,
+                    Native.DUPLICATE_SAME_ACCESS | Native.DUPLICATE_CLOSE_SOURCE))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "DuplicateHandle with DUPLICATE_CLOSE_SOURCE");
+            Native.CloseHandle(copy);
+        }
+        finally
+        {
+            Native.CloseHandle(process);
+        }
+    }
+
     public void Write(byte[] data)
     {
         if (!TryWrite(data, TimeSpan.FromSeconds(10))) throw new IOException("write failed");
@@ -279,6 +307,7 @@ internal static class Native
     public const uint PROCESS_DUP_HANDLE = 0x0040;
     public const uint PROCESS_SUSPEND_RESUME = 0x0800;
     public const uint DUPLICATE_SAME_ACCESS = 0x2;
+    public const uint DUPLICATE_CLOSE_SOURCE = 0x1;
     public const int ERROR_IO_PENDING = 997;
     public const int WAIT_TIMEOUT_CODE = 258;
 
