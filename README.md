@@ -46,7 +46,7 @@ An enhanced screen time, application telemetry, and schedule curfew management s
 - **Session Tray Agent (`ParentalControl.Agent.exe`)**:
   - Native WPF message loop running in standard user sessions without dispatcher lag.
   - Does no foreground sampling: the Session Probe (below) gives the samples, and no limit reads data of the agent (design D10 of `session-probe-and-agent-channel`).
-  - Talks to the service only through its Agent Channel: a named pipe for SYSTEM only, whose client end the service gives to the agent at its start (`--channel`). The old HTTP routes of the agent are gone (404). An agent that the service did not start exits at once.
+  - Talks to the service only through its Agent Channel: a named pipe for SYSTEM only, whose client end the service gives to the agent at its start (`--channel`). The old HTTP routes of the agent are gone (404). An agent start without the channel of the service exits at once.
   - For a user who is not restricted (an Administrator), the agent shows no widget, but it shows the Interactive Session Prompts.
 
 ### 6. Anti-Bypass, Session Tracking & Auto-Heal Architecture

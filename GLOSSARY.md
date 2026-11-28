@@ -122,7 +122,7 @@ A process of a Session Probe sample that adds Category Usage. These are the entr
 - The Foreground Window, the focus window and each window of another process below the Foreground Window count, except an entry in System.
 - The window below the cursor counts only if it has `noActivate`, except in System. Without `noActivate` it counts no time, but its exe can be suspended.
 - A trusted WebView2 process (`msedgewebview2.exe` in a folder of the Evergreen WebView2 Runtime) counts in the same role as its creator: the first parent process that is not a trusted WebView2. Each other `msedgewebview2.exe` counts by its App Rule.
-- The Session Agent counts in Unknown, except during an active Interactive Session Prompt of the user and within the Agent Window Budget. Below the cursor it counts nothing.
+- The Session Agent counts in Unknown, except during an active Interactive Session Prompt of the user and within the Agent Window Budget. Below the cursor it counts nothing. Only the agent that the service started (its launch record) gets these exemptions; a copy of the agent exe that the child started is a normal Unknown exe.
 
 The service adds the time of a sample at most one time to each App Category of its Counted Processes.
 
