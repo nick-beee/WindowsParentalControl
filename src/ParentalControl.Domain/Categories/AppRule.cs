@@ -18,6 +18,19 @@ public sealed record AppRule(long Id, RuleMatchType MatchType, string Pattern, A
     bool IsBlocked = false)
 {
     /// <summary>
+    /// The name of the app in a child message: the file name without ".exe" for a file rule, the last folder name
+    /// for a folder rule.
+    /// </summary>
+    public string DisplayName
+    {
+        get
+        {
+            var name = WindowsPath.GetFileName(Pattern.TrimEnd('\\'));
+            return name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? name[..^4] : name;
+        }
+    }
+
+    /// <summary>
     /// The stored form of a pattern: a trimmed file name, or a canonical folder with a trailing "\".
     /// Returns null if the pattern is not valid for the match type.
     /// </summary>
