@@ -19,20 +19,26 @@ public class ResumeLocksTests
     private static readonly Func<int, int> NoBonus = _ => 0;
     private static readonly Func<int, string, bool> AllDue = (_, _) => true;
 
-    private static ResumedProcess P(int pid, string exe = Game, int user = Kid) => new(pid, Start.AddSeconds(pid), user, exe);
+    // The CPU time of a process when the service suspends it, and after the child resumed it and played (design D10).
+    private static readonly TimeSpan SuspendedCpu = TimeSpan.FromSeconds(4);
+    private static readonly TimeSpan PlayedCpu = SuspendedCpu + TimeSpan.FromSeconds(2);
+
+    /// <summary>A recorded process that runs again. By default it used 2 s of CPU time after its suspension.</summary>
+    private static ResumedProcess P(int pid, string exe = Game, int user = Kid, TimeSpan? cpu = null) =>
+        new(pid, Start.AddSeconds(pid), user, exe, cpu ?? PlayedCpu);
 
     private static ResumeLocks Watching(params ResumedProcess[] processes)
     {
         var locks = new ResumeLocks();
         foreach (var p in processes)
-            locks.MarkSuspended(p.Pid, p.StartTimeUtc);
+            locks.MarkSuspended(p.Pid, p.StartTimeUtc, SuspendedCpu);
         return locks;
     }
 
     /// <summary>The service suspends the process again (Suspend = Ok) and the child resumes it at <paramref name="at"/>.</summary>
     private static ResumeCheck ResumeAgain(ResumeLocks locks, ResumedProcess p, DateTime at, Func<int, int>? bonus = null)
     {
-        locks.MarkSuspended(p.Pid, p.StartTimeUtc);
+        locks.MarkSuspended(p.Pid, p.StartTimeUtc, SuspendedCpu);
         return locks.Check([p], at, Today, bonus ?? NoBonus);
     }
 
@@ -211,7 +217,7 @@ public class ResumeLocksTests
         var locks = new ResumeLocks();
         for (var i = 0; i < 3; i++)
         {
-            locks.MarkSuspended(game.Pid, game.StartTimeUtc); // suspended again after the hold or the guard
+            locks.MarkSuspended(game.Pid, game.StartTimeUtc, SuspendedCpu); // suspended again after the hold or the guard
             locks.MarkResumedByService(game.Pid, game.StartTimeUtc); // resumed for the next sign-out
             Assert.Empty(locks.Check([game], T0.AddMinutes(3 * i), Today, NoBonus).Counted);
         }
@@ -324,5 +330,133 @@ public class ResumeLocksTests
         Assert.Contains(Video, locks.LockedExes(Kid));
         // The lock stays while the video player is still due.
         Assert.Empty(locks.Release(Today, NoBonus, (_, path) => path == Video));
+    }
+    // Evidence of the run: the CPU time (design D10).
+
+    [Fact]
+    public void Process_that_used_no_CPU_time_since_its_suspension_does_not_count_and_stays_watched()
+    {
+        // VM 102, 2026-11-28: the thread check saw the re-suspended TestGame running at 13:38:52, but no tool ran.
+        var idle = P(10, cpu: SuspendedCpu);
+        var locks = Watching(idle);
+
+        var check = locks.Check([idle], T0, Today, NoBonus);
+
+        Assert.Empty(check.Counted);
+        var unproven = Assert.Single(check.Unproven);
+        Assert.Equal(ResumeEvidence.NoGrowth, unproven.Evidence);
+        Assert.Equal(TimeSpan.Zero, unproven.CpuGrowth);
+        Assert.True(locks.IsWatched(idle.Pid, idle.StartTimeUtc));
+    }
+
+    [Fact]
+    public void Failed_CPU_read_does_not_count()
+    {
+        var game = P(10) with { CpuTime = null };
+        var locks = Watching(game);
+
+        var check = locks.Check([game], T0, Today, NoBonus);
+
+        Assert.Empty(check.Counted);
+        Assert.Equal(ResumeEvidence.ReadFailed, Assert.Single(check.Unproven).Evidence);
+        Assert.True(locks.IsWatched(game.Pid, game.StartTimeUtc));
+    }
+
+    [Fact]
+    public void Unknown_CPU_time_at_the_suspension_does_not_count()
+    {
+        var game = P(10);
+        var locks = new ResumeLocks();
+        locks.MarkSuspended(game.Pid, game.StartTimeUtc, null);
+
+        var check = locks.Check([game], T0, Today, NoBonus);
+
+        Assert.Empty(check.Counted);
+        Assert.Equal(ResumeEvidence.NoBaseline, Assert.Single(check.Unproven).Evidence);
+    }
+
+    [Fact]
+    public void Failed_read_at_a_later_suspended_check_keeps_the_known_CPU_time()
+    {
+        var game = P(10);
+        var locks = Watching(game);
+        locks.MarkSuspended(game.Pid, game.StartTimeUtc, null); // the next tick sees it suspended, but the read fails
+
+        Assert.Equal([Kid], locks.Check([game], T0, Today, NoBonus).Counted);
+    }
+
+    [Fact]
+    public void Suspended_check_moves_the_CPU_time_forward()
+    {
+        // The service sees the process suspended with more CPU time (for example the delayed suspension of a thread).
+        var game = P(10, cpu: PlayedCpu + TimeSpan.FromMilliseconds(10));
+        var locks = Watching(game);
+        locks.MarkSuspended(game.Pid, game.StartTimeUtc, PlayedCpu);
+
+        Assert.Empty(locks.Check([game], T0, Today, NoBonus).Counted);
+    }
+
+    [Fact]
+    public void No_growth_check_does_not_use_the_30_second_gap()
+    {
+        var idle = P(10, cpu: SuspendedCpu);
+        var game = P(11);
+        var locks = Watching(idle, game);
+
+        Assert.Empty(locks.Check([idle], T0, Today, NoBonus).Counted);
+        Assert.Equal([Kid], locks.Check([game], T0.AddSeconds(10), Today, NoBonus).Counted);
+    }
+
+    [Fact]
+    public void Process_without_growth_counts_later_when_it_really_runs()
+    {
+        var game = P(10);
+        var locks = Watching(game);
+
+        Assert.Empty(locks.Check([game with { CpuTime = SuspendedCpu }], T0, Today, NoBonus).Counted);
+        // The child resumes it before the Pending Suspension ends; the next check sees the growth.
+        Assert.Equal([Kid], locks.Check([game], T0.AddSeconds(10), Today, NoBonus).Counted);
+    }
+
+    [Fact]
+    public void Restarted_process_is_not_a_resume_of_the_old_record()
+    {
+        // The game ended and a new process got the same pid: another start time, so another key.
+        var old = P(10);
+        var restarted = old with { StartTimeUtc = old.StartTimeUtc.AddMinutes(5) };
+        var locks = Watching(old);
+
+        var check = locks.Check([restarted], T0, Today, NoBonus);
+
+        Assert.Empty(check.Counted);
+        Assert.Empty(check.Unproven);
+        Assert.True(locks.IsWatched(old.Pid, old.StartTimeUtc));
+    }
+
+    [Fact]
+    public void Ten_processes_count_one_if_only_one_of_them_ran()
+    {
+        var chrome = Enumerable.Range(20, 10).Select(pid => P(pid, Chrome, cpu: pid == 25 ? PlayedCpu : SuspendedCpu)).ToArray();
+        var locks = Watching(chrome);
+
+        var check = locks.Check(chrome, T0, Today, NoBonus);
+
+        Assert.Equal([Kid], check.Counted);
+        Assert.Equal(9, check.Unproven.Count);
+    }
+
+    [Fact]
+    public void Three_checks_without_growth_start_no_Resume_Lock()
+    {
+        var game = P(10, cpu: SuspendedCpu);
+        var locks = Watching(game);
+
+        for (var i = 0; i < 3; i++)
+        {
+            locks.MarkSuspended(game.Pid, game.StartTimeUtc, SuspendedCpu); // suspended again (Suspend = Ok)
+            Assert.Empty(locks.Check([game], T0.AddMinutes(i), Today, NoBonus).Counted);
+        }
+        Assert.False(locks.IsLocked(Kid));
+        Assert.Equal(0, locks.ChildResumes(Kid));
     }
 }

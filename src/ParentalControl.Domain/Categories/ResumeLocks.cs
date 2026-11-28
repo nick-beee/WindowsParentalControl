@@ -1,7 +1,15 @@
 namespace ParentalControl.Domain.Categories;
 
 /// <summary>A recorded process that runs again and that the planner suspends again (a <see cref="SuspendAction"/> with <c>IsRecorded</c>).</summary>
-public sealed record ResumedProcess(int Pid, DateTime StartTimeUtc, int UserId, string ExePath);
+/// <param name="CpuTime">The CPU time (user + kernel) of the process in this check, or null if the read failed.</param>
+public sealed record ResumedProcess(int Pid, DateTime StartTimeUtc, int UserId, string ExePath, TimeSpan? CpuTime);
+
+/// <summary>
+/// A watched process that the thread check sees running, but without evidence that it ran (design D10). It does not
+/// count, and it stays watched with its old CPU time.
+/// </summary>
+/// <param name="CpuGrowth">The CPU time since the service last saw it suspended, or null if one of the two is unknown.</param>
+public sealed record UnprovenResume(ResumedProcess Process, ResumeEvidence Evidence, TimeSpan? CpuGrowth);
 
 /// <summary>A Resume Lock that starts now. <see cref="ExePaths"/> are the resumed exes of its Child Resumes.</summary>
 public sealed record ResumeLockStart(int UserId, IReadOnlyList<string> ExePaths);
@@ -21,16 +29,22 @@ public enum ResumeLockEndReason
 
 public sealed record ResumeLockEnd(int UserId, ResumeLockEndReason Reason);
 
-/// <summary>The result of one check: the users with a counted Child Resume, and the Resume Locks that start.</summary>
-public sealed record ResumeCheck(IReadOnlyList<int> Counted, IReadOnlyList<ResumeLockStart> Started);
+/// <summary>
+/// The result of one check: the users with a counted Child Resume, the Resume Locks that start, and the watched processes
+/// that look resumed without evidence (for the log).
+/// </summary>
+public sealed record ResumeCheck(IReadOnlyList<int> Counted, IReadOnlyList<ResumeLockStart> Started, IReadOnlyList<UnprovenResume> Unproven);
 
 /// <summary>
 /// Counts the Child Resumes of each Restricted User and decides the Resume Lock (issue #24, change
 /// <c>lock-after-repeated-resume</c>).
 /// <para>
 /// A process is watched after the service suspended it, or saw it suspended outside a Session End Hold and a Session End
-/// Guard. A Child Resume is a check that finds a watched process running again while its reason still applies (the
-/// caller passes the recorded processes that the planner suspends again). The service unwatches a process that it
+/// Guard. For each watched process it keeps the CPU time from the last time that it saw the process suspended. A Child
+/// Resume is a check that finds a watched process running again while its reason still applies (the caller passes the
+/// recorded processes that the planner suspends again), and whose CPU time grew by at least
+/// <see cref="ChildResumeEvidence.MinCpuGrowth"/> since then (<see cref="ChildResumeEvidence"/>, design D10). A process
+/// without this evidence does not count and stays watched. The service unwatches a process that it
 /// resumed itself or that ran for the end of its session, so such a process does not count until it is suspended again.
 /// </para>
 /// <para>
@@ -63,13 +77,23 @@ public sealed class ResumeLocks
         public HashSet<string> ExePaths { get; } = exePaths;
     }
 
-    private readonly HashSet<(int Pid, DateTime StartTimeUtc)> _watched = new();
+    // The watched processes, with the CPU time when the service last saw each one suspended (null: unknown).
+    private readonly Dictionary<(int Pid, DateTime StartTimeUtc), TimeSpan?> _watched = new();
     private readonly Dictionary<int, List<Strike>> _strikes = new();
     private readonly Dictionary<int, DateTime> _lastCounted = new();
     private readonly Dictionary<int, Lock> _locks = new();
 
-    /// <summary>The service suspended the process, or saw it suspended outside a hold and a guard.</summary>
-    public void MarkSuspended(int pid, DateTime startTimeUtc) => _watched.Add((pid, startTimeUtc));
+    /// <summary>
+    /// The service suspended the process, or saw it suspended outside a hold and a guard. <paramref name="cpuTime"/> is the
+    /// CPU time of the process at that time, read after the suspension. A null value (a failed read) keeps a known CPU time.
+    /// </summary>
+    public void MarkSuspended(int pid, DateTime startTimeUtc, TimeSpan? cpuTime)
+    {
+        var key = (pid, startTimeUtc);
+        if (cpuTime is null && _watched.TryGetValue(key, out var known) && known is not null)
+            return;
+        _watched[key] = cpuTime;
+    }
 
     /// <summary>
     /// The service resumed the process itself (time left, block removed, service stop, the end of the session), or the
@@ -78,10 +102,14 @@ public sealed class ResumeLocks
     public void MarkResumedByService(int pid, DateTime startTimeUtc) => _watched.Remove((pid, startTimeUtc));
 
     /// <summary>True if the process is watched: a run of it again counts as a Child Resume.</summary>
-    public bool IsWatched(int pid, DateTime startTimeUtc) => _watched.Contains((pid, startTimeUtc));
+    public bool IsWatched(int pid, DateTime startTimeUtc) => _watched.ContainsKey((pid, startTimeUtc));
 
     /// <summary>Forgets the watched processes that have no suspension record any more.</summary>
-    public void Retain(IReadOnlySet<(int Pid, DateTime StartTimeUtc)> recorded) => _watched.RemoveWhere(k => !recorded.Contains(k));
+    public void Retain(IReadOnlySet<(int Pid, DateTime StartTimeUtc)> recorded)
+    {
+        foreach (var key in _watched.Keys.Where(k => !recorded.Contains(k)).ToList())
+            _watched.Remove(key);
+    }
 
     /// <summary>True if a Resume Lock of the user runs.</summary>
     public bool IsLocked(int userId) => _locks.ContainsKey(userId);
@@ -98,7 +126,8 @@ public sealed class ResumeLocks
 
     /// <summary>
     /// One check. <paramref name="resumed"/> are the recorded processes that run again and that the planner suspends again.
-    /// Each watched one is unwatched, so it does not count again while its Pending Suspension runs.
+    /// Each watched one with evidence (design D10) is unwatched, so it does not count again while its Pending Suspension
+    /// runs. A watched one without evidence does not count and stays watched with its old CPU time.
     /// </summary>
     /// <param name="now">A monotonic time.</param>
     /// <param name="day">The day of the Control Time Zone.</param>
@@ -106,10 +135,19 @@ public sealed class ResumeLocks
     public ResumeCheck Check(IEnumerable<ResumedProcess> resumed, DateTime now, DateOnly day, Func<int, int> bonusMinutes)
     {
         var byUser = new Dictionary<int, List<string>>();
+        var unproven = new List<UnprovenResume>();
         foreach (var p in resumed)
         {
-            if (!_watched.Remove((p.Pid, p.StartTimeUtc)))
+            var key = (p.Pid, p.StartTimeUtc);
+            if (!_watched.TryGetValue(key, out var suspendedCpu))
                 continue;
+            var evidence = ChildResumeEvidence.Judge(suspendedCpu, p.CpuTime);
+            if (evidence != ResumeEvidence.Ran)
+            {
+                unproven.Add(new UnprovenResume(p, evidence, p.CpuTime - suspendedCpu));
+                continue;
+            }
+            _watched.Remove(key);
             if (!byUser.TryGetValue(p.UserId, out var paths))
                 byUser[p.UserId] = paths = [];
             if (!paths.Contains(p.ExePath, StringComparer.OrdinalIgnoreCase))
@@ -145,7 +183,7 @@ public sealed class ResumeLocks
             started.Add(new ResumeLockStart(userId, exes.Order(StringComparer.OrdinalIgnoreCase).ToList()));
         }
 
-        return new ResumeCheck(counted, started);
+        return new ResumeCheck(counted, started, unproven);
     }
 
     /// <summary>

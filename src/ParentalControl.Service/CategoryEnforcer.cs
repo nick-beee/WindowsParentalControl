@@ -182,18 +182,19 @@ public sealed class CategoryEnforcer : IDisposable
 
             var sessionIds = restrictedSessions.Keys.Concat(records.Select(r => r.SessionId)).ToHashSet();
             var processes = ProcessControl.ListProcesses(sessionIds);
-            var suspendedNow = processes.Where(p => p.IsSuspended).Select(p => (p.Pid, p.StartTimeUtc)).ToHashSet();
-            _guards.Observe(records.Select(r => (r.Pid, r.StartTimeUtc)), suspendedNow, nowUtc);
+            var suspendedNow = processes.Where(p => p.IsSuspended).ToDictionary(p => (p.Pid, p.StartTimeUtc));
+            _guards.Observe(records.Select(r => (r.Pid, r.StartTimeUtc)), suspendedNow.Keys.ToHashSet(), nowUtc);
             var guarded = _guards.Covered(nowUtc);
             var held = _holds.HeldSessions(nowUtc);
 
-            // A recorded process that is suspended now, outside a hold and a guard, is watched: a later run of it again
-            // is a Child Resume (lock-after-repeated-resume D2). This also covers the first tick after a service start.
+            // A recorded process that is suspended now, outside a hold and a guard, is watched with its CPU time now: a
+            // later run of it again is a Child Resume if it used CPU time since then (lock-after-repeated-resume D2, D10).
+            // This also covers the first tick after a service start.
             foreach (var record in records)
             {
                 var key = (record.Pid, record.StartTimeUtc);
-                if (suspendedNow.Contains(key) && !held.Contains(record.SessionId) && !guarded.Contains(key))
-                    _resumes.MarkSuspended(record.Pid, record.StartTimeUtc);
+                if (suspendedNow.TryGetValue(key, out var suspended) && !held.Contains(record.SessionId) && !guarded.Contains(key))
+                    _resumes.MarkSuspended(record.Pid, record.StartTimeUtc, suspended.CpuTime);
             }
 
             SendWarnings(users, dayLimits, RunningExes(processes, restrictedSessions, config.Resolver));
@@ -281,8 +282,14 @@ public sealed class CategoryEnforcer : IDisposable
             _logger.Information("Resume Lock of {Username} ended: {Reason}", Name(end.UserId), end.Reason);
 
         var resumed = plan.ToSuspend.Where(a => a.IsRecorded)
-            .Select(a => new ResumedProcess(a.Process.Pid, a.Process.StartTimeUtc, a.UserId, a.ExePath));
+            .Select(a => new ResumedProcess(a.Process.Pid, a.Process.StartTimeUtc, a.UserId, a.ExePath, a.Process.CpuTime));
         var check = _resumes.Check(resumed, SessionLocker.MonotonicNow(), today, userId => Bonus(userId, today));
+        // The thread check sees these processes running, but they used no CPU time to speak of: no Child Resume (D10).
+        foreach (var u in check.Unproven)
+            _logger.Information("No Child Resume: {Exe} (pid {Pid}) of {Username} looks resumed, but {Evidence} (CPU time +{Growth} ms, at least {Min} ms needed); suspended again",
+                WindowsPath.GetFileName(u.Process.ExePath), u.Process.Pid, Name(u.Process.UserId), u.Evidence,
+                u.CpuGrowth is { } g ? Math.Round(g.TotalMilliseconds).ToString(System.Globalization.CultureInfo.InvariantCulture) : "?",
+                ChildResumeEvidence.MinCpuGrowth.TotalMilliseconds);
         foreach (var userId in check.Counted)
         {
             var started = check.Started.Any(s => s.UserId == userId);
@@ -546,6 +553,7 @@ public sealed class CategoryEnforcer : IDisposable
 
         ProcessOpResult result;
         string detail;
+        TimeSpan? cpuAfter = null;
         if (!string.IsNullOrWhiteSpace(_testSuspendFailExe) &&
             string.Equals(WindowsPath.GetFileName(action.ExePath), _testSuspendFailExe.Trim(), StringComparison.OrdinalIgnoreCase))
         {
@@ -554,7 +562,7 @@ public sealed class CategoryEnforcer : IDisposable
         }
         else
         {
-            result = ProcessControl.Suspend(p.Pid, p.StartTimeUtc, out detail);
+            result = ProcessControl.Suspend(p.Pid, p.StartTimeUtc, out detail, out cpuAfter);
         }
 
         var username = users.TryGetValue(action.UserId, out var user) ? user.Username : action.UserId.ToString();
@@ -562,7 +570,8 @@ public sealed class CategoryEnforcer : IDisposable
         {
             case ProcessOpResult.Ok:
                 _guards.MarkSuspended(p.Pid, p.StartTimeUtc);
-                _resumes.MarkSuspended(p.Pid, p.StartTimeUtc);
+                // The CPU time after the suspension, not the one of the tick: the process ran during its Pending Suspension.
+                _resumes.MarkSuspended(p.Pid, p.StartTimeUtc, cpuAfter);
                 _logger.Information("Suspended {Exe} (pid {Pid}, {Category}, {Reason}) of {Username}{Again}",
                     action.ExePath, p.Pid, action.Category, action.Reason, username, action.IsRecorded ? " again" : "");
                 if (action.Reason == SuspensionReason.Blocked)

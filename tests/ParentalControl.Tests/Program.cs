@@ -653,6 +653,7 @@ Console.WriteLine("✅ App Categories, Rules, Category Usage & Suspension Record
         $"The listed path should be the test exe path: {me.ExePath} vs {Environment.ProcessPath}");
     Debug.Assert(me.StartTimeUtc == self.StartTime.ToUniversalTime(), "The listed start time should equal Process.StartTime");
     Debug.Assert(!me.IsSuspended, "The test process should not be suspended");
+    Debug.Assert(me.CpuTime is { } ownCpu && ownCpu > TimeSpan.Zero, "The listed CPU time of the test process should be readable");
     Debug.Assert(ProcessControl.ListProcesses(new HashSet<int> { ownSession + 1000 }).Count == 0, "Another session should list nothing");
 
     // A helper process: suspend, check, resume. It stays open the whole time.
@@ -661,10 +662,14 @@ Console.WriteLine("✅ App Categories, Rules, Category Usage & Suspension Record
     var (_, helperStart) = ProcessControl.QueryPathAndStart(helper.Id);
     Debug.Assert(helperStart is not null, "Helper start time should be readable");
     Debug.Assert(ProcessControl.Suspend(helper.Id, helperStart!.Value.AddTicks(1), out _) == ProcessOpResult.NotFound, "Wrong start time should refuse the suspend");
-    Debug.Assert(ProcessControl.Suspend(helper.Id, helperStart.Value, out var suspendDetail) == ProcessOpResult.Ok, "Suspend should succeed: " + suspendDetail);
+    Debug.Assert(ProcessControl.Suspend(helper.Id, helperStart.Value, out var suspendDetail, out var cpuAfterSuspend) == ProcessOpResult.Ok, "Suspend should succeed: " + suspendDetail);
+    Debug.Assert(cpuAfterSuspend is not null, "Suspend should read the CPU time after the suspension");
     Thread.Sleep(200);
     var helperRow = ProcessControl.ListProcesses(new HashSet<int> { ownSession }).Single(p => p.Pid == helper.Id);
     Debug.Assert(helperRow.IsSuspended, "Helper should show all threads suspended");
+    // A suspended process uses no CPU time to speak of: no evidence of a Child Resume (lock-after-repeated-resume D10).
+    Debug.Assert(ChildResumeEvidence.Judge(cpuAfterSuspend, helperRow.CpuTime) == ResumeEvidence.NoGrowth,
+        $"A suspended helper should show no CPU growth: {cpuAfterSuspend} -> {helperRow.CpuTime}");
     Debug.Assert(!helper.HasExited, "Suspended helper should still exist");
     // A second suspend (count 2) and one Resume call: Resume repeats until no thread is suspended.
     Debug.Assert(ProcessControl.Suspend(helper.Id, helperStart.Value, out _) == ProcessOpResult.Ok, "Second suspend should succeed");

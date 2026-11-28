@@ -171,8 +171,9 @@ public static class ProcessControl
     private const int MaxResumeCalls = 10;
 
     /// <summary>
-    /// The processes of the given sessions, with the full exe path (null if Windows refuses it),
-    /// the start time (UTC) and whether all threads are suspended. A process without a readable start time is left out.
+    /// The processes of the given sessions, with the full exe path (null if Windows refuses it), the start time (UTC),
+    /// whether all threads are suspended, and the CPU time (null if Windows refuses it). A process without a readable start
+    /// time is left out.
     /// </summary>
     public static List<SessionProcess> ListProcesses(IReadOnlySet<int> sessionIds)
     {
@@ -190,11 +191,11 @@ public static class ProcessControl
                 if (!sessionIds.Contains(sessionId) || process.Id is 0 or 4)
                     continue;
 
-                var (path, start) = QueryPathAndStart(process.Id);
+                var (path, start, cpu) = QueryPathStartAndCpu(process.Id);
                 if (start is null)
                     continue;
 
-                list.Add(new SessionProcess(process.Id, start.Value, path, sessionId, AreAllThreadsSuspended(process)));
+                list.Add(new SessionProcess(process.Id, start.Value, path, sessionId, AreAllThreadsSuspended(process), cpu));
             }
         }
         return list;
@@ -218,12 +219,26 @@ public static class ProcessControl
 
     /// <summary>Suspends the process if it still has the expected start time.</summary>
     public static ProcessOpResult Suspend(int pid, DateTime expectedStartUtc, out string detail) =>
-        WithVerifiedHandle(pid, expectedStartUtc, NativeMethods.PROCESS_SUSPEND_RESUME, out detail, handle =>
+        Suspend(pid, expectedStartUtc, out detail, out _);
+
+    /// <summary>
+    /// Suspends the process if it still has the expected start time. <paramref name="cpuAfter"/> is the CPU time (user +
+    /// kernel) of the process, read on the same handle after the suspension, or null (lock-after-repeated-resume D10).
+    /// </summary>
+    public static ProcessOpResult Suspend(int pid, DateTime expectedStartUtc, out string detail, out TimeSpan? cpuAfter)
+    {
+        TimeSpan? cpu = null;
+        var result = WithVerifiedHandle(pid, expectedStartUtc, NativeMethods.PROCESS_SUSPEND_RESUME, out detail, handle =>
         {
             var status = NativeMethods.NtSuspendProcess(handle);
-            return status >= 0 ? (ProcessOpResult.Ok, "")
-                : (status == StatusAccessDenied ? ProcessOpResult.AccessDenied : ProcessOpResult.Failed, $"NtSuspendProcess 0x{status:X8}");
+            if (status < 0)
+                return (status == StatusAccessDenied ? ProcessOpResult.AccessDenied : ProcessOpResult.Failed, $"NtSuspendProcess 0x{status:X8}");
+            cpu = QueryCpu(handle);
+            return (ProcessOpResult.Ok, "");
         });
+        cpuAfter = result == ProcessOpResult.Ok ? cpu : null;
+        return result;
+    }
 
     /// <summary>
     /// Resumes the process if it still has the expected start time. The child can resume single threads
@@ -363,6 +378,28 @@ public static class ProcessControl
         var size = buffer.Length;
         return NativeMethods.QueryFullProcessImageNameW(handle, 0, buffer, ref size) ? new string(buffer, 0, size) : null;
     }
+
+    /// <summary>The full exe path, the start time (UTC) and the CPU time of a process, from one handle, or nulls.</summary>
+    private static (string? Path, DateTime? StartUtc, TimeSpan? Cpu) QueryPathStartAndCpu(int pid)
+    {
+        var handle = NativeMethods.OpenProcess(NativeMethods.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+        if (handle == IntPtr.Zero)
+            return (null, null, null);
+        try
+        {
+            return (QueryPath(handle), QueryStart(handle), QueryCpu(handle));
+        }
+        finally
+        {
+            NativeMethods.CloseHandle(handle);
+        }
+    }
+
+    /// <summary>The CPU time (user + kernel) of the process, or null. Windows charges it in clock ticks.</summary>
+    private static TimeSpan? QueryCpu(IntPtr handle) =>
+        NativeMethods.GetProcessTimes(handle, out _, out _, out var kernel, out var user) && kernel >= 0 && user >= 0
+            ? TimeSpan.FromTicks(kernel + user)
+            : null;
 
     private static DateTime? QueryStart(IntPtr handle) =>
         NativeMethods.GetProcessTimes(handle, out var creation, out _, out _, out _) && creation > 0
