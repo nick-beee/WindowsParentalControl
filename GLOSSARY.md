@@ -96,6 +96,9 @@ A time without use: the session is locked or disconnected, the user is signed ou
 ## Break
 A time of M minutes after N minutes of Continuous Use. The service sends a message with the end time and locks the session with the Enforced Workstation Lock. It locks the session again after each unlock and each sign-in until the end. A Break never closes, kills or suspends a program, and it ends at the latest at the end of the Schedule Window. The parent can end a running Break.
 
+## Lock Reason
+Why the session of a Restricted User is locked now: outside the Schedule Window, no Allowance Time left, a running Break, or another lock. The service decides it from its own state for each status answer of the Agent Channel, in this priority, and the widget and the tray tooltip of the Session Agent show its text. Only the Break text says "Pause".
+
 ## Control Time Zone
 The Windows time zone that gives each day, weekday and time of day of a limit: the Allowance Time, the Schedule Window, the Category Limits, the Grace Requests, the capture quota and the end of a Break. Only an administrator can change it (registry value `HKLM\SOFTWARE\ParentalControl\ControlTimeZone`, set in the Admin app). A change of the Windows time zone by the Restricted User has no effect on a limit.
 

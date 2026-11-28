@@ -78,7 +78,7 @@ public sealed class WebServerHost : BackgroundService
         ServiceStartup? startup = null, SessionLocker? sessionLocker = null, AgentRequests? agentRequests = null)
     {
         _sessionLocker = sessionLocker ?? new SessionLocker(logger);
-        _agentRequests = agentRequests ?? new AgentRequests(sessionTracker, categoryEnforcer, _sessionLocker, telegramBotService, logger);
+        _agentRequests = agentRequests ?? new AgentRequests(sessionTracker, categoryEnforcer, breakEnforcer, _sessionLocker, telegramBotService, logger);
         _startup = startup;
         _sessionTracker = sessionTracker;
         _telegramBotService = telegramBotService;
