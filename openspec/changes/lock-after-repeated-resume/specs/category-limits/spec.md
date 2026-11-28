@@ -33,7 +33,7 @@ The system SHALL count a Child Resume only with evidence that the process ran: i
 - **THEN** the system does not count a Child Resume for the old record
 
 ### Requirement: Count a run between two checks
-When a check sees a watched recorded process suspended, outside a Session End Hold and a Session End Guard, while its exe still has no time left or is still a Blocked Program, the system SHALL compare its user-mode CPU time with the CPU time of the last time that it saw the process suspended. A growth of at least 50 ms SHALL count a Child Resume. After the check, the CPU time of this check SHALL be the new baseline, except when the 30-second gap stopped the count.
+When a check sees a recorded process suspended again, outside a Session End Hold and a Session End Guard, while its exe still has no time left or is still a Blocked Program, the system SHALL compare its user-mode CPU time with the CPU time of the last time that it saw the process suspended. A growth of at least 50 ms SHALL count a Child Resume. After the check, the CPU time of this check SHALL be the new baseline, except when the 30-second gap stopped the count.
 
 #### Scenario: A script suspends the game before each check
 - **WHEN** Games is exhausted, the system suspended the game, and a script of the child resumes the game a few seconds after each check and suspends it a few seconds before the next check

@@ -637,6 +637,16 @@ Console.WriteLine("✅ Interactive Session Prompts Repository & Presets Passed."
     Debug.Assert(SuspensionRepository.Delete(4242, startUtc), "Delete by pid and start time should succeed");
     Debug.Assert(SuspensionRepository.GetAll().Count == 0, "No records should remain");
 
+    // A stored Resume Lock (lock-after-repeated-resume D6): write, replace with one more exe, delete.
+    var lockDay = new DateOnly(2026, 11, 28);
+    ResumeLockRepository.Save(new ResumeLockState(user.Id, lockDay, 5, [@"C:\Games\x.exe"]));
+    ResumeLockRepository.Save(new ResumeLockState(user.Id, lockDay, 5, [@"C:\Games\x.exe", @"C:\Video\y.exe"]));
+    var storedLocks = ResumeLockRepository.GetAll().Where(l => l.UserId == user.Id).ToList();
+    Debug.Assert(storedLocks.Count == 1 && storedLocks[0].Day == lockDay && storedLocks[0].BonusAtStart == 5
+        && storedLocks[0].ExePaths.SequenceEqual([@"C:\Games\x.exe", @"C:\Video\y.exe"]), "Resume Lock should round-trip");
+    Debug.Assert(ResumeLockRepository.Delete(user.Id), "Delete of the Resume Lock should succeed");
+    Debug.Assert(!ResumeLockRepository.GetAll().Any(l => l.UserId == user.Id), "No Resume Lock should remain");
+
     CategoryRepository.SetLimit(AppCategory.Games, new DailyLimit(120, 180));
     CategoryRepository.SetLimit(AppCategory.Video, new DailyLimit(120, 180));
 }

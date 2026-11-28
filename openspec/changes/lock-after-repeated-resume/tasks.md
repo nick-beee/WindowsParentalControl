@@ -44,7 +44,7 @@
   - `Release` clears the 30-second gap of the user too.
 
   Verify with xUnit tests in `ResumeLocksTests`: the script that suspends the game before each check counts and starts a lock; a truly suspended process does not count; small growths do not add up; an unwatched process seen suspended is watched without a count; a failed read keeps the baseline; a running and a suspended process of one user count once; the gap applies across both paths and keeps the evidence; a process that the service resumed does not count when seen suspended; `Release` clears the gap; a restored lock starts nothing, ends on a new day, after Bonus Minutes and with no reason left, keeps a running lock, and reports a new exe in `Extended`.
-  - Done (2026-11-28, Mac): `dotnet build -p:EnableWindowsTargeting=true` has 0 warnings and 0 errors; `dotnet test tests/ParentalControl.Domain.Tests` passes 1434 tests (17 new in `ResumeLocksTests`); `openspec validate --all --strict` gives 13 passed.
+  - Done (2026-11-28, Mac): `dotnet build -p:EnableWindowsTargeting=true` has 0 warnings and 0 errors; `dotnet test tests/ParentalControl.Domain.Tests` passes 1434 tests (16 new in `ResumeLocksTests`); `tests/ParentalControl.Tests` gets a round-trip of `ResumeLockRepository` (runs on Windows only: CI and the VM); `openspec validate --all --strict` gives 13 passed.
 
 ## 3. Documentation
 
