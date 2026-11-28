@@ -97,7 +97,7 @@ The system SHALL close a process of a Blocked Program only if the process starte
 
 #### Scenario: Child starts a browser
 - **WHEN** `chrome.exe` is blocked and the child starts Chrome
-- **THEN** the system closes the Chrome process within 2 seconds after its start
+- **THEN** the system closes the Chrome process within 5 seconds after its start
 
 #### Scenario: Browser started before the block
 - **WHEN** Chrome runs and then the parent turns on the block for `chrome.exe`
@@ -112,7 +112,7 @@ The system SHALL close a Blocked Start without a Pending Suspension. It SHALL cl
 
 #### Scenario: Browser start during a cancelled sign-out
 - **WHEN** a Session End Hold of the session of the child is active and the child starts Chrome, which is blocked
-- **THEN** the system closes the Chrome process within 2 seconds after its start
+- **THEN** the system closes the Chrome process within 5 seconds after its start
 
 ### Requirement: Suspend a Blocked Program that already runs
 The system SHALL suspend, within 70 seconds, a process of a Blocked Program that it does not close at its start. The 70 seconds include the 10 seconds of the Pending Suspension of `category-limits`. The requirement "Session End Hold" of `category-limits` adds an exception. This includes a process that ran before the block took effect or before the service started, and a process that it detects more than 10 seconds after its creation. It SHALL NOT close or kill such a process.
