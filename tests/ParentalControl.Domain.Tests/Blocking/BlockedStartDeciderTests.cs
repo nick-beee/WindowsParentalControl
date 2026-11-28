@@ -6,7 +6,7 @@ namespace ParentalControl.Domain.Tests.Blocking;
 public class BlockedStartDeciderTests
 {
     private const string Chrome = @"C:\Program Files\Google\Chrome\Application\chrome.exe";
-    private static readonly ProtectedPrograms Protected = new(@"C:\Windows", [@"C:\Program Files\ParentalControl"]);
+    private static readonly ProtectedPrograms Protected = new(@"C:\Windows", [@"C:\Program Files\ParentalControl"], new TrustedWebView2(@"C:\Program Files (x86)", @"C:\Program Files"));
     private static readonly DateTime Epoch = new(2026, 11, 26, 8, 0, 0, DateTimeKind.Utc);
 
     private static readonly CategoryResolver Resolver = new([
@@ -15,6 +15,8 @@ public class BlockedStartDeciderTests
         new AppRule(3, RuleMatchType.File, "msedgewebview2.exe", AppCategory.Unknown, IsBlocked: true),
         new AppRule(4, RuleMatchType.File, "game.exe", AppCategory.Games),
         new AppRule(5, RuleMatchType.File, "systool.exe", AppCategory.System, IsBlocked: true),
+        new AppRule(6, RuleMatchType.Folder, @"C:\Users\Kid\Downloads\", AppCategory.Unknown, IsBlocked: true),
+        new AppRule(7, RuleMatchType.Folder, @"C:\Program Files (x86)\Microsoft\", AppCategory.Unknown, IsBlocked: true),
     ]);
 
     private static BlockDecision Decide(string? path, double createdAfterEpochSeconds = 5, double detectedAfterCreationSeconds = 1,
@@ -50,6 +52,16 @@ public class BlockedStartDeciderTests
     {
         Assert.Equal(BlockDecision.Ignore, Decide(@"C:\Windows\System32\notepad.exe"));
         Assert.Equal(BlockDecision.Ignore, Decide(@"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\1\msedgewebview2.exe"));
+    }
+
+    // suspend-untrusted-webview2 (#48): a copy of msedgewebview2.exe below a blocked folder is a Blocked Start; the
+    // Trusted WebView2 Runtime below a blocked folder is not.
+    [Fact]
+    public void Untrusted_WebView2_copy_in_a_blocked_folder_is_closed()
+    {
+        Assert.Equal(BlockDecision.Close, Decide(@"C:\Users\Kid\Downloads\wv\msedgewebview2.exe"));
+        Assert.Equal(BlockDecision.Suspend, Decide(@"C:\Users\Kid\Downloads\wv\msedgewebview2.exe", detectedAfterCreationSeconds: 11));
+        Assert.Equal(BlockDecision.Ignore, Decide(@"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\131.0\msedgewebview2.exe"));
     }
 
     [Fact]

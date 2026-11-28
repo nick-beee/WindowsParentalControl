@@ -380,7 +380,7 @@ public class SessionEndGuardChainTests
                 new Dictionary<int, int> { [Session] = Kid },
                 (_, _) => new ExeVerdict(AppCategory.Games, IsExhausted: true),
                 (_, _) => true,
-                [Record], null, @"C:\Windows",
+                [Record], null, @"C:\Windows", new TrustedWebView2(@"C:\Program Files (x86)", @"C:\Program Files"),
                 Holds.HeldSessions(now),
                 GuardedProcesses: guarded));
             foreach (var _ in Pending.Step(plan.ToSuspend, now).Ready)
