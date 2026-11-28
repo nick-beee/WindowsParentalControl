@@ -21,11 +21,20 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
     /// <summary>A write of the service must complete within this time.</summary>
     internal static readonly TimeSpan WriteTimeout = TimeSpan.FromSeconds(5);
 
+    /// <summary>After a channel ends, the service checks this often whether the agent process ended.</summary>
+    internal static readonly TimeSpan RestartPoll = TimeSpan.FromSeconds(2);
+
+    /// <summary>The early restart waits at most this long for the end of the agent process. After it, the 60-second tick
+    /// starts the new agent (the spec bound).</summary>
+    internal static readonly TimeSpan RestartWaitLimit = TimeSpan.FromSeconds(40);
+
     private readonly AgentRequests _requests;
     private readonly SessionTracker _tracker;
     private readonly Serilog.ILogger _logger;
     private readonly AgentLaunchRegistry _registry;
     private readonly ConcurrentDictionary<int, AgentChannel> _channels = new();
+    // The sessions with a pending early restart: at most one per session.
+    private readonly ConcurrentDictionary<int, byte> _pendingRestarts = new();
     private readonly WarningLimit _launchWarnings = new();
     // ShouldStart, the launch and Record are one step per session (AgentLaunchRegistry). One gate for all sessions is
     // enough: a start takes some 100 ms, and ProcessLaunchLock serializes the starts of the service anyway.
@@ -197,14 +206,70 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
     }
 
     /// <summary>
-    /// The service closed a channel for a fault. The spec wants a new agent within 60 s, also if injected code keeps the
-    /// old process alive, so the record counts as ended and the next tick starts a new agent.
+    /// The service closed a channel for a fault, or the agent ended. The spec wants a new agent within 60 s, also if
+    /// injected code keeps the old process alive, so the record counts as ended and the next tick starts a new agent.
+    /// An early restart starts the new agent a few seconds after the old process ended (final review, item 6). It never
+    /// starts one while the old process runs: a faulty agent that stays alive then cannot make the service start an
+    /// agent every few seconds. That case waits for the tick, as before.
     /// </summary>
     private void OnFault(AgentChannel channel)
     {
         lock (_startGate)
         {
             _registry.MarkEnded(channel.Record.SessionId, channel.Record.Process);
+        }
+        ScheduleRestart(channel);
+    }
+
+    private void ScheduleRestart(AgentChannel channel)
+    {
+        var sessionId = channel.Record.SessionId;
+        if (_stopping.IsCancellationRequested || !_pendingRestarts.TryAdd(sessionId, 0)) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var waited = TimeSpan.Zero;
+                while (waited < RestartWaitLimit)
+                {
+                    await Task.Delay(RestartPoll, _stopping.Token).ConfigureAwait(false);
+                    waited += RestartPoll;
+                    if (ProcessRuns(channel)) continue;
+                    // The session ended (OnSessionEnded) or the tick started a new agent already: nothing to do.
+                    if (!_tracker.ActiveSessions.ContainsKey(sessionId) || !_channels.TryGetValue(sessionId, out var current) || current != channel)
+                        return;
+                    _logger.Information("Agent Channel of session {SessionId}: the agent (pid {Pid}) ended; starting a new agent",
+                        sessionId, channel.Record.Process.Pid);
+                    EnsureRunning(sessionId);
+                    return;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // The service stops.
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Agent Channel host: error at the early restart of the agent in session {SessionId}", sessionId);
+            }
+            finally
+            {
+                _pendingRestarts.TryRemove(sessionId, out _);
+            }
+        });
+    }
+
+    // True while the process of the channel runs. A disposed handle means that the host replaced the channel or the
+    // session ended.
+    private static bool ProcessRuns(AgentChannel channel)
+    {
+        try
+        {
+            return AgentChannelPlatform.IsRunning(channel.Process.Handle);
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
         }
     }
 
