@@ -109,7 +109,7 @@ The session messages that the service sends with a fixed text SHALL use the Lang
 - **THEN** the child gets the message "Deine Eltern haben deine Anfrage abgelehnt: „Mach zuerst deine Hausaufgaben.“"
 
 ### Requirement: The Session Agent follows the preset
-The service SHALL send the Language Preset in `/api/agent/status`. The Session Agent SHALL show each of its texts (widget, tray menu, prompt dialog, full-screen settings) in that preset, and "de" before the first response or without a preset. A text that the parent or the child typed SHALL stay as it is.
+The service SHALL send the Language Preset in the status answer of the Agent Channel. The Session Agent SHALL show each of its texts (widget, tray menu, prompt dialog, full-screen settings) in that preset, and "de" before the first response or without a preset. A text that the parent or the child typed SHALL stay as it is.
 
 #### Scenario: German widget
 - **WHEN** the preset is "de" and the Restricted User signs in

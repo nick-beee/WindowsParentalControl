@@ -19,6 +19,17 @@ public class ControlClockTests
     }
 
     [Fact]
+    public void LastSevenDaysStartAtMidnightOfTheControlZoneSixDaysBefore()
+    {
+        // 2026-11-27 00:30 in W. Europe (UTC+1): the 7 days are the 21st to the 27th of the Control Time Zone.
+        Assert.Equal(Utc(2026, 11, 20, 23, 0), At(Utc(2026, 11, 26, 23, 30)).StartOfLastDaysUtc(7));
+        // Tokyo (UTC+9) at the same instant is the 27th at 08:30.
+        Assert.Equal(Utc(2026, 11, 20, 15, 0), At(Utc(2026, 11, 26, 23, 30), Tokyo).StartOfLastDaysUtc(7));
+        Assert.Equal(Utc(2026, 11, 26, 23, 0), At(Utc(2026, 11, 26, 23, 30)).StartOfLastDaysUtc(1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => At(Utc(2026, 11, 26, 23, 30)).StartOfLastDaysUtc(0));
+    }
+
+    [Fact]
     public void DateChangesAtMidnightOfTheControlZoneNotAtMidnightUtc()
     {
         // 23:30 UTC on the 26th is 00:30 on the 27th in W. Europe.

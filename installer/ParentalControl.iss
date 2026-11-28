@@ -8,6 +8,7 @@
 #define ServiceExeName "ParentalControl.Service.exe"
 #define ServiceName    "ParentalControl.Service"
 #define AgentExeName   "ParentalControl.Agent.exe"
+#define ProbeExeName   "ParentalControl.Probe.exe"
 
 [Setup]
 AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
@@ -43,12 +44,17 @@ Source: "..\publish\service\*"; DestDir: "{app}\service"; Flags: ignoreversion r
 Source: "..\publish\admin\*"; DestDir: "{app}\admin"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Agent files
 Source: "..\publish\agent\*"; DestDir: "{app}\agent"; Flags: ignoreversion recursesubdirs createallsubdirs
+; The Session Probe (session-probe-and-agent-channel, design D2). The service starts it as SYSTEM in the session of the
+; child. Only administrators can change {app}\probe.
+Source: "..\publish\probe\*"; DestDir: "{app}\probe"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; request-window D7: the Evergreen WebView2 Runtime bootstrapper (build.ps1 downloads it and checks its signature).
 ; Not installed: [Code] extracts it only if the runtime is missing, and runs it after the service start.
 Source: "..\publish\redist\MicrosoftEdgeWebview2Setup.exe"; Flags: dontcopy
 
 [Registry]
-Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "ParentalControlAgent"; ValueData: """{app}\agent\{#AgentExeName}"""; Flags: uninsdeletevalue
+; session-probe-and-agent-channel D9: the service is the only process that starts the Session Agent. Delete the Run value
+; of an older install (up to 1.5.0), also on an update. An agent that the Run value starts has no channel and exits.
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "ParentalControlAgent"; Flags: deletevalue uninsdeletevalue
 ; The service writes the state of the data folder here (require-admin-sign-in). Remove it at uninstall.
 Root: HKLM; Subkey: "Software\ParentalControl"; Flags: uninsdeletekey dontcreatekey
 
@@ -62,11 +68,14 @@ Name: "{commondesktop}\{#MyAppName}"; Filename: "{app}\admin\{#MyAppExeName}"; \
 Filename: "{app}\admin\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent runascurrentuser
 
 [UninstallRun]
-; Stop agent and delete the service before files are removed
+; Stop the service first: it starts the agent and the Session Probe, and it ends each probe at its stop. "net stop" waits
+; until the service is stopped. Then end each agent and probe that is left, and delete the service before files are removed.
+Filename: "{sys}\net.exe"; Parameters: "stop {#ServiceName}"; \
+    RunOnceId: "StopService"; Flags: runhidden waituntilterminated
 Filename: "taskkill"; Parameters: "/F /IM {#AgentExeName}"; \
     RunOnceId: "StopAgent"; Flags: runhidden waituntilterminated
-Filename: "sc"; Parameters: "stop {#ServiceName}"; \
-    RunOnceId: "StopService"; Flags: runhidden waituntilterminated
+Filename: "taskkill"; Parameters: "/F /IM {#ProbeExeName}"; \
+    RunOnceId: "StopProbe"; Flags: runhidden waituntilterminated
 Filename: "sc"; Parameters: "delete {#ServiceName}"; \
     RunOnceId: "DeleteService"; Flags: runhidden waituntilterminated
 
@@ -88,11 +97,13 @@ begin
               and (ResultCode = 0);
 end;
 
+// "net stop" waits until the service is stopped ("sc stop" does not). So the old service cannot start the old agent
+// again after StopRunningProcesses ends it.
 procedure StopService();
 var
     ResultCode: Integer;
 begin
-    Exec('sc', ExpandConstant('stop {#ServiceName}'),
+    Exec(ExpandConstant('{sys}\net.exe'), ExpandConstant('stop {#ServiceName}'),
          '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     Sleep(2500);
 end;
@@ -233,11 +244,24 @@ begin
     Sleep(1500);
 end;
 
+// The service ends each Session Probe at its stop (design D2). This ends a probe that is left, so that the setup can
+// replace the files in {app}\probe. Call it after StopService().
+procedure StopProbes();
+var
+    ResultCode: Integer;
+begin
+    Exec('taskkill', ExpandConstant('/F /IM {#ProbeExeName}'),
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+// The order of [UninstallRun]: stop the service first (it starts the agent and the probe), then end the agent and the
+// admin app, then each probe that is left.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-    StopRunningProcesses();
     if ServiceExists() then
         StopService();
+    StopRunningProcesses();
+    StopProbes();
     Result := '';
 end;
 
@@ -245,9 +269,10 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
     if CurStep = ssInstall then
     begin
-        StopRunningProcesses();
         if ServiceExists() then
             StopService();
+        StopRunningProcesses();
+        StopProbes();
     end
     else if CurStep = ssPostInstall then
     begin

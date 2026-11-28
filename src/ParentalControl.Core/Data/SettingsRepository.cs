@@ -25,6 +25,9 @@ public static class SettingsRepository
     public const string KeyAlertIntervals = "alert_intervals"; // e.g. "15,5,1"
     public const string KeyMaxDailyRequests = "max_daily_requests"; // default: 1
     public const string KeyNotifyBlockedTelegram = "notify_blocked_telegram"; // "1" (default) or "0"
+    // session-probe-and-agent-channel D12: "1" applies the probe locks; else they are "would lock" (shadow mode). Off
+    // while the key does not exist, so a new install and the update to this release start off; a later update keeps it.
+    public const string KeyProbeLocksEnforced = "probe_locks_enforced";
     public const string KeyLanguagePreset = "language_preset"; // a Language Preset: "de", "en" or "id"
     public const string KeyPromptResponsePresets = ChildMessageKeys.PromptResponsePresets;
 
@@ -65,6 +68,8 @@ public static class SettingsRepository
     }
 
     /// <summary>The Telegram notice for a blocked program. On if the key is absent.</summary>
+    public static bool IsProbeLocksEnforced() => Get(KeyProbeLocksEnforced, "0") == "1";
+
     public static bool IsNotifyBlockedTelegramEnabled() => Get(KeyNotifyBlockedTelegram, "1") is not ("0" or "false");
 
     public static bool IsTelegramNotifySignInEnabled()

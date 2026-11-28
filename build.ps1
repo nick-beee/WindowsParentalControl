@@ -3,7 +3,7 @@
 .SYNOPSIS
     Publishes the ParentalControl projects and builds the Inno Setup installer.
 .DESCRIPTION
-    1. Publishes ParentalControl.Service and ParentalControl.Admin as self-contained win-x64.
+    1. Publishes ParentalControl.Service, ParentalControl.Admin, ParentalControl.Agent and ParentalControl.Probe as self-contained win-x64.
        The Service build runs npm to build the web admin (web/admin), so Node.js 22.12 or later must be installed.
     2. Downloads the Evergreen WebView2 Runtime bootstrapper and checks its Authenticode signature (request-window D7).
     3. Invokes the Inno Setup compiler to produce ParentalControlSetup.exe.
@@ -35,7 +35,8 @@ if ([string]::IsNullOrWhiteSpace($InnoSetupPath)) {
     $candidates = @(
         "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
         "C:\Program Files\Inno Setup 6\ISCC.exe",
-        "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+        "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+        "C:\Program Files\Inno Setup 7\ISCC.exe"
     )
     foreach ($cand in $candidates) {
         if (Test-Path $cand) {
@@ -70,10 +71,12 @@ if (Test-Path $publishDir) {
     Remove-Item $publishDir -Recurse -Force
 }
 
-# Publish Service
+# Publish Service. -p:VmTest=false: the release never has the test hooks of the probe and the service (design D15 of
+# session-probe-and-agent-channel), also if the environment has a VmTest variable (MSBuild reads it as a property).
 Write-Host "`n=== Publishing ParentalControl.Service ===" -ForegroundColor Cyan
 dotnet publish "$srcDir\ParentalControl.Service\ParentalControl.Service.csproj" `
     --configuration $Configuration `
+    -p:VmTest=false `
     --runtime win-x64 `
     --self-contained true `
     --output "$publishDir\service"
@@ -99,6 +102,17 @@ dotnet publish "$srcDir\ParentalControl.Agent\ParentalControl.Agent.csproj" `
     --output "$publishDir\agent"
 
 if ($LASTEXITCODE -ne 0) { Write-Error "Agent publish failed."; exit 1 }
+
+# Publish the Session Probe (session-probe-and-agent-channel, design D2): a self-contained console program in {app}\probe.
+Write-Host "`n=== Publishing ParentalControl.Probe ===" -ForegroundColor Cyan
+dotnet publish "$srcDir\ParentalControl.Probe\ParentalControl.Probe.csproj" `
+    --configuration $Configuration `
+    -p:VmTest=false `
+    --runtime win-x64 `
+    --self-contained true `
+    --output "$publishDir\probe"
+
+if ($LASTEXITCODE -ne 0) { Write-Error "Probe publish failed."; exit 1 }
 
 # Download the WebView2 Runtime bootstrapper (request-window D7). The installer runs it only if the runtime is missing.
 Write-Host "`n=== Downloading the WebView2 Runtime bootstrapper ===" -ForegroundColor Cyan

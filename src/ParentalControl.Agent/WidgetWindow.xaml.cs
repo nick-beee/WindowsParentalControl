@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -74,6 +75,17 @@ public partial class WidgetWindow : Window
         };
     }
 
+    private const int GWL_EXSTYLE = -20;
+    private const long WS_EX_NOACTIVATE = 0x08000000;
+    private const int WM_MOUSEACTIVATE = 0x0021;
+    private const int MA_NOACTIVATE = 3;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr GetWindowLongPtrW(IntPtr hwnd, int index);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetWindowLongPtrW(IntPtr hwnd, int index, IntPtr value);
+
     private void Window_SourceInitialized(object? sender, EventArgs e)
     {
         try
@@ -84,8 +96,25 @@ public partial class WidgetWindow : Window
             {
                 hwndSource.CompositionTarget.BackgroundColor = Colors.Transparent;
             }
+
+            // The widget never becomes the Foreground Window by a click or a drag (session-probe-and-agent-channel,
+            // design D5, B6): WS_EX_NOACTIVATE, and MA_NOACTIVATE for WM_MOUSEACTIVATE, which still passes the click to
+            // the buttons. With the agent in front, the Session Probe would count the agent in Unknown.
+            var style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE).ToInt64();
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new IntPtr(style | WS_EX_NOACTIVATE));
+            hwndSource?.AddHook(NoActivateHook);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            AgentLog.Logger.Warning(ex, "The widget could not be made non-activating");
+        }
+    }
+
+    private static IntPtr NoActivateHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg != WM_MOUSEACTIVATE) return IntPtr.Zero;
+        handled = true;
+        return new IntPtr(MA_NOACTIVATE);
     }
 
     private void Window_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)

@@ -1,7 +1,4 @@
 using System.Diagnostics;
-using System.Net.Http;
-using System.Text;
-using System.Text.Json;
 using System.Windows.Forms;
 using ParentalControl.Core.Platform;
 using ParentalControl.Domain.Sessions;
@@ -21,15 +18,17 @@ internal sealed class SessionEndWatcher : NativeWindow, IDisposable
     private const int WsPopup = unchecked((int)0x80000000);
 
     // The handler runs on the UI thread and must answer well within the hung-app timeout of Windows (5 s).
-    private static readonly HttpClient Http = AgentHttp.Create(TimeSpan.FromSeconds(2));
+    private static readonly TimeSpan SendTimeout = TimeSpan.FromSeconds(2);
 
     private readonly Func<IReadOnlyList<AgentAppDto>> _suspendedApps;
+    private readonly AgentChannelClient _channel;
     // The time of the last WM_QUERYENDSESSION (Environment.TickCount64), for WaitForQuery.
     private long? _lastQueryMs;
 
-    public SessionEndWatcher(Func<IReadOnlyList<AgentAppDto>> suspendedApps)
+    public SessionEndWatcher(Func<IReadOnlyList<AgentAppDto>> suspendedApps, AgentChannelClient channel)
     {
         _suspendedApps = suspendedApps;
+        _channel = channel;
         CreateHandle(new CreateParams { Caption = "ParentalControlAgentSessionEnd", Style = WsPopup });
     }
 
@@ -69,25 +68,12 @@ internal sealed class SessionEndWatcher : NativeWindow, IDisposable
             }
         }
 
-        // 2. The service starts a Session End Hold and resumes the processes that the agent does not know or cannot open.
-        try
-        {
-            var body = JsonSerializer.Serialize(new
-            {
-                sessionId = Process.GetCurrentProcess().SessionId,
-                reason = kind == SessionEndKind.Logoff ? "logoff" : "shutdown",
-            });
-            using var request = new HttpRequestMessage(HttpMethod.Post, "http://127.0.0.1:5050/api/agent/session-ending")
-            {
-                Content = new StringContent(body, Encoding.UTF8, "application/json"),
-            };
-            using var response = Http.Send(request);
-            AgentLog.Logger.Information("Session end request: HTTP {Status}", (int)response.StatusCode);
-        }
-        catch (Exception ex)
-        {
-            AgentLog.Logger.Warning(ex, "Session end request failed");
-        }
+        // 2. The service starts the Lock Deferral and a Session End Hold, and resumes the processes that the agent does
+        // not know or cannot open. The message has no session ID: the service takes the session of its launch record
+        // (design D8). The UI thread does not wait for the answer.
+        var reason = kind == SessionEndKind.Logoff ? "logoff" : "shutdown";
+        var sent = _channel.Send(id => new { type = "sessionEnding", id, reason }, SendTimeout);
+        AgentLog.Logger.Information("Session end request sent through the channel: {Sent}", sent);
     }
 
     /// <summary>

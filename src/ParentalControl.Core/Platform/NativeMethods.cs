@@ -190,7 +190,7 @@ internal static class NativeMethods
     }
 
     // Process access and suspension (App Category limits). A suspended process stays open.
-    // PROCESS_TERMINATE is for the close of a Blocked Start only (ProcessControl.Terminate).
+    // PROCESS_TERMINATE is for the close of a Blocked Start and of a leftover Session Probe only (ProcessControl.Terminate).
     internal const uint PROCESS_TERMINATE = 0x0001;
     internal const uint PROCESS_SUSPEND_RESUME = 0x0800;
     internal const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
@@ -215,8 +215,9 @@ internal static class NativeMethods
     internal static extern int NtResumeProcess(IntPtr processHandle);
 
     /// <summary>
-    /// Ends a process. Only ProcessControl.Terminate calls it, and only for a Blocked Start (add-blocked-programs).
-    /// A limit, a break or a schedule end never closes a program.
+    /// Ends a process. Only ProcessControl.Terminate calls it: for a Blocked Start (add-blocked-programs) and for a
+    /// leftover Session Probe of an earlier service run (a SYSTEM helper of the service). A limit, a break or a schedule
+    /// end never closes a program.
     /// </summary>
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

@@ -272,7 +272,9 @@ public static class UpdateService
                 Verb = "runas"
             };
 
-            Process.Start(startInfo);
+            // The lock keeps a handle that a probe or agent start makes inheritable out of this start (N6).
+            lock (Platform.ProcessLaunchLock.Gate)
+                Process.Start(startInfo)?.Dispose();
             return (true, "Installer berhasil dijalankan.");
         }
         catch (Exception ex)

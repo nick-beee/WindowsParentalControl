@@ -257,6 +257,8 @@ describe('SettingsDialog', () => {
         msgBreakRunning: 'Noch {minutes} Minuten bis {break_end}',
         msgProgramBlocked: '{name} ist gesperrt.',
         notifyBlockedTelegram: true,
+        probeLocksEnforced: false,
+        probeWouldLockEvents: 4,
       },
       'POST /api/admin/settings': { success: true },
     })
@@ -274,6 +276,8 @@ describe('SettingsDialog', () => {
     await userEvent.clear(start)
     await userEvent.type(start, 'Pause bis {{break_end} Uhr')
     await userEvent.click(within(dialog).getByLabelText(t.notifyBlockedTelegram))
+    expect(within(dialog).getByText(t.probeWouldLockEvents(4))).toBeInTheDocument()
+    await userEvent.click(within(dialog).getByLabelText(t.probeLocksEnforced))
     const blockedText = within(dialog).getByLabelText(t.msgProgramBlockedLabel)
     await userEvent.clear(blockedText)
     await userEvent.type(blockedText, '{{name} ist hier gesperrt.')
@@ -291,6 +295,7 @@ describe('SettingsDialog', () => {
       msgBreakRunning: 'Noch {minutes} Minuten bis {break_end}',
       msgProgramBlocked: '{name} ist hier gesperrt.',
       notifyBlockedTelegram: false,
+      probeLocksEnforced: true,
     })
     expect(onClose).toHaveBeenCalled()
   })

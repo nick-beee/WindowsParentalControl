@@ -9,6 +9,8 @@ using ParentalControl.Domain.Categories;
 using ParentalControl.Domain.Messages;
 using ParentalControl.Domain.AdminAccess;
 
+if (SessionProbePlatformChecks.HandleMode(args)) return;
+
 Console.WriteLine("=== Running ParentalControl Self-Checks ===");
 
 // 1. Test TOTP service
@@ -1054,7 +1056,9 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
             $"Route {blockRoute} should be mapped and need an Admin Session");
     foreach (var template in routeTemplates)
     {
-        var isOpen = template is "/" or "/request" or "/api/request" or "/admin" or "/admin/assets/{file}" || template.StartsWith("/api/agent/", StringComparison.Ordinal);
+        // session-probe-and-agent-channel D11: no route below /api/agent/ is mapped any more.
+        Debug.Assert(!template.StartsWith("/api/agent/", StringComparison.Ordinal), $"Route {template} should not exist (Agent Channel)");
+        var isOpen = template is "/" or "/request" or "/api/request" or "/admin" or "/admin/assets/{file}";
         Debug.Assert(isOpen || AdminRoutePolicy.Classify(template) != AdminRouteClass.Open, $"Route {template} is neither a child route nor behind the admin gate");
     }
     // add-usage-breaks, task 7.1: the break routes exist and are admin routes.
@@ -1143,8 +1147,13 @@ Console.WriteLine("✅ Data Folder Owner & Access Rules Passed.");
         // Child-facing routes stay open.
         var requestStatus = (int)(await Send(HttpMethod.Get, "/request")).StatusCode;
         Debug.Assert(requestStatus != 401 && requestStatus != 403, "/request should work without a session");
-        var agentStatus = (int)(await Send(HttpMethod.Get, "/api/agent/status?user=TestBrother")).StatusCode;
-        Debug.Assert(agentStatus == 200, "/api/agent/status should work without a session");
+        // session-probe-and-agent-channel, spec "The HTTP agent routes are removed": each old agent route gives 404.
+        Debug.Assert((int)(await Send(HttpMethod.Get, "/api/agent/status?user=TestBrother")).StatusCode == 404, "/api/agent/status should give 404");
+        foreach (var agentRoute in new[] { "/api/agent/activity", "/api/agent/prompt/respond", "/api/agent/session-ending", "/api/agent/capture" })
+        {
+            var agentCode = (int)(await Send(HttpMethod.Post, agentRoute, content: Json("{\"username\":\"TestBrother\",\"sessionId\":1}"))).StatusCode;
+            Debug.Assert(agentCode == 404, $"{agentRoute} should give 404: {agentCode}");
+        }
 
         // Setup, then login with a valid code one time only.
         var gateSecret = TotpService.GenerateSecret();
@@ -1608,7 +1617,7 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
             catch (TaskCanceledException) { await Task.Delay(100); }
         }
         Debug.Assert(first is not null && (int)first.StatusCode == 503, "SF3: before the gate opens, the web server should answer 503: " + first?.StatusCode);
-        foreach (var path in new[] { "/request", "/api/agent/status?user=TestBrother", "/admin", "/admin/assets/index.js", "/api/admin/settings" })
+        foreach (var path in new[] { "/request", "/admin", "/admin/assets/index.js", "/api/admin/settings" })
             Debug.Assert((int)(await svcHttp.GetAsync(svcBase + path)).StatusCode == 503, "SF3: each route should answer 503 before the gate: " + path);
         var waitClear = Stopwatch.StartNew();
         while (waitClear.Elapsed < TimeSpan.FromSeconds(5))
@@ -1633,13 +1642,13 @@ Console.WriteLine("✅ Admin Gate over HTTP Passed.");
         Debug.Assert(Volatile.Read(ref squatAlerts) == 0, "SF3: no alert for a squat that ended before the gate opened");
         Console.WriteLine("✅ Web Server Bind Retry Passed.");
 
-        // CB1 d: the capture quota of the unauthenticated capture route.
-        async Task<int> Upload(int bytes)
+        // CB1 d: the capture quota of the agent captures, now on the Agent Channel (session-probe-and-agent-channel D8).
+        var captureRequests = new ParentalControl.Service.AgentRequests(svcTracker, svcEnforcer, new ParentalControl.Service.SessionLocker(svcLogger), null, svcLogger);
+        var captureRecord = new ParentalControl.Domain.Sessions.AgentLaunchRecord(1, new ParentalControl.Domain.Sessions.ProcessIdentity(4242, DateTime.UtcNow), user.Sid);
+        Task<int> Upload(int bytes)
         {
-            var request = new HttpRequestMessage(HttpMethod.Post, svcBase + "/api/agent/capture") { Content = new ByteArrayContent(new byte[bytes]) };
-            request.Headers.Add("X-User", user.Username);
-            request.Headers.Add("X-Trigger", "WATCH");
-            return (int)(await svcHttp.SendAsync(request)).StatusCode;
+            var outcome = captureRequests.StoreCapture(captureRecord, new ParentalControl.Domain.Sessions.AgentCapture(1, "WATCH", 1, 1, new byte[bytes]));
+            return Task.FromResult(outcome switch { "stored" => 200, "tooLarge" => 413, "quota" => 429, _ => 400 });
         }
         int CaptureFiles()
         {
@@ -1808,6 +1817,9 @@ BlockedProgramChecks.RunData();
 
 // harden-clock-and-disk: the write switch, the usage ledger, the Control Time Zone.
 ClockAndStorageChecks.Run(user);
+
+// session-probe-and-agent-channel, tasks 3.1 and 3.3: runs as SYSTEM through a scheduled task.
+SessionProbePlatformChecks.Run();
 
 // Cleanup test user
 UserRepository.DeleteBySid(testSid);
