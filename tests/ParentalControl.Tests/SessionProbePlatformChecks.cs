@@ -69,7 +69,7 @@ internal static class SessionProbePlatformChecks
         var skipped = lines.Any(l => l.StartsWith("SKIP", StringComparison.Ordinal));
         var onCi = Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true";
         Debug.Assert(!skipped || onCi, "The SessionSystemProcess checks need a console session outside CI");
-        Debug.Assert(passed == (skipped ? 14 : 26), $"The probe self-checks should give {(skipped ? 14 : 26)} passes, gave {passed}");
+        Debug.Assert(passed == (skipped ? 14 : 28), $"The probe self-checks should give {(skipped ? 14 : 28)} passes, gave {passed}");
         Console.WriteLine("✅ Session Probe platform (SeDebugPrivilege, ReadSampleEntry, WebView2 creator, SessionSystemProcess) Passed.");
     }
 
