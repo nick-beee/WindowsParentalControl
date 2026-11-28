@@ -17,7 +17,7 @@ public static class AgentTexts
         ("tray_request", "🎮 Mehr Bildschirmzeit wünschen...", "🎮 Ask for More Screen Time...", "🎮 Minta Tambahan Waktu Layar..."),
         ("tray_unrestricted", "Parental Control: Konto ohne Grenzen", "Parental Control: Unrestricted Account", "Parental Control: Akun Tidak Dibatasi"),
         // The lock texts per Lock Reason (widget-shows-schedule-lock-after-break). Only the Break text says "Pause".
-        ("tray_locked", "Parental Control: Gesperrt (Zeit läuft nicht)", "Parental Control: Locked (time stopped)", "Parental Control: Sesi Dikunci (Dijeda)"),
+        ("tray_locked", "Parental Control: Gesperrt (Zeit läuft nicht)", "Parental Control: Locked (time stopped)", "Parental Control: Sesi Dikunci (waktu berhenti)"),
         ("tray_locked_schedule", "Parental Control: Gesperrt (keine Computerzeit)", "Parental Control: Locked (outside allowed hours)", "Parental Control: Terkunci (di luar jam diizinkan)"),
         ("tray_locked_allowance", "Parental Control: Gesperrt (Zeit für heute um)", "Parental Control: Locked (no time left today)", "Parental Control: Terkunci (waktu hari ini habis)"),
         ("tray_locked_break", "Parental Control: Gesperrt (Pause)", "Parental Control: Locked (break)", "Parental Control: Terkunci (istirahat)"),
@@ -38,7 +38,7 @@ public static class AgentTexts
             "The allowed hours end before your daily time.",
             "Waktu dibatasi oleh Jam Malam, bukan kuota harian"),
         ("widget_curfew_empty", "Computerzeit: --:--", "Allowed hours: --:--", "Jam malam: --:--"),
-        ("widget_locked", "⏸ Gesperrt (Zeit läuft nicht)", "⏸ Locked (time stopped)", "⏸ Sesi Terkunci (Dijeda)"),
+        ("widget_locked", "⏸ Gesperrt (Zeit läuft nicht)", "⏸ Locked (time stopped)", "⏸ Sesi Terkunci (waktu berhenti)"),
         ("widget_locked_schedule", "🌙 Gesperrt (keine Computerzeit)", "🌙 Locked (outside allowed hours)", "🌙 Terkunci (di luar jam diizinkan)"),
         ("widget_locked_allowance", "⏸ Gesperrt (Zeit für heute um)", "⏸ Locked (no time left today)", "⏸ Terkunci (waktu hari ini habis)"),
         ("widget_locked_break", "⏸ Gesperrt (Pause)", "⏸ Locked (break)", "⏸ Terkunci (istirahat)"),

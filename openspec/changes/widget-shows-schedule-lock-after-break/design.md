@@ -47,3 +47,8 @@ No WinAPI call, table or column is new.
 ## Risks
 
 - The agent gets the reason only with the next status poll (at most some seconds). A Windows session that is locked hides the widget, so the child sees the text only in a short unlock before the next lock, or in the tray tooltip.
+
+
+## Review follow-up (2026-11-28)
+
+Decided by the orchestrator under the user's delegation (2026-11-28): `MinutesUntilOtherLock` counts whole minutes, so no Break starts in the last minute before the end of the Allowance Time or the Schedule Window. The spec says so now. A Break of less than 1 minute before the lock of the day gave the child nothing. The Lock Reason is "allowance" only if the user has a limit row: without one, the service enforces no Allowance Time, and the default of 120 minutes in the status must not show "Zeit für heute um". The "id" texts of another lock say "waktu berhenti" (time stopped), not "Dijeda" (paused).

@@ -120,7 +120,7 @@ public sealed class AgentRequests
         var lockReason = LockReasons.Resolve(
             isLocked,
             outsideScheduleWindow,
-            allowanceUsedUp: remMinutes == 0,
+            allowanceUsedUp: limit is not null && remMinutes == 0,
             breakRunning: isLocked && _breakEnforcer.GetRunningBreakEnd(user.Id) is not null);
 
         var latestReq = GraceRequestRepository.GetLatestRequest(user.Id);
