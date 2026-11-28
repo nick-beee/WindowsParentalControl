@@ -24,7 +24,7 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
     private readonly AgentRequests _requests;
     private readonly SessionTracker _tracker;
     private readonly Serilog.ILogger _logger;
-    private readonly AgentLaunchRegistry _registry = new();
+    private readonly AgentLaunchRegistry _registry;
     private readonly ConcurrentDictionary<int, AgentChannel> _channels = new();
     private readonly WarningLimit _launchWarnings = new();
     // ShouldStart, the launch and Record are one step per session (AgentLaunchRegistry). One gate for all sessions is
@@ -32,8 +32,9 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
     private readonly object _startGate = new();
     private readonly CancellationTokenSource _stopping = new();
 
-    public AgentChannelHost(AgentRequests requests, SessionTracker tracker, Serilog.ILogger logger)
+    public AgentChannelHost(AgentRequests requests, SessionTracker tracker, AgentLaunchRegistry registry, Serilog.ILogger logger)
     {
+        _registry = registry;
         _requests = requests;
         _tracker = tracker;
         _logger = logger;
@@ -98,9 +99,19 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
         return record is not null && IsRunning(record);
     }
 
-    private bool IsRunning(AgentLaunchRecord record) =>
-        _channels.TryGetValue(record.SessionId, out var channel) && channel.Record == record
-        && AgentChannelPlatform.IsRunning(channel.Process.Handle);
+    private bool IsRunning(AgentLaunchRecord record)
+    {
+        try
+        {
+            return _channels.TryGetValue(record.SessionId, out var channel) && channel.Record == record
+                   && AgentChannelPlatform.IsRunning(channel.Process.Handle);
+        }
+        catch (ObjectDisposedException)
+        {
+            // OnSessionEnded or StopAsync disposed the channel and its process handle after the lookup.
+            return false;
+        }
+    }
 
     // Under _startGate.
     private void Start(int sessionId)

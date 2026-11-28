@@ -57,6 +57,7 @@ public sealed class SessionProbeHost : BackgroundService
     private static readonly TimeSpan SettingInterval = TimeSpan.FromSeconds(10);
 
     private readonly SessionTracker _tracker;
+    private readonly AgentLaunchRegistry _agents;
     private readonly CategoryEnforcer _enforcer;
     private readonly SessionLocker _locker;
     private readonly ForegroundHistory _history;
@@ -99,8 +100,9 @@ public sealed class SessionProbeHost : BackgroundService
     private readonly Dictionary<int, (DateOnly Day, Dictionary<AppCategory, int> Usage)> _lastUsage = new();
 
     public SessionProbeHost(SessionTracker tracker, CategoryEnforcer enforcer, SessionLocker locker, ForegroundHistory history,
-        ServiceStartup startup, Serilog.ILogger logger)
+        ServiceStartup startup, AgentLaunchRegistry agents, Serilog.ILogger logger)
     {
+        _agents = agents;
         _tracker = tracker;
         _enforcer = enforcer;
         _locker = locker;
@@ -629,19 +631,21 @@ public sealed class SessionProbeHost : BackgroundService
         var resolver = config.Resolver;
         var locked = IsLocked(sessionId);
 
-        // The agent by its exe path (D5 rule 5): also as the creator of a trusted WebView2 when no window of the agent is
-        // in the sample. Task 5.1 may add the launch record of the agent (AgentLaunchRegistry), but as an OR with this
-        // path test: a test of the launch record only brings the moved WebView2 of the agent back to its App Rule.
+        // The agent exe path counts in Unknown, never in System (D5 rule 5): also as the creator of a trusted WebView2
+        // when no window of the agent is in the sample. Only the agent that the service started and that still runs
+        // (its launch record) gets the exemptions of the agent; a copy that the child started is a normal Unknown exe.
         var agentPath = WindowsPath.Canonicalize(SessionTracker.GetAgentExecutablePath());
-        bool IsAgent(ProcessIdentity _, string exePath) =>
+        bool IsAgentPath(string exePath) =>
             agentPath is not null && string.Equals(WindowsPath.Canonicalize(exePath), agentPath, StringComparison.OrdinalIgnoreCase);
+        bool IsLaunchedAgent(ProcessIdentity process) => _agents.IsAgent(sessionId, process);
         var suspended = Safe(() => SuspensionRepository.GetForUser(userId), []).Select(r => new ProcessIdentity(r.Pid, r.StartTimeUtc)).ToHashSet();
         var promptActive = Safe(() => SessionPromptRepository.GetActivePrompt(run.Username) is not null, false);
 
         var context = new SelectionContext(
             path => resolver.Resolve(path).Category,
             _windowsFolder,
-            IsAgent,
+            IsAgentPath,
+            IsLaunchedAgent,
             promptActive,
             suspended.Contains,
             p => ProcessControl.QueryPathAndStart(p.Pid).StartUtc == p.StartUtc,

@@ -28,6 +28,9 @@ builder.Services.AddSingleton<SessionLocker>();
 builder.Services.AddSingleton<BreakEnforcer>();
 builder.Services.AddSingleton<SessionTracker>();
 builder.Services.AddSingleton<ParentalControl.Domain.Categories.ForegroundHistory>();
+// The launch records of the Session Agents (design D9): the Agent Channel host writes them, and the Session Probe host
+// reads them to give the exemptions of the agent only to the agent that the service started (design D5).
+builder.Services.AddSingleton<ParentalControl.Domain.Sessions.AgentLaunchRegistry>();
 builder.Services.AddSingleton<CategoryEnforcer>();
 builder.Services.AddHostedService<DebugPrivilegeMonitor>();
 builder.Services.AddHostedService<StartupWorker>();

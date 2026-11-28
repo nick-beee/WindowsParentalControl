@@ -275,11 +275,16 @@ In a sample of the Session Probe, the system SHALL exempt the Session Agent as a
 - **AND** from 11:05 at the latest the budget has 5 minutes again
 
 ### Requirement: The Agent Window Budget exempts only the Session Agent
-The Agent Window Budget SHALL exempt only the time that the Session Agent itself adds. If another counted process of the same sample is in the same App Category, that category SHALL still get the interval of the sample. The budget SHALL NOT change the Allowance Time, Continuous Use, a Break or the Schedule Window.
+The Agent Window Budget SHALL exempt only the time that the Session Agent that the service started adds. A process with the agent exe that the service did not start SHALL count in Unknown without the budget. If another counted process of the same sample is in the same App Category, that category SHALL still get the interval of the sample. The budget SHALL NOT change the Allowance Time, Continuous Use, a Break or the Schedule Window.
 
 #### Scenario: Game moved into the agent window
 - **WHEN** the probe locks are on and the Session Agent and a game in Unknown are both counted processes of the same Session Probe samples for 3 minutes
 - **THEN** Category Usage for Unknown increases by 3 minutes
+
+#### Scenario: Agent exe started by the child
+- **WHEN** the probe locks are on, Unknown is exhausted, and the child starts `ParentalControl.Agent.exe` itself with a startup hook that draws a game in its window
+- **THEN** that process gets no time from the Agent Window Budget
+- **AND** the session is locked within 2 minutes
 
 #### Scenario: Allowance Time
 - **WHEN** the probe locks are on and the child types a request in the Request Window for 3 minutes while the Agent Window Budget exempts the Session Agent

@@ -41,8 +41,11 @@ public class CountedProcessesTests
         ForegroundProcess? last = null,
         Func<ProcessIdentity, bool>? running = null,
         Func<ProcessIdentity, bool>? suspended = null,
-        Func<ProcessIdentity, string, bool>? agent = null) =>
-        new(Categorize, @"C:\Windows", agent ?? ((p, _) => p == AgentP), prompt, suspended ?? (_ => false), running ?? (_ => true), last);
+        Func<ProcessIdentity, bool>? launched = null) =>
+        new(Categorize, @"C:\Windows", AgentByPath, launched ?? (p => p == AgentP), prompt, suspended ?? (_ => false),
+            running ?? (_ => true), last);
+
+    private static bool AgentByPath(string path) => string.Equals(path, Agent, StringComparison.OrdinalIgnoreCase);
 
     private static SampleEntry E(ProbeRole role, ProcessIdentity p, string exe, WebView2Creator? creator = null) =>
         new(role, EntryOutcome.Read, p, exe, creator);
@@ -208,27 +211,74 @@ public class CountedProcessesTests
         Assert.True(s.Counted[0].IsAgent);
     }
 
-    // Review of group 4, item 3: the service names the agent by its exe path. A WebView2 of the agent that a script moved
-    // into another window has the agent as its creator, but no window of the agent is in the sample.
-    private static bool AgentByPath(ProcessIdentity _, string path) => string.Equals(path, Agent, StringComparison.OrdinalIgnoreCase);
-
+    // Review of group 4, item 3: the agent exe path counts in Unknown. A WebView2 of the agent that a script moved into
+    // another window has the agent as its creator, but no window of the agent is in the sample.
     [Fact]
     public void Moved_agent_WebView2_child_without_an_agent_window_counts_in_Unknown_as_the_agent()
     {
         var s = Select(new SampleReading([
                 E(ProbeRole.Foreground, NotepadP, Notepad),
-                E(ProbeRole.Child, WebView2P, WebView2, new WebView2Creator(CreatorOutcome.Read, AgentP, Agent))]),
-            Context(agent: AgentByPath));
+                E(ProbeRole.Child, WebView2P, WebView2, new WebView2Creator(CreatorOutcome.Read, AgentP, Agent))]));
         Assert.Equal([AppCategory.Unknown], Cats(s));
         Assert.Single(s.Counted);
         Assert.True(s.Counted[0].IsAgent);
         Assert.Equal(ProbeRole.Child, s.Counted[0].Role);
     }
 
+    // Review of groups 5 and 6, item 2: only the agent that the service started uses the Agent Window Budget. A WebView2
+    // whose creator has the agent exe but is a copy that the child started counts as a normal Unknown exe.
+    [Fact]
+    public void Moved_WebView2_child_of_a_self_started_agent_counts_in_Unknown_without_the_budget()
+    {
+        var s = Select(new SampleReading([
+                E(ProbeRole.Foreground, NotepadP, Notepad),
+                E(ProbeRole.Child, WebView2P, WebView2, new WebView2Creator(CreatorOutcome.Read, OtherP, Agent))]));
+        Assert.Equal([AppCategory.Unknown], Cats(s));
+        Assert.Single(s.Counted);
+        Assert.False(s.Counted[0].IsAgent);
+        Assert.Equal(OtherP, s.Counted[0].Process);
+    }
+
+    [Fact]
+    public void Self_started_agent_with_a_game_drawn_in_it_gets_no_budget_and_the_never_suspended_lock_after_60_seconds()
+    {
+        // The child starts the agent exe itself (for example with DOTNET_STARTUP_HOOKS) and draws a game in its window.
+        var reading = new SampleReading([E(ProbeRole.Foreground, OtherP, Agent)]);
+        var context = Context();
+        var budget = new AgentWindowBudget();
+        // The install folder is protected (ProtectedPrograms), so the copy is never suspended.
+        var allowance = new NeverSuspendedAllowance(path => string.Equals(path, Agent, StringComparison.OrdinalIgnoreCase));
+        var unlocked = TimeSpan.Zero;
+        IReadOnlyList<string> over = [];
+        var seconds = 0;
+        while (over.Count == 0 && seconds < 3600)
+        {
+            var s = CountedProcesses.Select(reading, context, Trusted);
+            Assert.Equal([AppCategory.Unknown], Cats(s));
+            var agentCounted = s.Counted.Any(c => c.IsAgent);
+            Assert.False(agentCounted);
+            var exempt = budget.Sample(TimeSpan.FromSeconds(seconds), 1, agentCounted, unlocked: true);
+            Assert.Equal(0, exempt);
+            unlocked += TimeSpan.FromSeconds(1);
+            seconds++;
+            over = allowance.Sample(unlocked, true, s, TimeSpan.FromSeconds(1), c => c == AppCategory.Unknown, TimeSpan.FromSeconds(exempt));
+        }
+        Assert.Equal([Agent], over);
+        Assert.InRange(seconds, NeverSuspendedAllowance.AllowedSeconds, NeverSuspendedAllowance.AllowedSeconds + 2);
+    }
+
+    [Fact]
+    public void Self_started_agent_gets_no_prompt_exemption()
+    {
+        var s = Select(new SampleReading([E(ProbeRole.Foreground, OtherP, Agent)]), Context(prompt: true));
+        Assert.Equal([AppCategory.Unknown], Cats(s));
+        Assert.False(s.Counted[0].IsAgent);
+    }
+
     [Fact]
     public void Moved_agent_WebView2_child_uses_the_Agent_Window_Budget_and_then_gets_the_never_suspended_lock()
     {
-        var context = Context(agent: AgentByPath);
+        var context = Context();
         var reading = new SampleReading([
             E(ProbeRole.Foreground, NotepadP, Notepad),
             E(ProbeRole.Child, WebView2P, WebView2, new WebView2Creator(CreatorOutcome.Read, AgentP, Agent))]);
@@ -265,10 +315,21 @@ public class CountedProcessesTests
     }
 
     [Fact]
-    public void Process_with_the_agent_exe_that_is_not_the_launched_agent_counts_by_its_rule()
+    public void Process_with_the_agent_exe_that_is_not_the_launched_agent_counts_in_Unknown_not_in_System()
     {
+        // The App Rules put the install folder in System; the agent exe path still counts in Unknown (D5 rule 5).
         var s = Select(E(ProbeRole.Foreground, OtherP, Agent));
-        Assert.Empty(s.Counted);
+        Assert.Equal([AppCategory.Unknown], Cats(s));
+        Assert.False(s.Counted[0].IsAgent);
+    }
+
+    [Fact]
+    public void Self_started_agent_as_cursor_counts_like_a_normal_Unknown_exe()
+    {
+        Assert.DoesNotContain(Select(new SampleReading([E(ProbeRole.Foreground, StudyP, Study), E(ProbeRole.Cursor, OtherP, Agent)])).Counted,
+            c => c.Process == OtherP);
+        var s = Select(new SampleReading([E(ProbeRole.Foreground, StudyP, Study), E(ProbeRole.Cursor, OtherP, Agent)], CursorNoActivate: true));
+        Assert.Contains(s.Counted, c => c.Process == OtherP && c.Category == AppCategory.Unknown && !c.IsAgent);
     }
 
     [Fact]
