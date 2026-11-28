@@ -9,7 +9,7 @@ Current state that shapes the approach:
 - **The failed tick.** `UsageMonitorWorker.ProcessTick` sets `readFailed` if `SessionTracker.TickAllSessions` or `CheckLimits` throws, for any exception. `StorageHealth` counts the failures of `TryWrite` and of the ledger as one number. `ReportStorage` gives the Storage Lockdown a bool only, so the entry text of event 1015 and the alert do not know the cause. The alert text always says "the disk is full or the database cannot be written" and tells the parent to free space.
 - **The count.** `StorageLockdownState.FailedTicksInRow` goes back to 0 after one tick without a failure.
 - **The suspension record.** `CategoryEnforcer.Suspend` calls `SuspensionRepository.Insert` before `NtSuspendProcess`. If the insert fails, it returns: no suspension, no lock, no event.
-- **The start.** `StartupWorker` opens and migrates the database. An existing database at the current schema needs no write for that, so a full disk does not stop the start. The first tick of `UsageMonitorWorker` writes the probe at its end, but one failed tick does not enter.
+- **The start.** `StartupWorker` opens and migrates the database (`DatabaseManager.Initialize`: `CREATE TABLE IF NOT EXISTS`, column checks, seeds of default rows). If one of these statements fails, the start goes into the start lockdown of the data folder (event 1009, CB2). With the test switch (`PRAGMA query_only=1`), SQLite refuses each statement that is not read-only, so the start fails there. On a really full disk, a statement that changes no page can succeed, so it is not sure that a full disk stops the start (not checked on a real full disk). Then the first tick of `UsageMonitorWorker` writes the probe at its end, but one failed tick does not enter.
 - **The read of a limit.** The callers read the stored row (`UsageRepository.GetUsage`) and then `UsageLedger.AllowanceUsed(userId, day, stored)` adds the Pending Usage. A store on another thread (an activity sample of the Session Probe) can commit an entry and remove it from the Pending Usage between the two reads.
 - **The open PRs.** PR #62 changes `CategoryEnforcer.cs` (but not `Suspend`). PR #66 changes `WebServerHost.cs` and `AgentRequests.cs`. This change edits `CategoryEnforcer.Suspend` in a few lines only, and edits neither `WebServerHost.cs` nor `AgentRequests.cs`.
 
@@ -88,7 +88,7 @@ New pure class `FailedTickWindow` in `src/ParentalControl.Domain/DataFolder`. It
 
 `StorageLockdownState.ReportTick` gets the flag `firstTick`. If the probe write of the first tick after the start of the service fails, it enters the Storage Lockdown at once. `UsageMonitorWorker` passes `true` for the first `ReportStorage` of the process.
 
-- The first tick runs right after the start gate, so the lock comes within seconds of the start.
+- The first tick runs right after the start gate, so the lock comes within seconds of the start. If the start itself fails (event 1009), the start lockdown locks the sessions, and the first tick runs only after a start that succeeds.
 - Only a failed probe write enters at the start. Low free space alone does not, because a start with less than 100 MB free and working writes is not an error.
 - `StartupWorker` does not change.
 - *Alternative: a separate probe in `StartupWorker` before the gate.* Rejected. The start lockdown of the data folder has its own exit rule (a full start), and its exit would not check the Pending Usage or the free space. The first tick already has the probe.
@@ -106,6 +106,7 @@ New pure class `FailedTickWindow` in `src/ParentalControl.Domain/DataFolder`. It
 ### D8. The entry order and the token of the lock loop
 
 - `EnterStorageLockdown` starts the lock loop first, then writes event 1015, then the event row, then posts the alert. A slow or failing write then cannot delay the first lock.
+- The text of event 1016 says that the cause ended, not that the database can write again, because the cause can be a limit check.
 - `StartLockLoop` takes the token of the new `CancellationTokenSource` before `Task.Run`, and the loop uses only that token. The loop disposes the source in its `finally`. `StopLockLoop` only cancels it. So no code uses the token of a disposed source.
 
 ### D9. The end of the Schedule Window in the repeated hour

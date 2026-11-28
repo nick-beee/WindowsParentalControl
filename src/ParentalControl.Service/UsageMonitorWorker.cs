@@ -526,7 +526,7 @@ public sealed class UsageMonitorWorker : BackgroundService
     private void LeaveStorageLockdown(long? free)
     {
         StopLockLoop();
-        var text = $"Parental Control can write its database again ({StorageLockdownTexts.Free(free)} free). The Storage Lockdown ended.";
+        var text = $"The cause of the Storage Lockdown ended: the database writes and the limit checks work again ({StorageLockdownTexts.Free(free)} free). The Storage Lockdown ended.";
         _logger.Information(text);
         DataFolderStartup.WriteEvent(EventLogEntryType.Information, StorageLockdownExitEventId, text);
         _health.TryWrite(() => EventRepository.LogEvent("SYSTEM", EventType.STORAGE_LOCKDOWN, "Ended: " + text), "storage lockdown event", _logger);

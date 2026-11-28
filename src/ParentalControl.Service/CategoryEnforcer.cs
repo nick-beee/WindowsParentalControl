@@ -426,7 +426,16 @@ public sealed class CategoryEnforcer : IDisposable
             !_health.TryWrite(() => SuspensionRepository.Insert(record), $"suspension record of {action.ExePath}", _logger, "suspension record"))
         {
             var owner = users.GetValueOrDefault(action.UserId);
-            Fallback(action, owner, owner?.Username ?? action.UserId.ToString(), "the suspension record could not be stored");
+            try
+            {
+                Fallback(action, owner, owner?.Username ?? action.UserId.ToString(), "the suspension record could not be stored");
+            }
+            catch (Exception ex)
+            {
+                // The lock runs first in Fallback. A failed read of its alert must not stop the other suspensions of the tick.
+                _health.ReportFailure("suspension record", ex);
+                _logger.Error(ex, "Error in the fallback for {Exe} after a failed suspension record", action.ExePath);
+            }
             return;
         }
 
