@@ -54,8 +54,10 @@ public sealed class AgentRequests
     /// The status answer for the user of the launch record (spec "The status shows only the data of the agent user").
     /// It clears a capture request only of that user.
     /// </summary>
-    public object Status(AgentLaunchRecord record)
+    /// <param name="captureTaken">True if this status took the capture request of the parent.</param>
+    public object Status(AgentLaunchRecord record, out bool captureTaken)
     {
+        captureTaken = false;
         var user = UserRepository.GetBySid(record.UserSid);
         // The Session Agent shows its texts in this Language Preset. The preset comes only from app_settings.
         var language = SettingsRepository.GetLanguagePreset();
@@ -123,6 +125,7 @@ public sealed class AgentRequests
             if (capState.CaptureRequested)
             {
                 captureRequested = true;
+                captureTaken = true;
                 capState.CaptureRequested = false;
             }
         }
@@ -154,6 +157,14 @@ public sealed class AgentRequests
             language,
             activePrompt = activePromptObj,
         };
+    }
+
+    /// <summary>Gives a capture request back after its status answer did not reach the agent.</summary>
+    public void RestoreCaptureRequest(AgentLaunchRecord record)
+    {
+        var user = UserRepository.GetBySid(record.UserSid);
+        if (user is not null && CaptureStates.TryGetValue(user.Username, out var state))
+            state.CaptureRequested = true;
     }
 
     private static object? ActivePrompt(User user)

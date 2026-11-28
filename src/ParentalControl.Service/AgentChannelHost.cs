@@ -122,6 +122,11 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
             launched = SessionManager.LaunchProcessInSession(sessionId, agentPath, "--channel {handle}",
                 client.DangerousGetHandle(), out error);
         }
+        catch
+        {
+            server.Dispose();
+            throw;
+        }
         finally
         {
             client.Dispose();
@@ -202,6 +207,7 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
         private readonly CancellationTokenSource _closed = new();
         private int _disposed;
         private bool _loggedHandlerError;
+        private bool _captureTaken;
 
         public AgentChannel(AgentChannelHost host, AgentLaunchRecord record, LaunchedProcess process, NamedPipeServerStream stream)
         {
@@ -289,9 +295,11 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
                                 break;
                         }
                         if (fault is not null) break;
+                        _captureTaken = false;
                         var answer = Handle(message);
                         if (!await WriteAsync(answer, token).ConfigureAwait(false))
                         {
+                            if (_captureTaken) _host._requests.RestoreCaptureRequest(Record);
                             fault ??= "a write did not complete within 5 s";
                             break;
                         }
@@ -320,10 +328,13 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
             }
 
             if (fault is not null)
-            {
                 Log.Warning("Agent Channel of session {SessionId} (pid {Pid}) closed: {Fault}", Record.SessionId, Record.Process.Pid, fault);
+            // A channel that ended for any reason except a close of the host is dead: the next tick starts a new agent,
+            // also if code in the agent closed its end and keeps the process alive.
+            if (fault is not null || !token.IsCancellationRequested)
+            {
                 try { _host.OnFault(this); }
-                catch (Exception ex) { Log.Error(ex, "Agent Channel of session {SessionId}: error after a fault", Record.SessionId); }
+                catch (Exception ex) { Log.Error(ex, "Agent Channel of session {SessionId}: error after the end of the channel", Record.SessionId); }
             }
             CloseStream();
         }
@@ -343,7 +354,7 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
             {
                 return message switch
                 {
-                    AgentStatusRequest => Answer(new { id = message.Id, type, ok = true, status = _host._requests.Status(Record) }),
+                    AgentStatusRequest => StatusAnswer(message.Id, type),
                     AgentPromptAnswer answer => Answer(new { id = message.Id, type, ok = _host._requests.AnswerPrompt(Record, answer) }),
                     AgentCapture capture => Answer(new { id = message.Id, type, ok = true, result = _host._requests.StoreCapture(Record, capture) }),
                     // The answer does not say whether the deferral or the hold was granted (design D8).
@@ -360,6 +371,23 @@ public sealed class AgentChannelHost : IHostedService, IAgentStarter
                         Record.SessionId, type);
                 }
                 return AgentChannelCodec.Json(new { id = message.Id, type, ok = false });
+            }
+        }
+
+        // A capture request that the status took goes back if its answer cannot be built; the write is checked in the loop.
+        private byte[] StatusAnswer(long id, string type)
+        {
+            var status = _host._requests.Status(Record, out var captureTaken);
+            try
+            {
+                var frame = Answer(new { id, type, ok = true, status });
+                _captureTaken = captureTaken;
+                return frame;
+            }
+            catch
+            {
+                if (captureTaken) _host._requests.RestoreCaptureRequest(Record);
+                throw;
             }
         }
 
