@@ -65,11 +65,10 @@ public sealed class SessionProbeHost : BackgroundService
     private readonly Serilog.ILogger _logger;
     private readonly StorageHealth _health = StorageHealth.Shared;
     private readonly UsageLedger _ledger = UsageLedger.Shared;
-    private readonly TrustedWebView2 _trusted = new(
-        Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-        Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles));
     private readonly string _windowsFolder = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
     private readonly ProtectedPrograms _protected = CategoryRepository.LocalProtectedPrograms();
+    // The same test as the block and the suspension (suspend-untrusted-webview2, design D1).
+    private TrustedWebView2 Trusted => _protected.TrustedWebView2;
 
     private readonly Lock _gate = new();
     private readonly Dictionary<int, ProbeRun> _runs = new();
@@ -622,8 +621,8 @@ public sealed class SessionProbeHost : BackgroundService
         if (read.Outcome != EntryOutcome.Read)
             return new SampleEntry(role, read.Outcome);
         WebView2Creator? creator = null;
-        if (_trusted.IsTrusted(read.ExePath))
-            creator = ProcessControl.ResolveWebView2Creator(window.Pid, _trusted.IsTrusted);
+        if (Trusted.IsTrusted(read.ExePath))
+            creator = ProcessControl.ResolveWebView2Creator(window.Pid, Trusted.IsTrusted);
         return new SampleEntry(role, EntryOutcome.Read, read.Process, read.ExePath, creator);
     }
 
@@ -658,7 +657,7 @@ public sealed class SessionProbeHost : BackgroundService
             suspended.Contains,
             p => ProcessControl.QueryPathAndStart(p.Pid).StartUtc == p.StartUtc,
             _lastForeground.GetValueOrDefault(sessionId));
-        var selection = CountedProcesses.Select(reading, context, _trusted);
+        var selection = CountedProcesses.Select(reading, context, Trusted);
         _lastForeground[sessionId] = selection.NextLastForeground;
 
         var credit = _counter.Accept(sessionId, sample.T, sample.Duration, receiptTick, unbiased, selection.Blind, selection.Counted);

@@ -4,7 +4,7 @@ namespace ParentalControl.Domain.Tests.Blocking;
 
 public class BlockRuleTests
 {
-    private static readonly ProtectedPrograms Protected = new(@"C:\Windows", [@"C:\Program Files\ParentalControl"]);
+    private static readonly ProtectedPrograms Protected = new(@"C:\Windows", [@"C:\Program Files\ParentalControl"], new TrustedWebView2(@"C:\Program Files (x86)", @"C:\Program Files"));
 
     private static string? Validate(RuleMatchType type, string pattern, AppCategory category, DailyLimit? limit = null) =>
         AppRule.Validate(type, pattern, category, limit, isBlocked: true, Protected);
